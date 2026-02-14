@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,13 +53,13 @@ def detect_backend(
         path = _resolve_direct_collection(col_override)
         if path is None:
             raise DetectionError(
-                "Direct backend forced, but no Anki collection.anki21b was found.",
+                "Direct backend forced, but no Anki collection DB was found.",
                 exit_code=3
             )
         if _anki_process_running() or _sqlite_write_locked(path):
             raise DetectionError(
-                "Anki appears to be running while AnkiConnect is unavailable. "
-                "Install AnkiConnect or close Anki Desktop before direct writes.",
+                "Anki Desktop appears to be running while AnkiConnect is unavailable. "
+                "Close Anki Desktop or use --backend ankiconnect.",
                 exit_code=7,
             )
         return DetectionResult("direct", path, "forced")
@@ -113,17 +114,23 @@ def _resolve_direct_collection(col_override: Path | None) -> Path | None:
         resolved = col_override.expanduser().resolve()
         return resolved if resolved.exists() else None
 
-    anki_home = Path.home() / ".local" / "share" / "Anki2"
-    if not anki_home.exists():
-        return None
+    roots = [
+        Path.home() / ".local" / "share" / "Anki2",
+        Path.home() / ".var" / "app" / "net.ankiweb.Anki" / "data" / "Anki2",
+    ]
+    filenames = ["collection.anki21b", "collection.anki2"]
 
     candidates: list[Path] = []
-    for profile_dir in sorted(anki_home.iterdir()):
-        if not profile_dir.is_dir():
+    for root in roots:
+        if not root.exists():
             continue
-        db_path = profile_dir / "collection.anki21b"
-        if db_path.exists():
-            candidates.append(db_path)
+        for profile_dir in sorted(root.iterdir()):
+            if not profile_dir.is_dir():
+                continue
+            for filename in filenames:
+                db_path = profile_dir / filename
+                if db_path.exists():
+                    candidates.append(db_path)
 
     return candidates[0] if candidates else None
 
@@ -146,8 +153,12 @@ def _anki_process_running() -> bool:
     if not proc_root.exists():
         return False
 
+    current_pid = str(os.getpid())
+    desktop_names = {"anki", "anki-bin", "anki.exe"}
+    flatpak_app_id = "net.ankiweb.anki"
+
     for entry in proc_root.iterdir():
-        if not entry.name.isdigit():
+        if not entry.name.isdigit() or entry.name == current_pid:
             continue
 
         comm = entry / "comm"
@@ -156,14 +167,28 @@ def _anki_process_running() -> bool:
         try:
             if comm.exists():
                 name = comm.read_text(encoding="utf-8", errors="ignore").strip().lower()
-                if "anki" in name:
+                if name in desktop_names:
                     return True
 
             if cmdline.exists():
-                raw = cmdline.read_bytes()
-                text = raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").lower()
-                if "anki" in text:
+                raw = cmdline.read_bytes().split(b"\x00")
+                argv = [
+                    part.decode("utf-8", errors="ignore").strip().lower()
+                    for part in raw
+                    if part
+                ]
+                if not argv:
+                    continue
+
+                # Check executable token only (avoid matching args like `uv run anki`)
+                argv0_name = Path(argv[0]).name.lower()
+                if argv0_name in desktop_names:
                     return True
+
+                # Flatpak Anki process: `flatpak run net.ankiweb.Anki`
+                if argv0_name == "flatpak" and any(tok == flatpak_app_id for tok in argv[1:]):
+                    return True
+
         except OSError:
             continue
 
