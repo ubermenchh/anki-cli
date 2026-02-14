@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 type JSONPrimitive = str | int | float | bool | None
-type JSONValue = JSONPrimitive | dict[str, "JSONValue"] | list["JSONValue"]
+type JSONValue = JSONPrimitive | Mapping[str, "JSONValue"] | Sequence["JSONValue"]
 
 
 class Meta(BaseModel):

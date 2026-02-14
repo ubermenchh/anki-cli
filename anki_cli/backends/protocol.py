@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 type JSONPrimitive = str | int | float | bool | None
-type JSONValue = JSONPrimitive | dict[str, "JSONValue"] | list["JSONValue"]
+type JSONValue = JSONPrimitive | Mapping[str, "JSONValue"] | Sequence["JSONValue"]
 
 
 @runtime_checkable

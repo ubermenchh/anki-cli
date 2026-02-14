@@ -34,13 +34,14 @@ def version_cmd(ctx: click.Context) -> None:
 @click.pass_context
 def status_cmd(ctx: click.Context) -> None:
     obj: dict[str, Any] = ctx.obj or {}
+    col = obj.get("collection_path")
 
     formatter = formatter_from_ctx(ctx)
     formatter.emit_success(
         command="status",
         data={
             "backend": str(obj.get("backend", "unknown")),
-            "collection": str(obj.get("collection_path") or ""),
+            "collection": str(col) if col is not None else None,
             "message": "foundation in progress",
         },
     )

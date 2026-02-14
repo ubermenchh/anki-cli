@@ -5,7 +5,7 @@ import io
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import click
 from pydantic import BaseModel
@@ -174,7 +174,7 @@ class OutputFormatter:
 
     def _coerce_rows(self, data: JSONValue) -> tuple[list[dict[str, JSONValue]], list[str]]:
         if isinstance(data, dict):
-            row = {str(key): value for key, value in data.items()}
+            row = {str(key): cast(JSONValue, value) for key, value in data.items()}
             return [row], list(row.keys())
     
         if isinstance(data, list):
@@ -187,7 +187,7 @@ class OutputFormatter:
                 if not isinstance(item, dict):
                     rows = [{"value": value} for value in data]
                     return rows, ["value"]
-                dict_rows.append({str(k): v for k, v in item.items()})
+                dict_rows.append({str(k): cast(JSONValue, v) for k, v in item.items()})
     
             columns = self._ordered_union(dict_rows)
             return dict_rows, columns
