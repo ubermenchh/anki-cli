@@ -176,19 +176,22 @@ class OutputFormatter:
         if isinstance(data, dict):
             row = {str(key): value for key, value in data.items()}
             return [row], list(row.keys())
-
+    
         if isinstance(data, list):
             if not data:
                 return [], []
-
-            if all(isinstance(item, dict) for item in data):
-                rows = [{str(k): v for k, v in item.items()} for item in data]
-                columns = self._ordered_union(rows)
-                return rows, columns
-
-            rows = [{"value": item} for item in data]
-            return rows, ["value"]
-
+    
+            # Single pass: type-safe and avoids all()+second pass
+            dict_rows: list[dict[str, JSONValue]] = []
+            for item in data:
+                if not isinstance(item, dict):
+                    rows = [{"value": value} for value in data]
+                    return rows, ["value"]
+                dict_rows.append({str(k): v for k, v in item.items()})
+    
+            columns = self._ordered_union(dict_rows)
+            return dict_rows, columns
+    
         return [{"value": data}], ["value"]
 
     def _ordered_union(self, rows: list[dict[str, JSONValue]]) -> list[str]:
@@ -217,7 +220,7 @@ class OutputFormatter:
             return
 
         try:
-            import pyperclip  # type: ignore[import-not-found]
+            import pyperclip
         except ModuleNotFoundError:
             click.echo(
                 "warning: --copy requested but optional clipboard dependency is not installed",

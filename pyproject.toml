@@ -10,6 +10,7 @@ dependencies = [
   "fsrs",
   "httpx",
   "betterproto",
+  "pyperclip>=1.11.0",
 ]
 
 [project.optional-dependencies]
@@ -21,7 +22,7 @@ dev = [
   "pytest",
   "pytest-cov",
   "ruff",
-  "mypy",
+  "ty",
 ]
 
 [project.scripts]
@@ -41,11 +42,5 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "C4", "RUF"]
 
-[tool.mypy]
-python_version = "3.12"
-strict = true
-warn_unused_configs = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-show_error_codes = true
-pretty = true
+[tool.ty.environment]
+python-version = "3.14"
