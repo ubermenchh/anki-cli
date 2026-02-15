@@ -9,7 +9,7 @@ dependencies = [
   "pydantic",
   "fsrs",
   "httpx",
-  "betterproto",
+  "betterproto[compiler]>=2.0.0b7",
   "pyperclip>=1.11.0",
 ]
 
@@ -19,6 +19,9 @@ clipboard = ["pyperclip"]
 
 [dependency-groups]
 dev = [
+  "black>=26.1.0",
+  "grpcio-tools>=1.78.0",
+  "jinja2>=3.1.6",
   "pytest",
   "pytest-cov",
   "ruff",

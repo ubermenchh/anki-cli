@@ -6,8 +6,18 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
+
+import betterproto
 
 from anki_cli.backends.protocol import JSONValue
+from anki_cli.proto.anki.deck_config import DeckConfigConfig
+from anki_cli.proto.anki.decks import DeckCommon, DeckKindContainer
+from anki_cli.proto.anki.notetypes import (
+    NotetypeConfig,
+    NotetypeFieldConfig,
+    NotetypeTemplateConfig,
+)
 
 
 class AnkiDirectReadStore:
@@ -19,10 +29,17 @@ class AnkiDirectReadStore:
             raise FileNotFoundError(f"Direct DB not found: {resolved}")
         self.db_path = resolved
 
+    @staticmethod
+    def _unicase_collation(left: str | None, right: str | None) -> int:
+        lval = (left or "").casefold()
+        rval = (right or "").casefold()
+        return (lval > rval) - (lval < rval)
+
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(str(self.db_path), timeout=1.0)
         conn.row_factory = sqlite3.Row
+        conn.create_collation("unicase", self._unicase_collation)
         conn.execute("PRAGMA query_only = ON")
         try:
             yield conn
@@ -34,47 +51,132 @@ class AnkiDirectReadStore:
     def get_decks(self) -> list[dict[str, JSONValue]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, name FROM decks ORDER BY LOWER(name), id"
+                """
+                SELECT id, name, common, kind
+                FROM decks
+                ORDER BY LOWER(name), id
+                """
             ).fetchall()
+            deck_config_map = self._read_deck_config_map(conn)
 
-        return [{"id": int(row["id"]), "name": str(row["name"])} for row in rows]
+        output: list[dict[str, JSONValue]] = []
+        for row in rows:
+            did = int(row["id"])
+            name = str(row["name"])
+            common = self._decode_deck_common(bytes(row["common"] or b""), did=did)
+            kind = self._decode_deck_kind(bytes(row["kind"] or b""), did=did)
+
+            kind_name, kind_msg = betterproto.which_one_of(kind, "kind")
+            item: dict[str, JSONValue] = {
+                "id": did,
+                "name": name,
+                "kind": kind_name or "unknown",
+                "stats": {
+                    "new_studied": int(common.new_studied),
+                    "review_studied": int(common.review_studied),
+                    "learning_studied": int(common.learning_studied),
+                },
+            }
+
+            if kind_name == "normal" and kind_msg is not None:
+                config_id = int(kind_msg.config_id)
+                item["config_id"] = config_id
+                item["description"] = str(kind_msg.description or "")
+                item["new_limit"] = (
+                    int(kind_msg.new_limit) if kind_msg.new_limit is not None else None
+                )
+                item["review_limit"] = (
+                    int(kind_msg.review_limit) if kind_msg.review_limit is not None else None
+                )
+                if config_id in deck_config_map:
+                    item["config"] = deck_config_map[config_id]
+
+            elif kind_name == "filtered" and kind_msg is not None:
+                item["search_terms"] = [term.search for term in kind_msg.search_terms]
+                item["reschedule"] = bool(kind_msg.reschedule)
+
+            output.append(item)
+
+        return output
 
     def get_notetypes(self) -> list[dict[str, JSONValue]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, name FROM notetypes ORDER BY LOWER(name), id"
+                """
+                SELECT id, name
+                FROM notetypes
+                ORDER BY LOWER(name), id
+                """
             ).fetchall()
+            fields_by_ntid, templates_by_ntid = self._load_notetype_parts(conn)
 
-        return [
-            {
-                "id": int(row["id"]),
-                "name": str(row["name"]),
-                # Full field/template decoding requires protobuf stage.
-                "field_count": 0,
-                "template_count": 0,
-                "fields": [],
-                "templates": [],
-            }
-            for row in rows
-        ]
+        result: list[dict[str, JSONValue]] = []
+        for row in rows:
+            ntid = int(row["id"])
+            fields = fields_by_ntid.get(ntid, [])
+            templates = templates_by_ntid.get(ntid, [])
+
+            result.append(
+                {
+                    "id": ntid,
+                    "name": str(row["name"]),
+                    "field_count": len(fields),
+                    "template_count": len(templates),
+                    "fields": [str(item["name"]) for item in fields],
+                    "templates": [str(item["name"]) for item in templates],
+                }
+            )
+        return result
 
     def get_notetype(self, name: str) -> dict[str, JSONValue]:
         normalized = name.strip()
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT id, name, LENGTH(config) AS config_len FROM notetypes WHERE name = ?",
+                """
+                SELECT id, name, config
+                FROM notetypes
+                WHERE name = ?
+                """,
                 (normalized,),
             ).fetchone()
 
-        if row is None:
-            raise LookupError(f"Notetype not found: {normalized}")
+            if row is None:
+                raise LookupError(f"Notetype not found: {normalized}")
+
+            ntid = int(row["id"])
+            fields_by_ntid, templates_by_ntid = self._load_notetype_parts(conn)
+
+        config = self._decode_notetype_config(bytes(row["config"] or b""), ntid=ntid)
+        fields = fields_by_ntid.get(ntid, [])
+        templates = templates_by_ntid.get(ntid, [])
+
+        templates_map: dict[str, JSONValue] = {
+            str(item["name"]): {
+                "Front": str(item["qfmt"]),
+                "Back": str(item["afmt"]),
+                "ord": int(item["ord"]),
+            }
+            for item in templates
+        }
+
+        kind = "cloze" if int(config.kind) == 1 else "normal"
 
         return {
-            "id": int(row["id"]),
+            "id": ntid,
             "name": str(row["name"]),
-            "fields": [],
-            "templates": {},
-            "config_blob_bytes": int(row["config_len"] or 0),
+            "kind": kind,
+            "sort_field_idx": int(config.sort_field_idx),
+            "fields": [str(item["name"]) for item in fields],
+            "templates": templates_map,
+            "styling": {"css": config.css},
+            "requirements": [
+                {
+                    "card_ord": int(req.card_ord),
+                    "kind": int(req.kind),
+                    "field_ords": [int(x) for x in req.field_ords],
+                }
+                for req in config.reqs
+            ],
         }
 
     # ---- notes ------------------------------------------------------------
@@ -377,3 +479,153 @@ class AnkiDirectReadStore:
         if not stripped:
             return []
         return [part for part in stripped.split(" ") if part]
+
+    def _decode_message(self, message: Any, blob: bytes, *, context: str) -> Any:
+        try:
+            return message.parse(blob)
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to decode protobuf for {context} ({len(blob)} bytes)."
+            ) from exc
+    
+    
+    def _decode_notetype_config(self, blob: bytes, *, ntid: int) -> NotetypeConfig:
+        return self._decode_message(
+            NotetypeConfig(),
+            blob,
+            context=f"notetypes.config ntid={ntid}",
+        )
+    
+    
+    def _decode_field_config(self, blob: bytes, *, ntid: int, ord_: int) -> NotetypeFieldConfig:
+        return self._decode_message(
+            NotetypeFieldConfig(),
+            blob,
+            context=f"fields.config ntid={ntid} ord={ord_}",
+        )
+    
+    
+    def _decode_template_config(
+        self, blob: bytes, *, ntid: int, ord_: int
+    ) -> NotetypeTemplateConfig:
+        return self._decode_message(
+            NotetypeTemplateConfig(),
+            blob,
+            context=f"templates.config ntid={ntid} ord={ord_}",
+        )
+    
+    
+    def _decode_deck_common(self, blob: bytes, *, did: int) -> DeckCommon:
+        return self._decode_message(
+            DeckCommon(),
+            blob,
+            context=f"decks.common did={did}",
+        )
+    
+    
+    def _decode_deck_kind(self, blob: bytes, *, did: int) -> DeckKindContainer:
+        return self._decode_message(
+            DeckKindContainer(),
+            blob,
+            context=f"decks.kind did={did}",
+        )
+    
+    
+    def _decode_deck_config(self, blob: bytes, *, dcid: int) -> DeckConfigConfig:
+        return self._decode_message(
+            DeckConfigConfig(),
+            blob,
+            context=f"deck_config.config id={dcid}",
+        )
+    
+    
+    def _load_notetype_parts(
+        self,
+        conn: sqlite3.Connection,
+    ) -> tuple[
+        dict[int, list[dict[str, JSONValue]]],
+        dict[int, list[dict[str, JSONValue]]],
+    ]:
+        fields_by_ntid: dict[int, list[dict[str, JSONValue]]] = {}
+        templates_by_ntid: dict[int, list[dict[str, JSONValue]]] = {}
+    
+        field_rows = conn.execute(
+            """
+            SELECT ntid, ord, name, config
+            FROM fields
+            ORDER BY ntid, ord
+            """
+        ).fetchall()
+    
+        for row in field_rows:
+            ntid = int(row["ntid"])
+            ord_ = int(row["ord"])
+            name = str(row["name"])
+            cfg_blob = bytes(row["config"] or b"")
+            cfg = self._decode_field_config(cfg_blob, ntid=ntid, ord_=ord_)
+    
+            fields_by_ntid.setdefault(ntid, []).append(
+                {
+                    "ord": ord_,
+                    "name": name,
+                    "font": cfg.font_name,
+                    "size": int(cfg.font_size),
+                    "rtl": bool(cfg.rtl),
+                    "sticky": bool(cfg.sticky),
+                    "plain_text": bool(cfg.plain_text),
+                }
+            )
+    
+        template_rows = conn.execute(
+            """
+            SELECT ntid, ord, name, config
+            FROM templates
+            ORDER BY ntid, ord
+            """
+        ).fetchall()
+    
+        for row in template_rows:
+            ntid = int(row["ntid"])
+            ord_ = int(row["ord"])
+            name = str(row["name"])
+            cfg_blob = bytes(row["config"] or b"")
+            cfg = self._decode_template_config(cfg_blob, ntid=ntid, ord_=ord_)
+    
+            templates_by_ntid.setdefault(ntid, []).append(
+                {
+                    "ord": ord_,
+                    "name": name,
+                    "qfmt": cfg.q_format,
+                    "afmt": cfg.a_format,
+                    "qfmt_browser": cfg.q_format_browser,
+                    "afmt_browser": cfg.a_format_browser,
+                }
+            )
+    
+        return fields_by_ntid, templates_by_ntid
+    
+    
+    def _read_deck_config_map(
+        self,
+        conn: sqlite3.Connection,
+    ) -> dict[int, dict[str, JSONValue]]:
+        rows = conn.execute(
+            """
+            SELECT id, name, config
+            FROM deck_config
+            ORDER BY id
+            """
+        ).fetchall()
+    
+        out: dict[int, dict[str, JSONValue]] = {}
+        for row in rows:
+            dcid = int(row["id"])
+            cfg = self._decode_deck_config(bytes(row["config"] or b""), dcid=dcid)
+            out[dcid] = {
+                "id": dcid,
+                "name": str(row["name"]),
+                "new_per_day": int(cfg.new_per_day),
+                "reviews_per_day": int(cfg.reviews_per_day),
+                "desired_retention": float(cfg.desired_retention),
+            }
+        return out

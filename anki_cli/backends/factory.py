@@ -46,7 +46,7 @@ def create_backend_from_context(obj: dict[str, Any]) -> AnkiBackend:
         except FileNotFoundError as exc:
             raise BackendFactoryError(str(exc)) from exc
 
-    if backend_name in "standalone":
+    if backend_name == "standalone":
         raise BackendNotImplementedError(
             f"Backend '{backend_name}' is detected but not implemented yet."
         )

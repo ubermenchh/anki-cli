@@ -1,5 +1,6 @@
 TODO.md
 PLAN.md
+.tmp-proto/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

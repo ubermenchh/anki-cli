@@ -110,7 +110,7 @@ def note_cmd(ctx: click.Context, note_id: int) -> None:
             note = backend.get_note(note_id)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="note", obj=obj, error=exc)
-    except AnkiConnectAPIError as exc:
+    except (AnkiConnectAPIError, LookupError) as exc:
         formatter.emit_error(
             command="note",
             code="ENTITY_NOT_FOUND",
@@ -167,7 +167,7 @@ def note_add_cmd(
             )
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="note:add", obj=obj, error=exc)
-    except AnkiConnectAPIError as exc:
+    except (AnkiConnectAPIError, LookupError) as exc:
         formatter.emit_error(
             command="note:add",
             code="BACKEND_OPERATION_FAILED",

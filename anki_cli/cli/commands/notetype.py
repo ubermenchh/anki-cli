@@ -77,7 +77,7 @@ def notetype_cmd(ctx: click.Context, notetype_name: str) -> None:
             item = backend.get_notetype(normalized_name)
     except (BackendNotImplementedError, BackendFactoryError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="notetype", obj=obj, error=exc)
-    except AnkiConnectAPIError as exc:
+    except (AnkiConnectAPIError, LookupError) as exc:
         formatter.emit_error(
             command="notetype",
             code="ENTITY_NOT_FOUND",

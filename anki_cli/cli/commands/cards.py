@@ -62,7 +62,7 @@ def card_cmd(ctx: click.Context, card_id: int) -> None:
             card = backend.get_card(card_id)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="card", obj=obj, error=exc)
-    except AnkiConnectAPIError as exc:
+    except (AnkiConnectAPIError, LookupError) as exc:
         formatter.emit_error(
             command="card",
             code="ENTITY_NOT_FOUND",
