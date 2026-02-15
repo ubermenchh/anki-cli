@@ -27,11 +27,69 @@ class DirectBackend(AnkiBackend):
     def get_decks(self) -> list[dict[str, JSONValue]]:
         return self._store.get_decks()
 
+    def get_deck(self, name: str) -> dict[str, JSONValue]:
+        return self._store.get_deck(name)
+
     def get_notetypes(self) -> list[dict[str, JSONValue]]:
         return self._store.get_notetypes()
 
     def get_notetype(self, name: str) -> dict[str, JSONValue]:
         return self._store.get_notetype(name)
+
+    def create_notetype(
+        self,
+        name: str,
+        fields: list[str],
+        templates: list[dict[str, str]],
+        *,
+        css: str = "",
+        kind: str = "normal",
+    ) -> dict[str, JSONValue]:
+        return self._store.create_notetype(
+            name=name,
+            fields=fields,
+            templates=templates,
+            css=css,
+            kind=kind,
+        )
+
+    def add_notetype_field(self, name: str, field_name: str) -> dict[str, JSONValue]:
+        return self._store.add_notetype_field(name=name, field_name=field_name)
+
+    def remove_notetype_field(self, name: str, field_name: str) -> dict[str, JSONValue]:
+        return self._store.remove_notetype_field(name=name, field_name=field_name)
+
+    def add_notetype_template(
+        self,
+        name: str,
+        template_name: str,
+        front: str,
+        back: str,
+    ) -> dict[str, JSONValue]:
+        return self._store.add_notetype_template(
+            name=name,
+            template_name=template_name,
+            front=front,
+            back=back,
+        )
+
+    def edit_notetype_template(
+        self,
+        name: str,
+        template_name: str,
+        *,
+        front: str | None = None,
+        back: str | None = None,
+    ) -> dict[str, JSONValue]:
+        return self._store.edit_notetype_template(
+            name=name,
+            template_name=template_name,
+            front=front,
+            back=back,
+        )
+
+    def set_notetype_css(self, name: str, css: str) -> dict[str, JSONValue]:
+        return self._store.set_notetype_css(name=name, css=css)
 
     # ---- notes ----
 
@@ -65,8 +123,21 @@ class DirectBackend(AnkiBackend):
     def create_deck(self, name: str) -> dict[str, JSONValue]:
         return self._store.create_deck(name)
 
+    def rename_deck(self, old_name: str, new_name: str) -> dict[str, JSONValue]:
+        return self._store.rename_deck(old_name=old_name, new_name=new_name)
+
     def delete_deck(self, name: str) -> dict[str, JSONValue]:
         return self._store.delete_deck(name)
+
+    def get_deck_config(self, name: str) -> dict[str, JSONValue]:
+        return self._store.get_deck_config(name)
+
+    def set_deck_config(
+        self,
+        name: str,
+        updates: dict[str, JSONValue],
+    ) -> dict[str, JSONValue]:
+        return self._store.set_deck_config(name=name, updates=updates)
 
     def add_note(
         self,

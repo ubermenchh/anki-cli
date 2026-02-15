@@ -142,13 +142,102 @@ class AnkiConnectBackend(AnkiBackend):
             )
         return decks
 
+    def get_deck(self, name: str) -> dict[str, JSONValue]:
+        normalized = name.strip()
+        decks = self.get_decks()
+        match = next((item for item in decks if str(item.get("name", "")) == normalized), None)
+        if match is None:
+            raise LookupError(f"Deck not found: {normalized}")
+
+        return {
+            "id": int(match["id"]),
+            "name": normalized,
+            "due_counts": self.get_due_counts(deck=normalized),
+        }
+
     def create_deck(self, name: str) -> dict[str, JSONValue]:
         self._invoke("createDeck", deck=name)
         return {"deck": name, "created": True}
 
+    def rename_deck(self, old_name: str, new_name: str) -> dict[str, JSONValue]:
+        source = old_name.strip()
+        target = new_name.strip()
+        if not source or not target:
+            raise ValueError("Deck names cannot be empty.")
+
+        for params in (
+            {"old": source, "new": target},
+            {"deck": source, "newName": target},
+            {"deck": source, "name": target},
+        ):
+            try:
+                self._invoke("renameDeck", **params)
+                return {"from": source, "to": target, "renamed_decks": 1}
+            except AnkiConnectAPIError:
+                continue
+
+        decks = [str(item["name"]) for item in self.get_decks()]
+        targets = sorted(
+            [name for name in decks if name == source or name.startswith(f"{source}::")],
+            key=lambda value: value.count("::"),
+        )
+        if not targets:
+            raise LookupError(f"Deck not found: {source}")
+
+        rename_map: dict[str, str] = {}
+        for deck_name in targets:
+            suffix = deck_name[len(source) :]
+            rename_map[deck_name] = f"{target}{suffix}"
+
+        for next_name in rename_map.values():
+            self._invoke("createDeck", deck=next_name)
+
+        moved_cards = 0
+        for from_name, to_name in rename_map.items():
+            card_ids = self.find_cards(f'deck:"{from_name}"')
+            if card_ids:
+                self._invoke("changeDeck", cards=card_ids, deck=to_name)
+                moved_cards += len(card_ids)
+
+        for old_deck in sorted(
+            rename_map.keys(),
+            key=lambda value: value.count("::"),
+            reverse=True,
+        ):
+            self._invoke("deleteDecks", decks=[old_deck], cardsToo=False)
+
+        return {
+            "from": source,
+            "to": target,
+            "renamed_decks": len(rename_map),
+            "moved_cards": moved_cards,
+        }
+
     def delete_deck(self, name: str) -> dict[str, JSONValue]:
         self._invoke("deleteDecks", decks=[name], cardsToo=True)
         return {"deck": name, "deleted": True, "cards_deleted": True}
+
+    def get_deck_config(self, name: str) -> dict[str, JSONValue]:
+        normalized = name.strip()
+        result = self._invoke("getDeckConfig", deck=normalized)
+        config = self._as_json_object(result, "getDeckConfig")
+        return {"deck": normalized, "config": config}
+
+    def set_deck_config(
+        self,
+        name: str,
+        updates: dict[str, JSONValue],
+    ) -> dict[str, JSONValue]:
+        normalized = name.strip()
+        if not updates:
+            return {"deck": normalized, "updated": False, "config": {}}
+
+        raw_config = self._invoke("getDeckConfig", deck=normalized)
+        config = self._as_json_object(raw_config, "getDeckConfig")
+        for key, value in updates.items():
+            config[key] = value
+        self._invoke("saveDeckConfig", config=config)
+        return {"deck": normalized, "updated": True, "config": config}
 
     # Notetypes
     def get_notetypes(self) -> list[dict[str, JSONValue]]:
@@ -201,6 +290,134 @@ class AnkiConnectBackend(AnkiBackend):
             result["styling"] = {}
 
         return result
+
+    def create_notetype(
+        self,
+        name: str,
+        fields: list[str],
+        templates: list[dict[str, str]],
+        *,
+        css: str = "",
+        kind: str = "normal",
+    ) -> dict[str, JSONValue]:
+        model_name = name.strip()
+        cleaned_fields = [field.strip() for field in fields if field.strip()]
+        if not model_name or not cleaned_fields:
+            raise ValueError("Notetype name and at least one field are required.")
+        if not templates:
+            raise ValueError("At least one template is required.")
+
+        template_payload: list[dict[str, str]] = []
+        for template in templates:
+            tname = str(template.get("name", "")).strip()
+            if not tname:
+                raise ValueError("Template name cannot be empty.")
+            template_payload.append(
+                {
+                    "Name": tname,
+                    "Front": str(template.get("front", "")),
+                    "Back": str(template.get("back", "")),
+                }
+            )
+
+        self._invoke(
+            "createModel",
+            modelName=model_name,
+            inOrderFields=cleaned_fields,
+            css=css,
+            isCloze=(kind.strip().lower() == "cloze"),
+            cardTemplates=template_payload,
+        )
+        return {
+            "name": model_name,
+            "created": True,
+            "field_count": len(cleaned_fields),
+            "template_count": len(template_payload),
+            "kind": kind.strip().lower(),
+        }
+
+    def add_notetype_field(self, name: str, field_name: str) -> dict[str, JSONValue]:
+        model_name = name.strip()
+        normalized = field_name.strip()
+        if not model_name or not normalized:
+            raise ValueError("Notetype and field name are required.")
+        self._invoke("modelFieldAdd", modelName=model_name, fieldName=normalized)
+        return {"name": model_name, "field": normalized, "added": True}
+
+    def remove_notetype_field(self, name: str, field_name: str) -> dict[str, JSONValue]:
+        model_name = name.strip()
+        normalized = field_name.strip()
+        if not model_name or not normalized:
+            raise ValueError("Notetype and field name are required.")
+        self._invoke("modelFieldRemove", modelName=model_name, fieldName=normalized)
+        return {"name": model_name, "field": normalized, "removed": True}
+
+    def add_notetype_template(
+        self,
+        name: str,
+        template_name: str,
+        front: str,
+        back: str,
+    ) -> dict[str, JSONValue]:
+        model_name = name.strip()
+        normalized = template_name.strip()
+        if not model_name or not normalized:
+            raise ValueError("Notetype and template name are required.")
+        self._invoke(
+            "modelTemplateAdd",
+            modelName=model_name,
+            template={"Name": normalized, "Front": front, "Back": back},
+        )
+        return {"name": model_name, "template": normalized, "added": True}
+
+    def edit_notetype_template(
+        self,
+        name: str,
+        template_name: str,
+        *,
+        front: str | None = None,
+        back: str | None = None,
+    ) -> dict[str, JSONValue]:
+        model_name = name.strip()
+        normalized = template_name.strip()
+        if not model_name or not normalized:
+            raise ValueError("Notetype and template name are required.")
+        if front is None and back is None:
+            raise ValueError("Provide at least one of front/back.")
+
+        raw_templates = self._invoke("modelTemplates", modelName=model_name)
+        templates = self._as_json_object(raw_templates, "modelTemplates")
+        existing = templates.get(normalized)
+        if not isinstance(existing, Mapping):
+            raise LookupError(f"Template not found: {normalized}")
+
+        current_front = str(existing.get("Front", ""))
+        current_back = str(existing.get("Back", ""))
+        updates = {
+            normalized: {
+                "Front": front if front is not None else current_front,
+                "Back": back if back is not None else current_back,
+            }
+        }
+        try:
+            self._invoke("updateModelTemplates", model=model_name, templates=updates)
+        except AnkiConnectAPIError:
+            self._invoke(
+                "updateModelTemplates",
+                model={"name": model_name, "templates": updates},
+            )
+        return {"name": model_name, "template": normalized, "updated": True}
+
+    def set_notetype_css(self, name: str, css: str) -> dict[str, JSONValue]:
+        model_name = name.strip()
+        try:
+            self._invoke("updateModelStyling", model=model_name, css=css)
+        except AnkiConnectAPIError:
+            self._invoke(
+                "updateModelStyling",
+                model={"name": model_name, "css": css},
+            )
+        return {"name": model_name, "updated": True, "css": css}
 
     # Notes
     def add_note(

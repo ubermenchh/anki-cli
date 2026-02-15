@@ -4,7 +4,7 @@ import json
 import shlex
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from hashlib import sha1
@@ -23,6 +23,9 @@ from anki_cli.proto.anki.deck_config import DeckConfigConfig
 from anki_cli.proto.anki.decks import DeckCommon, DeckKindContainer
 from anki_cli.proto.anki.notetypes import (
     NotetypeConfig,
+    NotetypeConfigCardRequirement,
+    NotetypeConfigCardRequirementKind,
+    NotetypeConfigKind,
     NotetypeFieldConfig,
     NotetypeTemplateConfig,
 )
@@ -126,6 +129,59 @@ class AnkiDirectReadStore:
 
         return output
 
+    def get_deck(self, name: str) -> dict[str, JSONValue]:
+        normalized = name.strip()
+        if not normalized:
+            raise ValueError("Deck name cannot be empty.")
+
+        deck = next(
+            (item for item in self.get_decks() if str(item.get("name", "")) == normalized),
+            None,
+        )
+        if deck is None:
+            raise LookupError(f"Deck not found: {normalized}")
+
+        return {
+            **deck,
+            "due_counts": self.get_due_counts(deck=normalized),
+            "next_due": self._get_next_due_for_deck(normalized),
+        }
+
+    def get_deck_config(self, name: str) -> dict[str, JSONValue]:
+        normalized = name.strip()
+        if not normalized:
+            raise ValueError("Deck name cannot be empty.")
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, kind FROM decks WHERE name = ?",
+                (normalized,),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"Deck not found: {normalized}")
+
+            did = int(row["id"])
+            deck_kind = self._decode_deck_kind(bytes(row["kind"] or b""), did=did)
+            kind_name, kind_msg = betterproto.which_one_of(deck_kind, "kind")
+            if kind_name != "normal" or kind_msg is None:
+                raise ValueError(f"Deck '{normalized}' is not a normal deck.")
+
+            config_id = int(kind_msg.config_id)
+            cfg_row = conn.execute(
+                "SELECT id, name, config FROM deck_config WHERE id = ?",
+                (config_id,),
+            ).fetchone()
+            if cfg_row is None:
+                raise LookupError(f"Deck config not found: {config_id}")
+
+        cfg = self._decode_deck_config(bytes(cfg_row["config"] or b""), dcid=config_id)
+        return {
+            "deck": normalized,
+            "config_id": config_id,
+            "config_name": str(cfg_row["name"]),
+            "config": self._deck_config_to_dict(cfg),
+        }
+
     def get_notetypes(self) -> list[dict[str, JSONValue]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -205,6 +261,327 @@ class AnkiDirectReadStore:
                 for req in config.reqs
             ],
         }
+
+    def create_notetype(
+        self,
+        *,
+        name: str,
+        fields: list[str],
+        templates: list[dict[str, str]],
+        css: str = "",
+        kind: str = "normal",
+    ) -> dict[str, JSONValue]:
+        normalized = name.strip()
+        if not normalized:
+            raise ValueError("Notetype name cannot be empty.")
+        field_names = [field.strip() for field in fields if field.strip()]
+        if not field_names:
+            raise ValueError("At least one field is required.")
+
+        cleaned_templates: list[dict[str, str]] = []
+        for item in templates:
+            tname = str(item.get("name", "")).strip()
+            if not tname:
+                raise ValueError("Template name cannot be empty.")
+            cleaned_templates.append(
+                {
+                    "name": tname,
+                    "front": str(item.get("front", "")),
+                    "back": str(item.get("back", "")),
+                }
+            )
+        if not cleaned_templates:
+            raise ValueError("At least one template is required.")
+
+        normalized_kind = kind.strip().lower()
+        if normalized_kind not in {"normal", "cloze"}:
+            raise ValueError("kind must be 'normal' or 'cloze'.")
+
+        with self._connect_write() as conn:
+            existing = conn.execute(
+                "SELECT id FROM notetypes WHERE name = ?",
+                (normalized,),
+            ).fetchone()
+            if existing is not None:
+                raise ValueError(f"Notetype already exists: {normalized}")
+
+            ntid = self._allocate_row_id(conn, "notetypes")
+            now_sec = int(time.time())
+            req_kind = (
+                NotetypeConfigCardRequirementKind.KIND_ALL
+                if normalized_kind == "normal"
+                else NotetypeConfigCardRequirementKind.KIND_NONE
+            )
+            reqs = [
+                NotetypeConfigCardRequirement(
+                    card_ord=ord_,
+                    kind=req_kind,
+                    field_ords=list(range(len(field_names))),
+                )
+                for ord_, _ in enumerate(cleaned_templates)
+            ]
+            config = NotetypeConfig(
+                kind=(
+                    NotetypeConfigKind.KIND_CLOZE
+                    if normalized_kind == "cloze"
+                    else NotetypeConfigKind.KIND_NORMAL
+                ),
+                sort_field_idx=0,
+                css=css,
+                reqs=reqs,
+            )
+            conn.execute(
+                """
+                INSERT INTO notetypes (id, name, mtime_secs, usn, config)
+                VALUES (?, ?, ?, -1, ?)
+                """,
+                (ntid, normalized, now_sec, bytes(config)),
+            )
+
+            for ord_, field_name in enumerate(field_names):
+                conn.execute(
+                    """
+                    INSERT INTO fields (ntid, ord, name, config)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (ntid, ord_, field_name, bytes(NotetypeFieldConfig())),
+                )
+
+            for ord_, template in enumerate(cleaned_templates):
+                conn.execute(
+                    """
+                    INSERT INTO templates (ntid, ord, name, mtime_secs, usn, config)
+                    VALUES (?, ?, ?, ?, -1, ?)
+                    """,
+                    (
+                        ntid,
+                        ord_,
+                        template["name"],
+                        now_sec,
+                        bytes(
+                            NotetypeTemplateConfig(
+                                q_format=template["front"],
+                                a_format=template["back"],
+                            )
+                        ),
+                    ),
+                )
+
+        return {
+            "id": ntid,
+            "name": normalized,
+            "kind": normalized_kind,
+            "field_count": len(field_names),
+            "template_count": len(cleaned_templates),
+            "created": True,
+        }
+
+    def add_notetype_field(self, *, name: str, field_name: str) -> dict[str, JSONValue]:
+        normalized_name = name.strip()
+        normalized_field = field_name.strip()
+        if not normalized_name or not normalized_field:
+            raise ValueError("Notetype and field name are required.")
+
+        with self._connect_write() as conn:
+            row = conn.execute(
+                "SELECT id FROM notetypes WHERE name = ?",
+                (normalized_name,),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"Notetype not found: {normalized_name}")
+            ntid = int(row["id"])
+
+            existing = conn.execute(
+                "SELECT 1 FROM fields WHERE ntid = ? AND name = ?",
+                (ntid, normalized_field),
+            ).fetchone()
+            if existing is not None:
+                return {"name": normalized_name, "field": normalized_field, "added": False}
+
+            max_ord_row = conn.execute(
+                "SELECT COALESCE(MAX(ord), -1) AS max_ord FROM fields WHERE ntid = ?",
+                (ntid,),
+            ).fetchone()
+            next_ord = int(max_ord_row["max_ord"]) + 1
+            conn.execute(
+                """
+                INSERT INTO fields (ntid, ord, name, config)
+                VALUES (?, ?, ?, ?)
+                """,
+                (ntid, next_ord, normalized_field, bytes(NotetypeFieldConfig())),
+            )
+
+        return {"name": normalized_name, "field": normalized_field, "added": True}
+
+    def remove_notetype_field(self, *, name: str, field_name: str) -> dict[str, JSONValue]:
+        normalized_name = name.strip()
+        normalized_field = field_name.strip()
+        if not normalized_name or not normalized_field:
+            raise ValueError("Notetype and field name are required.")
+
+        with self._connect_write() as conn:
+            row = conn.execute(
+                "SELECT id, config FROM notetypes WHERE name = ?",
+                (normalized_name,),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"Notetype not found: {normalized_name}")
+
+            ntid = int(row["id"])
+            fields = conn.execute(
+                "SELECT ord, name FROM fields WHERE ntid = ? ORDER BY ord",
+                (ntid,),
+            ).fetchall()
+            if len(fields) <= 1:
+                raise ValueError("Cannot remove the last remaining field.")
+
+            target_row = next(
+                (item for item in fields if str(item["name"]) == normalized_field),
+                None,
+            )
+            if target_row is None:
+                raise LookupError(f"Field not found: {normalized_field}")
+            removed_ord = int(target_row["ord"])
+
+            conn.execute(
+                "DELETE FROM fields WHERE ntid = ? AND ord = ?",
+                (ntid, removed_ord),
+            )
+            conn.execute(
+                "UPDATE fields SET ord = ord - 1 WHERE ntid = ? AND ord > ?",
+                (ntid, removed_ord),
+            )
+
+            config = self._decode_notetype_config(bytes(row["config"] or b""), ntid=ntid)
+            if int(config.sort_field_idx) >= len(fields) - 1:
+                config.sort_field_idx = max(0, len(fields) - 2)
+                conn.execute(
+                    "UPDATE notetypes SET mtime_secs = ?, usn = -1, config = ? WHERE id = ?",
+                    (int(time.time()), bytes(config), ntid),
+                )
+
+        return {"name": normalized_name, "field": normalized_field, "removed": True}
+
+    def add_notetype_template(
+        self,
+        *,
+        name: str,
+        template_name: str,
+        front: str,
+        back: str,
+    ) -> dict[str, JSONValue]:
+        normalized_name = name.strip()
+        normalized_template = template_name.strip()
+        if not normalized_name or not normalized_template:
+            raise ValueError("Notetype and template name are required.")
+
+        with self._connect_write() as conn:
+            row = conn.execute(
+                "SELECT id FROM notetypes WHERE name = ?",
+                (normalized_name,),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"Notetype not found: {normalized_name}")
+            ntid = int(row["id"])
+
+            existing = conn.execute(
+                "SELECT 1 FROM templates WHERE ntid = ? AND name = ?",
+                (ntid, normalized_template),
+            ).fetchone()
+            if existing is not None:
+                return {"name": normalized_name, "template": normalized_template, "added": False}
+
+            max_ord_row = conn.execute(
+                "SELECT COALESCE(MAX(ord), -1) AS max_ord FROM templates WHERE ntid = ?",
+                (ntid,),
+            ).fetchone()
+            next_ord = int(max_ord_row["max_ord"]) + 1
+            now_sec = int(time.time())
+            conn.execute(
+                """
+                INSERT INTO templates (ntid, ord, name, mtime_secs, usn, config)
+                VALUES (?, ?, ?, ?, -1, ?)
+                """,
+                (
+                    ntid,
+                    next_ord,
+                    normalized_template,
+                    now_sec,
+                    bytes(NotetypeTemplateConfig(q_format=front, a_format=back)),
+                ),
+            )
+
+        return {"name": normalized_name, "template": normalized_template, "added": True}
+
+    def edit_notetype_template(
+        self,
+        *,
+        name: str,
+        template_name: str,
+        front: str | None = None,
+        back: str | None = None,
+    ) -> dict[str, JSONValue]:
+        normalized_name = name.strip()
+        normalized_template = template_name.strip()
+        if not normalized_name or not normalized_template:
+            raise ValueError("Notetype and template name are required.")
+        if front is None and back is None:
+            raise ValueError("Provide at least one of front/back.")
+
+        with self._connect_write() as conn:
+            row = conn.execute(
+                """
+                SELECT t.ntid AS ntid, t.ord AS ord, t.config AS config
+                FROM templates AS t
+                JOIN notetypes AS n ON n.id = t.ntid
+                WHERE n.name = ? AND t.name = ?
+                """,
+                (normalized_name, normalized_template),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"Template not found: {normalized_template}")
+
+            ntid = int(row["ntid"])
+            ord_ = int(row["ord"])
+            cfg = self._decode_template_config(bytes(row["config"] or b""), ntid=ntid, ord_=ord_)
+            if front is not None:
+                cfg.q_format = front
+            if back is not None:
+                cfg.a_format = back
+
+            conn.execute(
+                """
+                UPDATE templates
+                SET mtime_secs = ?, usn = -1, config = ?
+                WHERE ntid = ? AND ord = ?
+                """,
+                (int(time.time()), bytes(cfg), ntid, ord_),
+            )
+
+        return {"name": normalized_name, "template": normalized_template, "updated": True}
+
+    def set_notetype_css(self, *, name: str, css: str) -> dict[str, JSONValue]:
+        normalized = name.strip()
+        if not normalized:
+            raise ValueError("Notetype name cannot be empty.")
+
+        with self._connect_write() as conn:
+            row = conn.execute(
+                "SELECT id, config FROM notetypes WHERE name = ?",
+                (normalized,),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"Notetype not found: {normalized}")
+
+            ntid = int(row["id"])
+            cfg = self._decode_notetype_config(bytes(row["config"] or b""), ntid=ntid)
+            cfg.css = css
+            conn.execute(
+                "UPDATE notetypes SET mtime_secs = ?, usn = -1, config = ? WHERE id = ?",
+                (int(time.time()), bytes(cfg), ntid),
+            )
+
+        return {"name": normalized, "updated": True, "css": css}
 
     # ---- notes ------------------------------------------------------------
 
@@ -376,6 +753,78 @@ class AnkiDirectReadStore:
 
     def create_deck(self, name: str) -> dict[str, JSONValue]:
         return self.write_deck(name=name)
+
+    def rename_deck(self, *, old_name: str, new_name: str) -> dict[str, JSONValue]:
+        source = old_name.strip()
+        target = new_name.strip()
+        if not source or not target:
+            raise ValueError("Deck names cannot be empty.")
+        if source == target:
+            return {
+                "from": source,
+                "to": target,
+                "renamed_decks": 0,
+                "unchanged": True,
+                "items": [],
+            }
+
+        with self._connect_write() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, name
+                FROM decks
+                WHERE name = ? OR name LIKE ?
+                ORDER BY LENGTH(name), name
+                """,
+                (source, f"{source}::%"),
+            ).fetchall()
+            if not rows:
+                raise LookupError(f"Deck not found: {source}")
+
+            scoped_ids = {int(row["id"]) for row in rows}
+            conflict = conn.execute(
+                """
+                SELECT id, name
+                FROM decks
+                WHERE (name = ? OR name LIKE ?)
+                LIMIT 1
+                """,
+                (target, f"{target}::%"),
+            ).fetchone()
+            if conflict is not None and int(conflict["id"]) not in scoped_ids:
+                raise ValueError(f"Target deck path already exists: {target}")
+
+            now_sec = int(time.time())
+            temp_prefix = f"__anki_cli_tmp_{int(time.time() * 1000)}__"
+            plan: list[tuple[int, str, str, str]] = []
+            for row in rows:
+                did = int(row["id"])
+                current_name = str(row["name"])
+                suffix = current_name[len(source) :]
+                temp_name = f"{temp_prefix}{suffix}"
+                final_name = f"{target}{suffix}"
+                plan.append((did, current_name, temp_name, final_name))
+
+            for did, _from_name, temp_name, _to_name in plan:
+                conn.execute(
+                    "UPDATE decks SET name = ?, mtime_secs = ?, usn = -1 WHERE id = ?",
+                    (temp_name, now_sec, did),
+                )
+
+            items: list[dict[str, JSONValue]] = []
+            for did, from_name, _temp_name, to_name in plan:
+                conn.execute(
+                    "UPDATE decks SET name = ?, mtime_secs = ?, usn = -1 WHERE id = ?",
+                    (to_name, now_sec, did),
+                )
+                items.append({"id": did, "from": from_name, "to": to_name})
+
+        return {
+            "from": source,
+            "to": target,
+            "renamed_decks": len(items),
+            "items": items,
+        }
 
     def write_deck(
         self,
@@ -568,6 +1017,96 @@ class AnkiDirectReadStore:
             "deleted_decks": deleted_decks,
             "deleted_notes": deleted_notes,
             "deleted_cards": deleted_cards,
+        }
+
+    def set_deck_config(
+        self,
+        *,
+        name: str,
+        updates: dict[str, JSONValue],
+    ) -> dict[str, JSONValue]:
+        normalized = name.strip()
+        if not normalized:
+            raise ValueError("Deck name cannot be empty.")
+        if not updates:
+            return {"deck": normalized, "updated": False, "config": {}}
+
+        with self._connect_write() as conn:
+            row = conn.execute(
+                "SELECT id, kind FROM decks WHERE name = ?",
+                (normalized,),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"Deck not found: {normalized}")
+
+            did = int(row["id"])
+            kind = self._decode_deck_kind(bytes(row["kind"] or b""), did=did)
+            kind_name, kind_msg = betterproto.which_one_of(kind, "kind")
+            if kind_name != "normal" or kind_msg is None:
+                raise ValueError(f"Deck '{normalized}' is not a normal deck.")
+
+            config_id = int(kind_msg.config_id)
+            cfg_row = conn.execute(
+                "SELECT config FROM deck_config WHERE id = ?",
+                (config_id,),
+            ).fetchone()
+            if cfg_row is None:
+                raise LookupError(f"Deck config not found: {config_id}")
+
+            cfg = self._decode_deck_config(bytes(cfg_row["config"] or b""), dcid=config_id)
+            applied: dict[str, JSONValue] = {}
+            for key, value in updates.items():
+                low_key = key.strip().lower()
+                if low_key == "new_per_day":
+                    parsed = self._coerce_int_value(value)
+                    if parsed is None:
+                        raise ValueError("new_per_day must be an integer.")
+                    cfg.new_per_day = parsed
+                    applied["new_per_day"] = parsed
+                elif low_key == "reviews_per_day":
+                    parsed = self._coerce_int_value(value)
+                    if parsed is None:
+                        raise ValueError("reviews_per_day must be an integer.")
+                    cfg.reviews_per_day = parsed
+                    applied["reviews_per_day"] = parsed
+                elif low_key == "desired_retention":
+                    parsed = self._coerce_float_value(value)
+                    if parsed is None:
+                        raise ValueError("desired_retention must be a float.")
+                    cfg.desired_retention = parsed
+                    applied["desired_retention"] = parsed
+                elif low_key == "maximum_review_interval":
+                    parsed = self._coerce_int_value(value)
+                    if parsed is None:
+                        raise ValueError("maximum_review_interval must be an integer.")
+                    cfg.maximum_review_interval = parsed
+                    applied["maximum_review_interval"] = parsed
+                elif low_key == "learn_steps":
+                    parsed = self._coerce_float_list(value)
+                    cfg.learn_steps = parsed
+                    applied["learn_steps"] = parsed
+                elif low_key == "relearn_steps":
+                    parsed = self._coerce_float_list(value)
+                    cfg.relearn_steps = parsed
+                    applied["relearn_steps"] = parsed
+                else:
+                    raise ValueError(f"Unsupported deck config key: {key}")
+
+            conn.execute(
+                """
+                UPDATE deck_config
+                SET mtime_secs = ?, usn = -1, config = ?
+                WHERE id = ?
+                """,
+                (int(time.time()), bytes(cfg), config_id),
+            )
+
+        return {
+            "deck": normalized,
+            "updated": bool(applied),
+            "config_id": config_id,
+            "applied": applied,
+            "config": self._deck_config_to_dict(cfg),
         }
 
     def add_note(
@@ -1194,6 +1733,37 @@ class AnkiDirectReadStore:
             return []
         return [part for part in stripped.split(" ") if part]
 
+    def _get_next_due_for_deck(self, deck_name: str) -> dict[str, JSONValue] | None:
+        with self._connect() as conn:
+            deck_row = conn.execute(
+                "SELECT id FROM decks WHERE name = ?",
+                (deck_name,),
+            ).fetchone()
+            if deck_row is None:
+                return None
+            did = int(deck_row["id"])
+            col_row = conn.execute("SELECT crt FROM col LIMIT 1").fetchone()
+            col_crt = int(col_row["crt"]) if col_row is not None else int(time.time())
+            row = conn.execute(
+                """
+                SELECT queue, due
+                FROM cards
+                WHERE did = ? AND queue IN (1, 2, 3)
+                ORDER BY CASE WHEN queue IN (1, 3) THEN due ELSE due * 86400 END, id
+                LIMIT 1
+                """,
+                (did,),
+            ).fetchone()
+            if row is None:
+                return None
+
+        queue = int(row["queue"])
+        due = int(row["due"])
+        if queue in (1, 3):
+            return {"queue": queue, "epoch_secs": due}
+        due_epoch = (int(col_crt // 86400) + due) * 86400
+        return {"queue": queue, "day_index": due, "epoch_secs": int(due_epoch)}
+
     def _coerce_int_value(self, value: JSONValue) -> int | None:
         if isinstance(value, bool):
             return int(value)
@@ -1219,6 +1789,30 @@ class AnkiDirectReadStore:
             except ValueError:
                 return None
         return None
+
+    def _coerce_float_list(self, value: JSONValue) -> list[float]:
+        if isinstance(value, str):
+            parts = [part.strip() for part in value.split(",") if part.strip()]
+            return [float(part) for part in parts]
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            output: list[float] = []
+            for item in value:
+                parsed = self._coerce_float_value(cast(JSONValue, item))
+                if parsed is None:
+                    raise ValueError("Step values must be numeric.")
+                output.append(parsed)
+            return output
+        raise ValueError("Step list must be comma-separated string or list of numbers.")
+
+    def _deck_config_to_dict(self, cfg: DeckConfigConfig) -> dict[str, JSONValue]:
+        return {
+            "new_per_day": int(cfg.new_per_day),
+            "reviews_per_day": int(cfg.reviews_per_day),
+            "desired_retention": float(cfg.desired_retention),
+            "maximum_review_interval": int(cfg.maximum_review_interval),
+            "learn_steps": [float(step) for step in cfg.learn_steps],
+            "relearn_steps": [float(step) for step in cfg.relearn_steps],
+        }
 
     def _ensure_write_safe(self) -> None:
         from anki_cli.backends.detect import _anki_process_running, _sqlite_write_locked
