@@ -60,7 +60,7 @@ def review_cmd(ctx: click.Context, deck: str | None) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             counts = backend.get_due_counts(deck=deck.strip() if deck else None)
-    except (BackendNotImplementedError, BackendFactoryError) as exc:
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="review", obj=obj, error=exc)
 
     formatter.emit_success(
@@ -98,7 +98,7 @@ def review_answer_cmd(ctx: click.Context, card_id: int, rating: str) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             result = backend.answer_card(card_id=card_id, ease=ease)
-    except (BackendNotImplementedError, BackendFactoryError) as exc:
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="review:answer", obj=obj, error=exc)
     except (AnkiConnectAPIError, AnkiConnectProtocolError) as exc:
         formatter.emit_error(

@@ -41,7 +41,7 @@ def cards_cmd(ctx: click.Context, query: str) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             ids = backend.find_cards(query=query)
-    except (BackendNotImplementedError, BackendFactoryError) as exc:
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="cards", obj=obj, error=exc)
 
     formatter.emit_success(
@@ -60,7 +60,7 @@ def card_cmd(ctx: click.Context, card_id: int) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             card = backend.get_card(card_id)
-    except (BackendNotImplementedError, BackendFactoryError) as exc:
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="card", obj=obj, error=exc)
     except AnkiConnectAPIError as exc:
         formatter.emit_error(
@@ -94,7 +94,7 @@ def card_suspend_cmd(ctx: click.Context, card_id: int | None, query: str | None)
         with backend_session_from_context(obj) as backend:
             target_ids = [card_id] if card_id is not None else backend.find_cards(query=query or "")
             result = backend.suspend_cards(target_ids)
-    except (BackendNotImplementedError, BackendFactoryError) as exc:
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="card:suspend", obj=obj, error=exc)
     except AnkiConnectAPIError as exc:
         formatter.emit_error(
@@ -128,7 +128,7 @@ def card_unsuspend_cmd(ctx: click.Context, card_id: int | None, query: str | Non
         with backend_session_from_context(obj) as backend:
             target_ids = [card_id] if card_id is not None else backend.find_cards(query=query or "")
             result = backend.unsuspend_cards(target_ids)
-    except (BackendNotImplementedError, BackendFactoryError) as exc:
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="card:unsuspend", obj=obj, error=exc)
     except AnkiConnectAPIError as exc:
         formatter.emit_error(

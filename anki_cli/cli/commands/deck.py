@@ -40,9 +40,7 @@ def decks_cmd(ctx: click.Context) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             decks = backend.get_decks()
-    except BackendNotImplementedError as exc:
-        _emit_backend_error(ctx=ctx, command="decks", obj=obj, error=exc, exit_code=7)
-    except BackendFactoryError as exc:
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_error(ctx=ctx, command="decks", obj=obj, error=exc, exit_code=7)
 
     formatter.emit_success(
@@ -69,9 +67,7 @@ def deck_create_cmd(ctx: click.Context, name: str) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             result = backend.create_deck(name=name.strip())
-    except BackendNotImplementedError as exc:
-        _emit_backend_error(ctx=ctx, command="deck:create", obj=obj, error=exc, exit_code=7)
-    except BackendFactoryError as exc:
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_error(ctx=ctx, command="deck:create", obj=obj, error=exc, exit_code=7)
 
     formatter.emit_success(command="deck:create", data=result)
@@ -96,9 +92,7 @@ def deck_delete_cmd(ctx: click.Context, deck_name: str) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             result = backend.delete_deck(name=deck_name.strip())
-    except BackendNotImplementedError as exc:
-        _emit_backend_error(ctx=ctx, command="deck:delete", obj=obj, error=exc, exit_code=7)
-    except BackendFactoryError as exc:
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_error(ctx=ctx, command="deck:delete", obj=obj, error=exc, exit_code=7)
 
     formatter.emit_success(command="deck:delete", data=result)

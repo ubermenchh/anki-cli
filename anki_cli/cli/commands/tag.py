@@ -56,7 +56,7 @@ def tags_cmd(ctx: click.Context) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             tags = backend.get_tags()
-    except (BackendNotImplementedError, BackendFactoryError) as exc:
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="tags", obj=obj, error=exc)
 
     formatter.emit_success(
@@ -76,7 +76,7 @@ def tag_cmd(ctx: click.Context, tag_name: str) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             note_ids = backend.find_notes(query=query)
-    except (BackendNotImplementedError, BackendFactoryError) as exc:
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="tag", obj=obj, error=exc)
 
     formatter.emit_success(
@@ -120,7 +120,7 @@ def tag_add_cmd(
         with backend_session_from_context(obj) as backend:
             ids = _collect_note_ids(backend=backend, note_id=note_id, query=query)
             result = backend.add_tags(ids, tags)
-    except (BackendNotImplementedError, BackendFactoryError) as exc:
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="tag:add", obj=obj, error=exc)
     except AnkiConnectAPIError as exc:
         formatter.emit_error(
@@ -168,7 +168,7 @@ def tag_remove_cmd(
         with backend_session_from_context(obj) as backend:
             ids = _collect_note_ids(backend=backend, note_id=note_id, query=query)
             result = backend.remove_tags(ids, tags)
-    except (BackendNotImplementedError, BackendFactoryError) as exc:
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="tag:remove", obj=obj, error=exc)
     except AnkiConnectAPIError as exc:
         formatter.emit_error(
