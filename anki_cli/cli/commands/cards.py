@@ -141,8 +141,43 @@ def card_unsuspend_cmd(ctx: click.Context, card_id: int | None, query: str | Non
 
     formatter.emit_success(command="card:unsuspend", data=result)
 
+@click.command("card:revlog")
+@click.option("--id", "card_id", required=True, type=int, help="Card ID")
+@click.option("--limit", default=50, type=int, show_default=True, help="Max revlog rows (1..1000)")
+@click.pass_context
+def card_revlog_cmd(ctx: click.Context, card_id: int, limit: int) -> None:
+    obj: dict[str, Any] = ctx.obj or {}
+    formatter = formatter_from_ctx(ctx)
+
+    bounded_limit = max(1, min(limit, 1000))
+
+    try:
+        with backend_session_from_context(obj) as backend:
+            entries = backend.get_revlog(card_id=card_id, limit=bounded_limit)
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+        _emit_backend_unavailable(ctx=ctx, command="card:revlog", obj=obj, error=exc)
+    except (AnkiConnectAPIError, LookupError) as exc:
+        formatter.emit_error(
+            command="card:revlog",
+            code="ENTITY_NOT_FOUND",
+            message=str(exc),
+            details={"id": card_id},
+        )
+        raise click.exceptions.Exit(4) from exc
+
+    formatter.emit_success(
+        command="card:revlog",
+        data={
+            "id": card_id,
+            "limit": bounded_limit,
+            "count": len(entries),
+            "items": entries,
+        },
+    )
+
 
 register_command("cards", cards_cmd)
 register_command("card", card_cmd)
 register_command("card:suspend", card_suspend_cmd)
 register_command("card:unsuspend", card_unsuspend_cmd)
+register_command("card:revlog", card_revlog_cmd)

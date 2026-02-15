@@ -100,7 +100,7 @@ def review_answer_cmd(ctx: click.Context, card_id: int, rating: str) -> None:
             result = backend.answer_card(card_id=card_id, ease=ease)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="review:answer", obj=obj, error=exc)
-    except (AnkiConnectAPIError, AnkiConnectProtocolError) as exc:
+    except (AnkiConnectAPIError, AnkiConnectProtocolError, LookupError) as exc:
         formatter.emit_error(
             command="review:answer",
             code="BACKEND_OPERATION_FAILED",

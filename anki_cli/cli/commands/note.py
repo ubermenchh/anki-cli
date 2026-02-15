@@ -222,7 +222,7 @@ def note_edit_cmd(ctx: click.Context, note_id: int, tags: str | None) -> None:
             result = backend.update_note(note_id=note_id, fields=fields or None, tags=parsed_tags)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="note:edit", obj=obj, error=exc)
-    except AnkiConnectAPIError as exc:
+    except (AnkiConnectAPIError, LookupError) as exc:
         formatter.emit_error(
             command="note:edit",
             code="BACKEND_OPERATION_FAILED",

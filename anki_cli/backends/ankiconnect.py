@@ -363,6 +363,9 @@ class AnkiConnectBackend(AnkiBackend):
         self._invoke("unsuspend", cards=ids)
         return {"unsuspended": len(ids), "card_ids": ids}
 
+    def get_revlog(self, card_id: int, limit: int = 50) -> list[dict[str, JSONValue]]:
+        raise NotImplementedError("Revlog read is not supported via AnkiConnect backend.")
+
     # Tags
     def get_tags(self) -> list[str]:
         result = self._invoke("getTags")
