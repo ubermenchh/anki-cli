@@ -41,9 +41,13 @@ packages = ["anki_cli"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+extend-exclude = ["anki_cli/proto"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "C4", "RUF"]
 
 [tool.ty.environment]
 python-version = "3.13"
+
+[tool.ty.src]
+exclude = ["anki_cli/proto/**"]

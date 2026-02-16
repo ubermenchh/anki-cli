@@ -55,7 +55,18 @@ def tags_cmd(ctx: click.Context) -> None:
 
     try:
         with backend_session_from_context(obj) as backend:
-            tags = backend.get_tags()
+            try:
+                items = backend.get_tag_counts()
+                formatter.emit_success(
+                    command="tags",
+                    data={
+                        "count": len(items),
+                        "items": sorted(items, key=lambda x: str(x["tag"]).lower()),
+                    },
+                )
+                return
+            except Exception:
+                tags = backend.get_tags()
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="tags", obj=obj, error=exc)
 
@@ -181,7 +192,33 @@ def tag_remove_cmd(
     formatter.emit_success(command="tag:remove", data=result)
 
 
+@click.command("tag:rename")
+@click.option("--from", "old_tag", required=True, help="Old tag")
+@click.option("--to", "new_tag", required=True, help="New tag")
+@click.pass_context
+def tag_rename_cmd(ctx: click.Context, old_tag: str, new_tag: str) -> None:
+    obj: dict[str, Any] = ctx.obj or {}
+    formatter = formatter_from_ctx(ctx)
+
+    try:
+        with backend_session_from_context(obj) as backend:
+            result = backend.rename_tag(old_tag.strip(), new_tag.strip())
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+        _emit_backend_unavailable(ctx=ctx, command="tag:rename", obj=obj, error=exc)
+    except (AnkiConnectAPIError, LookupError, ValueError) as exc:
+        formatter.emit_error(
+            command="tag:rename",
+            code="BACKEND_OPERATION_FAILED",
+            message=str(exc),
+            details={"from": old_tag, "to": new_tag},
+        )
+        raise click.exceptions.Exit(1) from exc
+
+    formatter.emit_success(command="tag:rename", data=result)
+
+
 register_command("tags", tags_cmd)
 register_command("tag", tag_cmd)
 register_command("tag:add", tag_add_cmd)
 register_command("tag:remove", tag_remove_cmd)
+register_command("tag:rename", tag_rename_cmd)

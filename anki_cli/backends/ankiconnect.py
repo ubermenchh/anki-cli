@@ -149,8 +149,11 @@ class AnkiConnectBackend(AnkiBackend):
         if match is None:
             raise LookupError(f"Deck not found: {normalized}")
 
+        deck_id = match.get("id")
+        if not isinstance(deck_id, int):
+            raise AnkiConnectProtocolError("deck id must be int.")
         return {
-            "id": int(match["id"]),
+            "id": deck_id,
             "name": normalized,
             "due_counts": self.get_due_counts(deck=normalized),
         }
@@ -281,6 +284,20 @@ class AnkiConnectBackend(AnkiBackend):
             "templates": templates_raw if isinstance(templates_raw, dict) else {},
         }
 
+        kind = "normal"
+        if isinstance(templates_raw, Mapping):
+            templates_map = cast(Mapping[str, JSONValue], templates_raw)
+            for tmpl in templates_map.values():
+                if isinstance(tmpl, Mapping):
+                    tmpl_map = cast(Mapping[str, JSONValue], tmpl)
+                    front = str(tmpl_map.get("Front") or "")
+                    back = str(tmpl_map.get("Back") or "")
+                    if "{{cloze:" in front or "{{cloze:" in back:
+                        kind = "cloze"
+                        break
+                    
+        result["kind"] = kind
+
         try:
             styling = self._invoke("modelStyling", modelName=name)
             if isinstance(styling, dict):
@@ -391,8 +408,9 @@ class AnkiConnectBackend(AnkiBackend):
         if not isinstance(existing, Mapping):
             raise LookupError(f"Template not found: {normalized}")
 
-        current_front = str(existing.get("Front", ""))
-        current_back = str(existing.get("Back", ""))
+        existing_map = cast(Mapping[str, JSONValue], existing)
+        current_front = str(existing_map.get("Front") or "")
+        current_back = str(existing_map.get("Back") or "")
         updates = {
             normalized: {
                 "Front": front if front is not None else current_front,
@@ -426,6 +444,7 @@ class AnkiConnectBackend(AnkiBackend):
         notetype: str,
         fields: dict[str, str],
         tags: list[str] | None = None,
+        allow_duplicate: bool = False,
     ) -> int:
         payload = {
             "deckName": deck,
@@ -433,6 +452,8 @@ class AnkiConnectBackend(AnkiBackend):
             "fields": fields,
             "tags": self._normalize_tags(tags),
         }
+        if allow_duplicate:
+            payload["options"] = {"allowDuplicate": True}
         result = self._invoke("addNote", note=payload)
         return self._as_int(result, "addNote result")
 
@@ -530,6 +551,25 @@ class AnkiConnectBackend(AnkiBackend):
         first = result[0]
         return self._as_json_object(first, "notesInfo row")
 
+    def get_note_fields(self, note_id: int, fields: list[str] | None = None) -> dict[str, str]:
+        note = self.get_note(note_id)
+        raw_fields = note.get("fields")
+        if not isinstance(raw_fields, Mapping):
+            raise AnkiConnectProtocolError("notesInfo.fields must be an object.")
+
+        values: dict[str, str] = {}
+        for k, v in raw_fields.items():
+            if isinstance(v, Mapping):
+                v_map = cast(Mapping[str, JSONValue], v)
+                values[str(k)] = str(v_map.get("value") or "")
+            else:
+                values[str(k)] = str(v)
+
+        if fields:
+            wanted = {f.strip() for f in fields if f.strip()}
+            return {k: v for k, v in values.items() if k in wanted}
+        return values
+
     # Cards
     def find_cards(self, query: str) -> list[int]:
         result = self._invoke("findCards", query=query)
@@ -583,6 +623,63 @@ class AnkiConnectBackend(AnkiBackend):
     def get_revlog(self, card_id: int, limit: int = 50) -> list[dict[str, JSONValue]]:
         raise NotImplementedError("Revlog read is not supported via AnkiConnect backend.")
 
+    def move_cards(self, card_ids: list[int], deck: str) -> dict[str, JSONValue]:
+        ids = self._normalize_ids(card_ids)
+        if not ids:
+            return {"moved": 0, "card_ids": []}
+        self._invoke("changeDeck", cards=ids, deck=deck)
+        return {"moved": len(ids), "card_ids": ids, "deck": deck}
+
+    def set_card_flag(self, card_ids: list[int], flag: int) -> dict[str, JSONValue]:
+        if flag < 0 or flag > 7:
+            raise ValueError("flag must be in range 0..7")
+        ids = self._normalize_ids(card_ids)
+        if not ids:
+            return {"updated": 0, "card_ids": []}
+        self._invoke("setFlag", cards=ids, flag=flag)
+        return {"updated": len(ids), "card_ids": ids, "flag": flag}
+
+    def bury_cards(self, card_ids: list[int]) -> dict[str, JSONValue]:
+        ids = self._normalize_ids(card_ids)
+        if not ids:
+            return {"buried": 0, "card_ids": []}
+        self._invoke("bury", cards=ids)
+        return {"buried": len(ids), "card_ids": ids}
+
+    def unbury_cards(self, deck: str | None = None) -> dict[str, JSONValue]:
+        if deck is None:
+            try:
+                self._invoke("unbury")
+                return {"unburied": True, "scope": "all"}
+            except AnkiConnectAPIError:
+                self._invoke("unburyCards", cards=[])
+                return {"unburied": True, "scope": "all"}
+
+        ids = self.find_cards(f'deck:"{deck}" is:buried')
+        if not ids:
+            return {"unburied": 0, "deck": deck, "card_ids": []}
+        try:
+            self._invoke("unburyCards", cards=ids)
+        except AnkiConnectAPIError:
+            self._invoke("unbury")
+        return {"unburied": len(ids), "deck": deck, "card_ids": ids}
+
+    def reschedule_cards(self, card_ids: list[int], days: int) -> dict[str, JSONValue]:
+        if days < 0:
+            raise ValueError("days must be >= 0")
+        ids = self._normalize_ids(card_ids)
+        if not ids:
+            return {"rescheduled": 0, "card_ids": []}
+        self._invoke("setDueDate", cards=ids, days=str(days))
+        return {"rescheduled": len(ids), "card_ids": ids, "days": days}
+
+    def reset_cards(self, card_ids: list[int]) -> dict[str, JSONValue]:
+        ids = self._normalize_ids(card_ids)
+        if not ids:
+            return {"reset": 0, "card_ids": []}
+        self._invoke("forgetCards", cards=ids)
+        return {"reset": len(ids), "card_ids": ids}
+
     # Tags
     def get_tags(self) -> list[str]:
         result = self._invoke("getTags")
@@ -607,6 +704,26 @@ class AnkiConnectBackend(AnkiBackend):
 
         self._invoke("removeTags", notes=ids, tags=" ".join(normalized_tags))
         return {"updated": len(ids), "note_ids": ids, "tags": normalized_tags}
+
+    def get_tag_counts(self) -> list[dict[str, JSONValue]]:
+        tags = self.get_tags()
+        items: list[dict[str, JSONValue]] = []
+        for tag in sorted(tags, key=str.lower):
+            note_ids = self.find_notes(f'tag:"{tag}"')
+            items.append({"tag": tag, "count": len(note_ids)})
+        return items
+
+    def rename_tag(self, old_tag: str, new_tag: str) -> dict[str, JSONValue]:
+        source = old_tag.strip()
+        target = new_tag.strip()
+        if not source or not target:
+            raise ValueError("Both tags are required.")
+        ids = self.find_notes(f'tag:"{source}"')
+        if not ids:
+            return {"from": source, "to": target, "updated": 0}
+        self._invoke("addTags", notes=ids, tags=target)
+        self._invoke("removeTags", notes=ids, tags=source)
+        return {"from": source, "to": target, "updated": len(ids), "note_ids": ids}
 
     # Review summary
     def get_due_counts(self, deck: str | None = None) -> dict[str, int]:

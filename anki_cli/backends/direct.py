@@ -99,6 +99,9 @@ class DirectBackend(AnkiBackend):
     def get_note(self, note_id: int) -> dict[str, JSONValue]:
         return self._store.get_note(note_id)
 
+    def get_note_fields(self, note_id: int, fields: list[str] | None = None) -> dict[str, str]:
+        return self._store.get_note_fields(note_id=note_id, fields=fields)
+
     # ---- cards ----
 
     def find_cards(self, query: str) -> list[int]:
@@ -110,6 +113,24 @@ class DirectBackend(AnkiBackend):
     def get_revlog(self, card_id: int, limit: int = 50) -> list[dict[str, JSONValue]]:
         return self._store.get_revlog(card_id=card_id, limit=limit)
 
+    def move_cards(self, card_ids: list[int], deck: str) -> dict[str, JSONValue]:
+        return self._store.move_cards(card_ids=card_ids, deck=deck)
+
+    def set_card_flag(self, card_ids: list[int], flag: int) -> dict[str, JSONValue]:
+        return self._store.set_card_flag(card_ids=card_ids, flag=flag)
+
+    def bury_cards(self, card_ids: list[int]) -> dict[str, JSONValue]:
+        return self._store.bury_cards(card_ids=card_ids)
+
+    def unbury_cards(self, deck: str | None = None) -> dict[str, JSONValue]:
+        return self._store.unbury_cards(deck=deck)
+
+    def reschedule_cards(self, card_ids: list[int], days: int) -> dict[str, JSONValue]:
+        return self._store.reschedule_cards(card_ids=card_ids, days=days)
+
+    def reset_cards(self, card_ids: list[int]) -> dict[str, JSONValue]:
+        return self._store.reset_cards(card_ids=card_ids)
+
     # ---- tags / due ----
 
     def get_tags(self) -> list[str]:
@@ -117,6 +138,12 @@ class DirectBackend(AnkiBackend):
 
     def get_due_counts(self, deck: str | None = None) -> dict[str, int]:
         return self._store.get_due_counts(deck)
+
+    def get_tag_counts(self) -> list[dict[str, JSONValue]]:
+        return self._store.get_tag_counts()
+
+    def rename_tag(self, old_tag: str, new_tag: str) -> dict[str, JSONValue]:
+        return self._store.rename_tag(old_tag=old_tag, new_tag=new_tag)
 
     # ---- write/scheduling operations ----
 
@@ -145,12 +172,14 @@ class DirectBackend(AnkiBackend):
         notetype: str,
         fields: dict[str, str],
         tags: list[str] | None = None,
+        allow_duplicate: bool = False,
     ) -> int:
         return self._store.add_note(
             deck=deck,
             notetype=notetype,
             fields=fields,
             tags=tags,
+            allow_duplicate=allow_duplicate,
         )
 
     def add_notes(self, notes: list[dict[str, JSONValue]]) -> list[int | None]:

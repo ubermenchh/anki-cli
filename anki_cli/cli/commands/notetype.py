@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import click
 
@@ -373,7 +373,8 @@ def notetype_css_cmd(
                 css = ""
                 styling = item.get("styling")
                 if isinstance(styling, dict):
-                    css = str(styling.get("css", ""))
+                    styling_map = cast(dict[str, Any], styling)
+                    css = str(styling_map.get("css") or "")
                 data: dict[str, Any] = {"name": normalized_name, "css": css}
             else:
                 data = backend.set_notetype_css(normalized_name, css_value)

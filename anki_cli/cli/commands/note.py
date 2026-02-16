@@ -54,9 +54,7 @@ def _parse_dynamic_fields(extra_args: list[str]) -> dict[str, str]:
     while i < len(extra_args):
         token = extra_args[i]
         if not token.startswith("--"):
-            raise click.ClickException(
-                f"Unexpected field token '{token}'. Use --FieldName value."
-            )
+            raise click.ClickException(f"Unexpected field token '{token}'. Use --FieldName value.")
 
         key = token[2:].strip()
         if not key:
@@ -129,12 +127,14 @@ def note_cmd(ctx: click.Context, note_id: int) -> None:
 @click.option("--deck", required=True, help="Deck name")
 @click.option("--notetype", required=True, help="Notetype name")
 @click.option("--tags", default="", help="Comma/space separated tags")
+@click.option("--allow-duplicate", is_flag=True, default=False, help="Allow duplicate notes")
 @click.pass_context
 def note_add_cmd(
     ctx: click.Context,
     deck: str,
     notetype: str,
     tags: str,
+    allow_duplicate: bool,
 ) -> None:
     obj: dict[str, Any] = ctx.obj or {}
     formatter = formatter_from_ctx(ctx)
@@ -164,6 +164,7 @@ def note_add_cmd(
                 notetype=notetype.strip(),
                 fields=fields,
                 tags=_parse_tags(tags),
+                allow_duplicate=allow_duplicate,
             )
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="note:add", obj=obj, error=exc)
@@ -355,9 +356,41 @@ def note_bulk_cmd(
     formatter.emit_success(command="note:bulk", data=payload)
 
 
+@click.command("note:fields")
+@click.option("--id", "note_id", required=True, type=int, help="Note ID")
+@click.option("--fields", default="", help="Comma-separated field names")
+@click.pass_context
+def note_fields_cmd(ctx: click.Context, note_id: int, fields: str) -> None:
+    obj: dict[str, Any] = ctx.obj or {}
+    formatter = formatter_from_ctx(ctx)
+    selected: list[str] | None = None
+    if fields.strip():
+        selected = [part.strip() for part in fields.split(",") if part.strip()]
+
+    try:
+        with backend_session_from_context(obj) as backend:
+            values = backend.get_note_fields(note_id=note_id, fields=selected)
+    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+        _emit_backend_unavailable(ctx=ctx, command="note:fields", obj=obj, error=exc)
+    except (AnkiConnectAPIError, LookupError, ValueError) as exc:
+        formatter.emit_error(
+            command="note:fields",
+            code="BACKEND_OPERATION_FAILED",
+            message=str(exc),
+            details={"id": note_id, "fields": selected or []},
+        )
+        raise click.exceptions.Exit(1) from exc
+
+    formatter.emit_success(
+        command="note:fields",
+        data={"id": note_id, "fields": values},
+    )
+
+
 register_command("notes", notes_cmd)
 register_command("note", note_cmd)
 register_command("note:add", note_add_cmd)
 register_command("note:edit", note_edit_cmd)
 register_command("note:delete", note_delete_cmd)
 register_command("note:bulk", note_bulk_cmd)
+register_command("note:fields", note_fields_cmd)

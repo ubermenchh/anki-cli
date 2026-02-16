@@ -631,6 +631,30 @@ class AnkiDirectReadStore:
             "data": str(row["data"] or ""),
         }
 
+    def get_note_fields(self, *, note_id: int, fields: list[str] | None = None) -> dict[str, str]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT mid, flds FROM notes WHERE id = ?", (note_id,)).fetchone()
+            if row is None:
+                raise LookupError(f"Note not found: {note_id}")
+
+            mid = int(row["mid"])
+            names = conn.execute(
+                "SELECT ord, name FROM fields WHERE ntid = ? ORDER BY ord",
+                (mid,),
+            ).fetchall()
+
+        values = self._split_fields(str(row["flds"] or ""))
+        out: dict[str, str] = {}
+        for item in names:
+            ord_ = int(item["ord"])
+            name = str(item["name"])
+            out[name] = values[ord_] if ord_ < len(values) else ""
+
+        if fields:
+            wanted = {f.strip() for f in fields if f.strip()}
+            return {k: v for k, v in out.items() if k in wanted}
+        return out
+
     def get_tags(self) -> list[str]:
         with self._connect() as conn:
             rows = conn.execute("SELECT tags FROM notes").fetchall()
@@ -667,10 +691,13 @@ class AnkiDirectReadStore:
                     c.ivl, c.factor, c.reps, c.lapses, c.left, c.odue, c.odid,
                     c.flags, c.data,
                     (SELECT crt FROM col LIMIT 1) AS col_crt,
+                    n.mid AS note_mid,
+                    nt.name AS notetype_name,
                     n.flds AS note_fields, n.tags AS note_tags,
                     d.name AS deck_name
                 FROM cards AS c
                 JOIN notes AS n ON n.id = c.nid
+                LEFT JOIN notetypes AS nt ON nt.id = n.mid
                 LEFT JOIN decks AS d ON d.id = c.did
                 WHERE c.id = ?
                 """,
@@ -706,11 +733,13 @@ class AnkiDirectReadStore:
             "fields": self._split_fields(str(row["note_fields"] or "")),
             "tags": self._parse_tags(str(row["note_tags"] or "")),
             "data": str(row["data"] or ""),
+            "notetype_id": int(row["note_mid"]),
+            "notetype_name": str(row["notetype_name"] or ""),
             "due_info": self._decode_due(
                 card_type=card_type,
                 queue=queue,
                 due_raw=due_raw,
-                col_crt_sec=col_crt_sec
+                col_crt_sec=col_crt_sec,
             ),
             "left_info": self._decode_left(left_raw),
             "data_parsed": self._parse_card_data(data_raw),
@@ -748,6 +777,133 @@ class AnkiDirectReadStore:
             "review": review_count,
             "total": new_count + learn_count + review_count,
         }
+
+    def move_cards(self, *, card_ids: list[int], deck: str) -> dict[str, JSONValue]:
+        ids = sorted({int(cid) for cid in card_ids if int(cid) > 0})
+        if not ids:
+            return {"moved": 0, "card_ids": []}
+        with self._connect_write() as conn:
+            did = self._resolve_deck_id(conn, deck)
+            placeholders = ", ".join(["?"] * len(ids))
+            updated = conn.execute(
+                f"UPDATE cards SET did = ?, mod = ?, usn = -1 WHERE id IN ({placeholders})",
+                (did, int(time.time()), *ids),
+            ).rowcount
+        return {"moved": int(updated), "card_ids": ids, "deck": deck}
+
+    def set_card_flag(self, *, card_ids: list[int], flag: int) -> dict[str, JSONValue]:
+        if flag < 0 or flag > 7:
+            raise ValueError("flag must be in range 0..7")
+        ids = sorted({int(cid) for cid in card_ids if int(cid) > 0})
+        if not ids:
+            return {"updated": 0, "card_ids": []}
+        with self._connect_write() as conn:
+            placeholders = ", ".join(["?"] * len(ids))
+            updated = conn.execute(
+                f"UPDATE cards SET flags = ?, mod = ?, usn = -1 WHERE id IN ({placeholders})",
+                (flag, int(time.time()), *ids),
+            ).rowcount
+        return {"updated": int(updated), "card_ids": ids, "flag": flag}
+
+    def bury_cards(self, *, card_ids: list[int]) -> dict[str, JSONValue]:
+        ids = sorted({int(cid) for cid in card_ids if int(cid) > 0})
+        if not ids:
+            return {"buried": 0, "card_ids": []}
+        with self._connect_write() as conn:
+            placeholders = ", ".join(["?"] * len(ids))
+            updated = conn.execute(
+                f"UPDATE cards SET queue = -2, mod = ?, usn = -1 WHERE id IN ({placeholders})",
+                (int(time.time()), *ids),
+            ).rowcount
+        return {"buried": int(updated), "card_ids": ids}
+
+    def unbury_cards(self, *, deck: str | None = None) -> dict[str, JSONValue]:
+        with self._connect_write() as conn:
+            now_sec = int(time.time())
+            if deck is None:
+                updated = conn.execute(
+                    """
+                    UPDATE cards
+                    SET queue = CASE
+                        WHEN type = 0 THEN 0
+                        WHEN type = 2 THEN 2
+                        WHEN type = 3 THEN 3
+                        ELSE 1
+                    END,
+                    mod = ?, usn = -1
+                    WHERE queue IN (-2, -3)
+                    """,
+                    (now_sec,),
+                ).rowcount
+                return {"unburied": int(updated), "scope": "all"}
+
+            rows = conn.execute(
+                "SELECT id FROM decks WHERE name = ? OR name LIKE ?",
+                (deck.strip(), f"{deck.strip()}::%"),
+            ).fetchall()
+            dids = [int(r["id"]) for r in rows]
+            if not dids:
+                return {"unburied": 0, "deck": deck}
+
+            placeholders = ", ".join(["?"] * len(dids))
+            updated = conn.execute(
+                f"""
+                UPDATE cards
+                SET queue = CASE
+                    WHEN type = 0 THEN 0
+                    WHEN type = 2 THEN 2
+                    WHEN type = 3 THEN 3
+                    ELSE 1
+                END,
+                mod = ?, usn = -1
+                WHERE queue IN (-2, -3) AND did IN ({placeholders})
+                """,
+                (now_sec, *dids),
+            ).rowcount
+            return {"unburied": int(updated), "deck": deck}
+
+    def reschedule_cards(self, *, card_ids: list[int], days: int) -> dict[str, JSONValue]:
+        if days < 0:
+            raise ValueError("days must be >= 0")
+        ids = sorted({int(cid) for cid in card_ids if int(cid) > 0})
+        if not ids:
+            return {"rescheduled": 0, "card_ids": []}
+
+        with self._connect_write() as conn:
+            today = self._today_due_index(int(time.time()))
+            target_due = today + days
+            placeholders = ", ".join(["?"] * len(ids))
+            updated = conn.execute(
+                f"""
+                UPDATE cards
+                SET type = 2, queue = 2, due = ?, ivl = ?, mod = ?, usn = -1
+                WHERE id IN ({placeholders})
+                """,
+                (target_due, max(1, days), int(time.time()), *ids),
+            ).rowcount
+        return {"rescheduled": int(updated), "card_ids": ids, "days": days}
+
+    def reset_cards(self, *, card_ids: list[int]) -> dict[str, JSONValue]:
+        ids = sorted({int(cid) for cid in card_ids if int(cid) > 0})
+        if not ids:
+            return {"reset": 0, "card_ids": []}
+
+        with self._connect_write() as conn:
+            next_due = self._next_new_due(conn)
+            now_sec = int(time.time())
+            updated = 0
+            for offset, cid in enumerate(ids):
+                changed = conn.execute(
+                    """
+                    UPDATE cards
+                    SET type = 0, queue = 0, due = ?, ivl = 0, factor = 0, reps = 0, lapses = 0,
+                        left = 0, odue = 0, odid = 0, data = '{}', mod = ?, usn = -1
+                    WHERE id = ?
+                    """,
+                    (next_due + offset, now_sec, cid),
+                ).rowcount
+                updated += int(changed)
+        return {"reset": updated, "card_ids": ids}
 
     # ---- write paths ------------------------------------------------------
 
@@ -1116,6 +1272,7 @@ class AnkiDirectReadStore:
         notetype: str,
         fields: dict[str, str],
         tags: list[str] | None,
+        allow_duplicate: bool,
     ) -> int:
         with self._connect_write() as conn:
             deck_id = self._resolve_deck_id(conn, deck)
@@ -1128,6 +1285,21 @@ class AnkiDirectReadStore:
                 if field_name not in fields:
                     raise LookupError(f"Missing field '{field_name}' for notetype '{notetype}'.")
                 ordered_values.append(str(fields[field_name]))
+
+            csum = self._field_checksum(ordered_values[0] if ordered_values else "")
+
+            dup_rows = conn.execute(
+                "SELECT id FROM notes WHERE csum = ? ORDER BY id DESC LIMIT 5",
+                (csum,),
+            ).fetchall()
+            dup_ids = [int(r["id"]) for r in dup_rows]
+            
+            if dup_ids and not allow_duplicate:
+                import sys
+                sys.stderr.write(
+                    "warning: duplicate note detected (csum match). "
+                    "Pass --allow-duplicate to silence/force.\n"
+                )
 
             note_id = self._allocate_row_id(conn, "notes")
             now_sec = int(time.time())
@@ -1199,6 +1371,7 @@ class AnkiDirectReadStore:
                     notetype=notetype,
                     fields={str(k): str(v) for k, v in raw_fields.items()},
                     tags=self._coerce_tags(raw_tags),
+                    allow_duplicate=False,
                 )
             except Exception:
                 output.append(None)
@@ -1417,6 +1590,44 @@ class AnkiDirectReadStore:
             "note_ids": [entry[2] for entry in updates],
             "tags": normalized_tags,
         }
+
+    def get_tag_counts(self) -> list[dict[str, JSONValue]]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT tags FROM notes").fetchall()
+
+        counts: dict[str, int] = {}
+        for row in rows:
+            for tag in self._parse_tags(str(row["tags"] or "")):
+                counts[tag] = counts.get(tag, 0) + 1
+
+        return [{"tag": tag, "count": counts[tag]} for tag in sorted(counts, key=str.lower)]
+
+    def rename_tag(self, *, old_tag: str, new_tag: str) -> dict[str, JSONValue]:
+        source = old_tag.strip()
+        target = new_tag.strip()
+        if not source or not target:
+            raise ValueError("Both tags are required.")
+
+        with self._connect_write() as conn:
+            rows = conn.execute("SELECT id, tags FROM notes").fetchall()
+            updates: list[tuple[str, int, int]] = []
+            now_sec = int(time.time())
+
+            for row in rows:
+                tags = self._parse_tags(str(row["tags"] or ""))
+                if source not in tags:
+                    continue
+                merged = [target if t == source else t for t in tags]
+                merged = sorted(set(merged), key=str.lower)
+                updates.append((self._format_tags(merged), now_sec, int(row["id"])))
+
+            if updates:
+                conn.executemany(
+                    "UPDATE notes SET tags = ?, mod = ?, usn = -1 WHERE id = ?",
+                    updates,
+                )
+
+        return {"from": source, "to": target, "updated": len(updates)}
 
     def answer_card(self, card_id: int, ease: int) -> dict[str, JSONValue]:
         if ease not in {1, 2, 3, 4}:
