@@ -4,7 +4,7 @@ import html as _html
 import re
 import shlex
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -63,7 +63,7 @@ def _pick_template(templates: Mapping[str, Any], ord_: int) -> Mapping[str, Any]
 
 
 class PreviewScreen(ModalScreen[None]):
-    BINDINGS = [Binding("escape", "app.pop_screen", "Close")]
+    BINDINGS: ClassVar[list[Binding]] = [Binding("escape", "app.pop_screen", "Close")]
 
     def __init__(self, title: str, body: str) -> None:
         super().__init__()
@@ -85,7 +85,7 @@ class ReviewApp(App[None]):
     #cmd { height: auto; padding: 0 1; }
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar[list[Binding]] = [
         Binding("q", "quit", "Quit"),
         Binding(":", "focus_command", "Command"),
         Binding("escape", "blur_command", "Blur command"),
@@ -119,7 +119,7 @@ class ReviewApp(App[None]):
     def on_mount(self) -> None:
         self._load_next()
 
-    def action_quit(self) -> None:
+    async def action_quit(self) -> None:
         self.exit()
 
     def action_toggle_answer(self) -> None:

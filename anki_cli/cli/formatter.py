@@ -220,7 +220,7 @@ class OutputFormatter:
 
     def _coerce_rows(self, data: JSONValue) -> tuple[list[dict[str, JSONValue]], list[str]]:
         if isinstance(data, dict):
-            items_val = data.get("items")
+            items_val = cast(dict[str, Any], data).get("items")
             if isinstance(items_val, list) and items_val and isinstance(items_val[0], dict):
                 dict_rows = [
                     {str(k): cast(JSONValue, v) for k, v in item.items()}
