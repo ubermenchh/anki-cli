@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import betterproto
 from fsrs import Card as FSRSCard
-from fsrs import Rating, Scheduler, State
+from fsrs import Rating, ReviewLog, Scheduler, State
 
 if TYPE_CHECKING:
     from anki_cli.backends.protocol import JSONValue
@@ -921,6 +921,8 @@ class AnkiDirectReadStore:
 
 
     def preview_ratings(self, card_id: int) -> list[dict[str, JSONValue]]:
+        review_dt = datetime.now(UTC)
+
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -938,56 +940,97 @@ class AnkiDirectReadStore:
             col_row = conn.execute("SELECT crt FROM col LIMIT 1").fetchone()
             col_crt_sec = int(col_row["crt"]) if col_row is not None else int(time.time())
 
-            scheduler, _dr, learn_count, relearn_count = self._build_scheduler(
-                conn, int(row["did"])
-            )
-
-        review_dt = datetime.now(UTC)
-        out: list[dict[str, JSONValue]] = []
-
-        for ease in (1, 2, 3, 4):
-            fsrs_card = self._card_row_to_fsrs(row, col_crt_sec=col_crt_sec, now_dt=review_dt)
-            next_card, _review_log = scheduler.review_card(
-                fsrs_card,
-                Rating(ease),
-                review_datetime=review_dt,
-            )
-
             (
-                new_type,
-                new_queue,
-                new_due,
-                new_ivl,
-                new_left,
-                next_due_epoch,
-            ) = self._map_fsrs_result_to_anki(
-                current_row=row,
-                next_card=next_card,
+                scheduler, 
+                _dr, 
+                learn_count,
+                relearn_count
+            ) = self._build_scheduler(conn, int(row["did"]))
+
+            base = self._card_row_to_fsrs(
+                row,
                 col_crt_sec=col_crt_sec,
-                learn_step_count=learn_count,
-                relearn_step_count=relearn_count,
+                now_dt=review_dt,
             )
 
-            out.append(
-                {
-                    "ease": ease,
-                    "type": new_type,
-                    "queue": new_queue,
-                    "due": new_due,
-                    "interval": new_ivl,
-                    "left": new_left,
-                    "next_due_epoch_secs": next_due_epoch,
-                    "due_info": self._decode_due(
-                        card_type=new_type,
-                        queue=new_queue,
-                        due_raw=new_due,
-                        col_crt_sec=col_crt_sec,
-                    ),
-                    "state": str(next_card.state),
-                }
+            needs_seed = base.state in (State.Review, State.Relearning) and (
+                base.stability is None or base.difficulty is None or base.last_review is None
             )
+            if needs_seed:
+                seeded = self._seed_fsrs_card_from_revlog(
+                    conn,
+                    scheduler,
+                    card_id=int(row["id"]),
+                    now_dt=review_dt,
+                )
+                if seeded is not None:
+                    base.stability = seeded.stability
+                    base.difficulty = seeded.difficulty
+                    base.last_review = seeded.last_review
+                else:
+                    ivl_days = int(row["ivl"] or 0)
+                    factor = int(row["factor"] or 0)
 
-        return out
+                    base.stability = float(max(1, ivl_days))
+                    if factor > 0:
+                        ease_mult = max(1.3, min(3.0, factor / 1000.0))
+                        scaled = (ease_mult - 1.3) / (3.0 - 1.3)
+                        base.difficulty = max(1.0, min(10.0, 10.0 - (scaled * 9.0)))
+                    else:
+                        base.difficulty = 5.0
+
+                    mod_sec = int(row["mod"] or int(review_dt.timestamp()))
+                    try:
+                        base.last_review = datetime.fromtimestamp(mod_sec, tz=UTC)
+                    except (OSError, OverflowError, ValueError):
+                        base.last_review = review_dt
+
+            if base.state == State.Relearning and base.step is None:
+                base.step = 0
+
+            out: list[dict[str, JSONValue]] = []
+            for ease in (1, 2, 3, 4):
+                next_card, _review_log = scheduler.review_card(
+                    base,
+                    Rating(ease),
+                    review_datetime=review_dt,
+                )
+
+                (
+                    new_type,
+                    new_queue,
+                    new_due,
+                    new_ivl,
+                    new_left,
+                    next_due_epoch,
+                ) = self._map_fsrs_result_to_anki(
+                    current_row=row,
+                    next_card=next_card,
+                    col_crt_sec=col_crt_sec,
+                    learn_step_count=learn_count,
+                    relearn_step_count=relearn_count,
+                )
+
+                out.append(
+                    {
+                        "ease": ease,
+                        "type": new_type,
+                        "queue": new_queue,
+                        "due": new_due,
+                        "interval": new_ivl,
+                        "left": new_left,
+                        "next_due_epoch_secs": next_due_epoch,
+                        "due_info": self._decode_due(
+                            card_type=new_type,
+                            queue=new_queue,
+                            due_raw=new_due,
+                            col_crt_sec=col_crt_sec,
+                        ),
+                        "state": str(next_card.state),
+                    }
+                )
+
+            return out
 
     def move_cards(self, *, card_ids: list[int], deck: str) -> dict[str, JSONValue]:
         ids = sorted({int(cid) for cid in card_ids if int(cid) > 0})
@@ -1867,6 +1910,49 @@ class AnkiDirectReadStore:
             review_dt = datetime.now(UTC)
 
             fsrs_card = self._card_row_to_fsrs(row, col_crt_sec=col_crt_sec, now_dt=review_dt)
+
+            needs_seed = fsrs_card.state in (State.Review, State.Relearning) and (
+                fsrs_card.stability is None
+                or fsrs_card.difficulty is None
+                or fsrs_card.last_review is None
+            )
+            if needs_seed:
+                seeded = self._seed_fsrs_card_from_revlog(
+                    conn,
+                    scheduler,
+                    card_id=int(row["id"]),
+                    now_dt=review_dt
+                )
+                if seeded is not None:
+                    fsrs_card.stability = seeded.stability
+                    fsrs_card.difficulty = seeded.difficulty
+                    fsrs_card.last_review = seeded.last_review
+                else:
+                    # Fallback for imported/legacy cards with no usable revlog.
+                    ivl_days = int(row["ivl"] or 0)
+                    factor = int(row["factor"] or 0)
+
+                    fsrs_card.stability = float(max(1, ivl_days))
+
+                    if factor > 0:
+                        ease_mult = max(1.3, min(3.0, factor / 1000.0))
+                        scaled = (ease_mult - 1.3) / (3.0 - 1.3)  # 0..1
+                        fsrs_card.difficulty = max(
+                            1.0,
+                            min(10.0, 10.0 - (scaled * 9.0)),
+                        )
+                    else:
+                        fsrs_card.difficulty = 5.0
+
+                    mod_sec = int(row["mod"] or int(review_dt.timestamp()))
+                    try:
+                        fsrs_card.last_review = datetime.fromtimestamp(mod_sec, tz=UTC)
+                    except (OSError, OverflowError, ValueError):
+                        fsrs_card.last_review = review_dt
+
+            if fsrs_card.state == State.Relearning and fsrs_card.step is None:
+                fsrs_card.step = 0
+
             next_card, _review_log = scheduler.review_card(
                 fsrs_card,
                 Rating(ease),
@@ -2895,3 +2981,52 @@ class AnkiDirectReadStore:
             3: "filtered",
             4: "manual",
         }.get(review_type, "unknown")
+
+    def _seed_fsrs_card_from_revlog(
+        self, 
+        conn: sqlite3.Connection,
+        scheduler: Scheduler,
+        *,
+        card_id: int,
+        now_dt: datetime,
+    ) -> FSRSCard | None:
+        rows = conn.execute(
+            """
+            SELECT id, ease, time
+            FROM revlog
+            WHERE cid = ? AND ease IN (1, 2, 3, 4)
+            ORDER BY id ASC
+            """,
+            (card_id,),
+        ).fetchall()
+
+        if not rows:
+            return None
+
+        logs: list[ReviewLog] = []
+        for r in rows:
+            rid_ms = int(r["id"])
+            ease = int(r["ease"])
+            try:
+                reviewed_at = datetime.fromtimestamp(rid_ms / 1000.0, tz=UTC)
+            except (OSError, OverflowError, ValueError):
+                continue
+
+            logs.append(
+                ReviewLog(
+                    card_id=card_id,
+                    rating=Rating(ease),
+                    review_datetime=reviewed_at,
+                    review_duration=int(r["time"]) if r["time"] is not None else None,
+                )
+            )
+
+        if not logs:
+            return None
+
+        base = FSRSCard(card_id=card_id, due=now_dt)
+        seeded = scheduler.reschedule_card(card=base, review_logs=logs)
+
+        if seeded.stability is None or seeded.difficulty is None or seeded.last_review is None:
+            return None
+        return seeded

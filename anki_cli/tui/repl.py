@@ -1,23 +1,45 @@
 from __future__ import annotations
 
-import html as _html
 import os
 import re
 import shlex
+import subprocess
 import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
 import click
+from markdownify import markdownify
 from prompt_toolkit import PromptSession
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion, FuzzyCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
+from rich.text import Text
 
 from anki_cli.cli.dispatcher import get_command, list_commands
 from anki_cli.cli.params import preprocess_argv
+
+from .colors import (
+    BLUE,
+    CYAN,
+    DIM,
+    GREEN,
+    MENU_BG,
+    RED,
+    SELECTION_BG,
+    TEXT,
+    TOOLBAR_BG,
+)
+
+console = Console()
 
 _IN_REPL = False
 _LOGO = r"""
@@ -69,9 +91,7 @@ _BR_RE = re.compile(r"(?i)<br\\s*/?>")
 
 
 def _strip_html(value: str) -> str:
-    text = _BR_RE.sub("\n", value)
-    text = _TAG_RE.sub("", text)
-    return _html.unescape(text).strip()
+    return markdownify(value).strip()
 
 
 def _history_path() -> Path:
@@ -87,7 +107,9 @@ class _AnkiCompleter(Completer):
     def __init__(self) -> None:
         self._commands: list[str] = []
         self._options_cache: dict[str, list[str]] = {}
-        self._builtins = ["help", "quit", "exit", "clear", "set"]
+        self._builtins = [
+            "help", "quit", "exit", "clear", "set", "use",
+        ]
 
     def _ensure_commands(self) -> None:
         if not self._commands:
@@ -122,7 +144,9 @@ class _AnkiCompleter(Completer):
         self._ensure_commands()
 
         if not words or (len(words) == 1 and not text.endswith(" ")):
-            candidates = self._commands + list(_ALIASES.keys()) + self._builtins
+            candidates = (
+                self._commands + list(_ALIASES.keys()) + self._builtins
+            )
             seen: set[str] = set()
             for c in candidates:
                 if c in seen:
@@ -144,9 +168,15 @@ class _AnkiCompleter(Completer):
 
 
 _STYLE = Style.from_dict({
-    "prompt.arrow": "ansigreen bold",
-    "bottom-toolbar": "bg:ansiblack ansiwhite",
+    "prompt.arrow": f"{CYAN} bold",
+    "bottom-toolbar": f"bg:{TOOLBAR_BG} {TEXT}",
     "bottom-toolbar.text": "",
+    "completion-menu.completion": f"bg:{MENU_BG} {TEXT}",
+    "completion-menu.completion.current": f"bg:{SELECTION_BG} {TEXT} bold",
+    "completion-menu.meta.completion": f"bg:{MENU_BG} {DIM}",
+    "completion-menu.meta.completion.current": f"bg:{SELECTION_BG} {TEXT}",
+    "scrollbar.background": f"bg:{TOOLBAR_BG}",
+    "scrollbar.button": f"bg:{DIM}",
 })
 
 
@@ -160,13 +190,17 @@ def _invoke_command(ctx_obj: dict[str, Any], raw_args: list[str]) -> None:
 
     cmd = get_command(cmd_name)
     if cmd is None:
-        click.echo(f"Unknown command: {args[0]}  (try 'help')", err=True)
+        click.echo(
+            f"Unknown command: {args[0]}  (try 'help')", err=True
+        )
         return
 
     parent = click.Context(click.Group("anki"), obj=dict(ctx_obj))
     try:
         with parent:
-            ctx = cmd.make_context(cmd_name, list(cmd_args), parent=parent)
+            ctx = cmd.make_context(
+                cmd_name, list(cmd_args), parent=parent
+            )
             with ctx:
                 cmd.invoke(ctx)
     except click.exceptions.Exit:
@@ -203,27 +237,63 @@ def _grouped_help() -> None:
             desc = cmd.help.strip().split("\n")[0][:55]
         groups.setdefault(prefix, []).append((name, desc))
 
-    click.echo("")
+    console.print()
     for group_name in sorted(groups.keys()):
-        label = "General" if group_name == "_general" else group_name.capitalize()
-        click.echo(click.style(f"  {label}", bold=True))
+        label = (
+            "General" if group_name == "_general"
+            else group_name.capitalize()
+        )
+        console.print(f"  [bold {BLUE}]{label}[/]")
+        
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column("Command", style=CYAN, width=24)
+        table.add_column("Description", style=DIM)
+        
         for name, desc in groups[group_name]:
-            padded = f"    {name:<24}"
-            click.echo(f"{padded}{desc}")
-        click.echo("")
+            table.add_row(f"    {name}", desc)
+            
+        console.print(table)
+        console.print()
 
     if _ALIASES:
-        click.echo(click.style("  Aliases", bold=True))
+        console.print(f"  [bold {BLUE}]Aliases[/]")
+        alias_table = Table(show_header=False, box=None, padding=(0, 2))
+        alias_table.add_column("Alias", style=CYAN, width=24)
+        alias_table.add_column("Target", style=DIM)
         for alias, target in sorted(_ALIASES.items()):
-            click.echo(f"    {alias:<24}{target}")
-        click.echo("")
+            alias_table.add_row(f"    {alias}", target)
+        console.print(alias_table)
+        console.print()
 
-    click.echo(click.style("  Shell", bold=True))
-    click.echo(f"    {'help [command]':<24}Show help")
-    click.echo(f"    {'set format <fmt>':<24}Switch output format")
-    click.echo(f"    {'clear':<24}Clear screen")
-    click.echo(f"    {'quit':<24}Exit")
-    click.echo("")
+    console.print(f"  [bold {BLUE}]Shell[/]")
+    shell_table = Table(show_header=False, box=None, padding=(0, 2))
+    shell_table.add_column("Command", style=CYAN, width=24)
+    shell_table.add_column("Description", style=DIM)
+    shell_table.add_row("    help [command]", "Show help")
+    shell_table.add_row("    use <deck>", "Set default deck context")
+    shell_table.add_row("    use", "Clear deck context")
+    shell_table.add_row("    set format <fmt>", "Switch output format")
+    shell_table.add_row("    !<cmd>", "Run a shell command")
+    shell_table.add_row("    !!", "Repeat last command")
+    shell_table.add_row("    clear", "Clear screen")
+    shell_table.add_row("    quit", "Exit")
+    console.print(shell_table)
+    console.print()
+
+
+def _fetch_due_counts(ctx_obj: dict[str, Any], deck: str | None) -> str:
+    try:
+        from anki_cli.backends.factory import backend_session_from_context
+        with backend_session_from_context(ctx_obj) as backend:
+            counts = backend.get_due_counts(
+                deck=deck.strip() if deck else None
+            )
+            new = counts.get("new", 0)
+            learn = counts.get("learn", 0)
+            review = counts.get("review", 0)
+            return f"new={new} learn={learn} review={review}"
+    except Exception:
+        return ""
 
 
 def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
@@ -234,7 +304,7 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
         backend_ctx = backend_session_from_context(ctx_obj)
         backend = backend_ctx.__enter__()
     except Exception as exc:
-        click.echo(f"Error: {exc}", err=True)
+        console.print(f"[#f7768e]Error:[/] {exc}")
         return
 
     undo = UndoStore()
@@ -245,83 +315,123 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
             card_id: int | None = None
             kind = "none"
 
-            if getattr(backend, "name", "") == "direct" and hasattr(backend, "_store"):
+            if (
+                getattr(backend, "name", "") == "direct"
+                and hasattr(backend, "_store")
+            ):
                 store = cast(Any, backend._store)
                 if hasattr(store, "get_next_due_card"):
                     picked = store.get_next_due_card(deck)
-                    card_id = picked.get("card_id") if isinstance(picked, dict) else None
-                    kind = str(picked.get("kind", "none")) if isinstance(picked, dict) else "none"
+                    cid = picked.get("card_id") if isinstance(picked, dict) else None
+                    card_id = int(cid) if isinstance(cid, int) else None
+                    kind = (
+                        str(picked.get("kind", "none"))
+                        if isinstance(picked, dict) else "none"
+                    )
 
             if card_id is None:
                 from anki_cli.core.scheduler import pick_next_due_card_id
-                card_id, kind = pick_next_due_card_id(backend, deck=deck)
+                card_id, kind = pick_next_due_card_id(
+                    backend, deck=deck
+                )
 
             if card_id is None:
-                click.echo(
-                    f"\n  No more due cards."
-                    f"  deck={deck or '(all)'}  reviewed={reviewed}\n"
+                console.print(
+                    f"\n  [{DIM}]No more due cards.[/]"
+                    f"  [{DIM}]deck={deck or '(all)'}  reviewed={reviewed}[/]\n"
                 )
                 break
 
             rendered = _render_card_inline(backend, card_id)
             if rendered is None:
-                click.echo("  (render failed, skipping)", err=True)
+                console.print(f"  [{RED}](render failed, skipping)[/]")
                 continue
 
             question, answer = rendered
 
-            click.echo("")
-            click.echo(click.style("  Q: ", bold=True) + question)
-            click.echo(click.style(f"  [{kind}]  card={card_id}", dim=True))
+            console.print()
+            console.print(Panel(
+                Markdown(question),
+                title=f"[bold {CYAN}]Question[/] [{DIM}]({kind} card={card_id})[/]",
+                border_style=CYAN,
+                padding=(1, 2)
+            ))
 
             try:
-                input(click.style("  press enter to reveal...", dim=True))
+                # Use standard input styled nicely
+                input("  press enter to reveal... ")
             except (EOFError, KeyboardInterrupt):
-                click.echo("")
+                console.print()
                 break
 
-            click.echo(click.style("  A: ", bold=True) + answer)
-            click.echo("")
-            click.echo("  1=again  2=hard  3=good  4=easy  u=undo  q=stop")
+            console.print(Panel(
+                Markdown(answer),
+                title=f"[bold {GREEN}]Answer[/]",
+                border_style=GREEN,
+                padding=(1, 2)
+            ))
+            
+            console.print(f"  [{DIM}]1=again  2=hard  3=good  4=easy  u=undo  q=stop[/]")
 
             while True:
                 try:
-                    choice = input(click.style("  rate> ", fg="green", bold=True)).strip().lower()
+                    # Switch click prompt for rich console input for hex coloring
+                    choice = console.input(f"  [bold {GREEN}]rate>[/] ").strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     choice = "q"
 
                 if choice == "q":
-                    click.echo(f"\n  Stopped. reviewed={reviewed}\n")
+                    console.print(
+                        f"\n  [{DIM}]Stopped. reviewed={reviewed}[/]\n"
+                    )
                     return
                 if choice == "u":
-                    if getattr(backend, "name", "") == "direct" and hasattr(backend, "_store"):
-                        col = getattr(backend, "collection_path", None)
+                    if (
+                        getattr(backend, "name", "") == "direct"
+                        and hasattr(backend, "_store")
+                    ):
+                        col = getattr(
+                            backend, "collection_path", None
+                        )
                         collection = str(col) if col is not None else ""
                         item = undo.pop(collection=collection)
                         if item is None:
-                            click.echo("  (nothing to undo)")
+                            console.print(f"  [{DIM}](nothing to undo)[/]")
                             continue
                         try:
-                            cast(Any, backend._store).restore_card_state(item.snapshot)
+                            cast(
+                                Any, backend._store
+                            ).restore_card_state(item.snapshot)
                             reviewed = max(0, reviewed - 1)
-                            click.echo("  (undone)")
+                            console.print(f"  [{DIM}](undone)[/]")
                         except Exception as exc:
-                            click.echo(f"  undo failed: {exc}", err=True)
+                            console.print(
+                                f"  [{RED}]undo failed:[/] {exc}"
+                            )
                     else:
-                        click.echo("  (undo only available for direct backend)")
+                        console.print(
+                            f"  [{DIM}](undo only available for direct backend)[/]"
+                        )
                     continue
 
-                ease_map = {"1": 1, "2": 2, "3": 3, "4": 4,
-                            "again": 1, "hard": 2, "good": 3, "easy": 4}
+                ease_map = {
+                    "1": 1, "2": 2, "3": 3, "4": 4,
+                    "again": 1, "hard": 2, "good": 3, "easy": 4,
+                }
                 ease = ease_map.get(choice)
                 if ease is None:
-                    click.echo("  (1/2/3/4/u/q)")
+                    console.print(f"  [{DIM}](1/2/3/4/u/q)[/]")
                     continue
 
-                if getattr(backend, "name", "") == "direct" and hasattr(backend, "_store"):
+                if (
+                    getattr(backend, "name", "") == "direct"
+                    and hasattr(backend, "_store")
+                ):
                     col = getattr(backend, "collection_path", None)
                     collection = str(col) if col is not None else ""
-                    snap = cast(Any, backend._store).snapshot_card_state(int(card_id))
+                    snap = cast(
+                        Any, backend._store
+                    ).snapshot_card_state(int(card_id))
                     undo.push(UndoItem(
                         collection=collection,
                         card_id=int(card_id),
@@ -330,11 +440,16 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
                     ))
 
                 try:
-                    backend.answer_card(card_id=int(card_id), ease=ease)
+                    backend.answer_card(
+                        card_id=int(card_id), ease=ease
+                    )
                     reviewed += 1
-                    click.echo(click.style(f"  rated {ease}  (reviewed={reviewed})", dim=True))
+                    console.print(
+                        f"  [{DIM}]rated {ease}  (reviewed={reviewed})[/]"
+                    )
                 except Exception as exc:
-                    click.echo(f"  answer failed: {exc}", err=True)
+                    msg = str(exc) or type(exc).__name__
+                    console.print(f"  [{RED}]answer failed:[/] {msg}")
                 break
 
     finally:
@@ -343,11 +458,16 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
             close()
 
 
-def _render_card_inline(backend: Any, card_id: int) -> tuple[str, str] | None:
+def _render_card_inline(
+    backend: Any, card_id: int
+) -> tuple[str, str] | None:
     from anki_cli.core.template import render_template
 
     card_obj = backend.get_card(card_id)
-    card_map = cast(Mapping[str, Any], card_obj) if isinstance(card_obj, Mapping) else {}
+    card_map = (
+        cast(Mapping[str, Any], card_obj)
+        if isinstance(card_obj, Mapping) else {}
+    )
 
     note_id: int | None = None
     for key in ("note", "nid", "noteId", "note_id"):
@@ -358,7 +478,8 @@ def _render_card_inline(backend: Any, card_id: int) -> tuple[str, str] | None:
     if note_id is None:
         return None
 
-    ord_ = int(card_map.get("ord", 0)) if isinstance(card_map.get("ord"), int) else 0
+    raw_ord = card_map.get("ord")
+    ord_ = int(raw_ord) if isinstance(raw_ord, int) else 0
     fields_map = backend.get_note_fields(note_id=note_id, fields=None)
 
     notetype_name: str | None = None
@@ -367,7 +488,10 @@ def _render_card_inline(backend: Any, card_id: int) -> tuple[str, str] | None:
         notetype_name = raw_nt.strip()
     else:
         note_obj = backend.get_note(note_id)
-        if isinstance(note_obj, Mapping) and isinstance(note_obj.get("modelName"), str):
+        if (
+            isinstance(note_obj, Mapping)
+            and isinstance(note_obj.get("modelName"), str)
+        ):
             notetype_name = str(note_obj["modelName"]).strip()
     if not notetype_name:
         return None
@@ -385,7 +509,11 @@ def _render_card_inline(backend: Any, card_id: int) -> tuple[str, str] | None:
 
     tpl: Mapping[str, Any] | None = None
     for _name, t in items:
-        if isinstance(t, Mapping) and isinstance(t.get("ord"), int) and t["ord"] == ord_:
+        if (
+            isinstance(t, Mapping)
+            and isinstance(t.get("ord"), int)
+            and t["ord"] == ord_
+        ):
             tpl = cast(Mapping[str, Any], t)
             break
     if tpl is None and 0 <= ord_ < len(items):
@@ -403,7 +531,8 @@ def _render_card_inline(backend: Any, card_id: int) -> tuple[str, str] | None:
     if kind == "cloze":
         cloze_index = ord_ + 1
         question = render_template(
-            front_tmpl, fields_map, cloze_index=cloze_index, reveal_cloze=False,
+            front_tmpl, fields_map,
+            cloze_index=cloze_index, reveal_cloze=False,
         )
         answer = render_template(
             back_tmpl, fields_map, front_side=question,
@@ -411,7 +540,9 @@ def _render_card_inline(backend: Any, card_id: int) -> tuple[str, str] | None:
         )
     else:
         question = render_template(front_tmpl, fields_map)
-        answer = render_template(back_tmpl, fields_map, front_side=question)
+        answer = render_template(
+            back_tmpl, fields_map, front_side=question
+        )
 
     return _strip_html(question), _strip_html(answer)
 
@@ -419,7 +550,7 @@ def _render_card_inline(backend: Any, card_id: int) -> tuple[str, str] | None:
 def run_repl(ctx_obj: dict[str, Any]) -> None:
     global _IN_REPL
     if _IN_REPL:
-        click.echo("Already in interactive shell.", err=True)
+        console.print(f"[{RED}]Already in interactive shell.[/]")
         return
     _IN_REPL = True
 
@@ -428,14 +559,24 @@ def run_repl(ctx_obj: dict[str, Any]) -> None:
         ctx_obj["format"] = "table"
 
         last_cmd_ms: float | None = None
+        last_command: str | None = None
+        deck_context: str | None = None
+        due_status: str = ""
+
+        def _refresh_due() -> None:
+            nonlocal due_status
+            due_status = _fetch_due_counts(ctx_obj, deck_context)
+
+        _refresh_due()
 
         def _toolbar() -> HTML:
             backend = ctx_obj.get("backend", "?")
             fmt = ctx_obj.get("format", "table")
-            parts = [
-                f"<b>{backend}</b>",
-                f"format={fmt}",
-            ]
+            parts = [f"<b>{backend}</b>", f"format={fmt}"]
+            if deck_context:
+                parts.append(f"deck={deck_context}")
+            if due_status:
+                parts.append(due_status)
             if last_cmd_ms is not None:
                 parts.append(f"{last_cmd_ms:.0f}ms")
             return HTML("  ".join(parts))
@@ -446,31 +587,32 @@ def run_repl(ctx_obj: dict[str, Any]) -> None:
             history=FileHistory(str(_history_path())),
             completer=FuzzyCompleter(inner_completer),
             style=_STYLE,
-            complete_while_typing=False,
+            complete_while_typing=True,
             bottom_toolbar=_toolbar,
+            auto_suggest=AutoSuggestFromHistory(),
         )
 
         backend = ctx_obj.get("backend", "?")
 
-        logo_lines = _LOGO.strip().splitlines()
-        info_lines = [
-            "",
-            "anki-cli 0.1.0",
-            "",
-            f"{backend} backend",
-            "",
-            "Tab to complete",
-            "Ctrl+R to search",
-            "Ctrl+D to quit",
-        ]
+        header_table = Table.grid(padding=(0, 4))
+        header_table.add_column("Logo")
+        header_table.add_column("Title", vertical="middle")
 
-        max_logo_width = max(len(ln) for ln in logo_lines)
-        pad = max_logo_width + 4
-        for i in range(max(len(logo_lines), len(info_lines))):
-            left = logo_lines[i] if i < len(logo_lines) else ""
-            right = info_lines[i] if i < len(info_lines) else ""
-            click.echo(f"{left:<{pad}}{right}")
-        click.echo("")
+        logo_text = Text(_LOGO.strip("\n"))
+        logo_text.stylize(f"bold {BLUE}")
+
+        title_text = Text(f"anki-cli 0.1.0\n", style=f"bold {BLUE}")
+        title_text.append(f"{backend} backend", style=DIM)
+
+        header_table.add_row(logo_text, title_text)
+
+        console.print()
+        console.print(header_table)
+        console.print()
+        console.print(f"  [bold {TEXT}]Interactive Shell[/]")
+        console.print(f"  [{DIM}]Tab to autocomplete, ↑/↓ for history, Ctrl+D to quit[/]")
+        console.print()
+        console.print(Rule(style=DIM))
 
         while True:
             try:
@@ -478,12 +620,17 @@ def run_repl(ctx_obj: dict[str, Any]) -> None:
                     ("class:prompt.arrow", "> "),
                 ])
             except (EOFError, KeyboardInterrupt):
-                click.echo("")
+                console.print()
                 break
 
             stripped = line.strip()
             if not stripped:
                 continue
+
+            # !! repeats last command
+            if stripped == "!!" and last_command:
+                stripped = last_command
+                console.print(f"  [{DIM}]>> {stripped}[/]")
 
             if stripped in {"quit", "exit", ":q"}:
                 break
@@ -504,35 +651,95 @@ def run_repl(ctx_obj: dict[str, Any]) -> None:
                 click.clear()
                 continue
 
-            if stripped.startswith("set format ") or stripped.startswith(":set format "):
+            # ! shell escape
+            if stripped.startswith("!") and stripped != "!!":
+                shell_cmd = stripped[1:].strip()
+                if shell_cmd:
+                    try:
+                        subprocess.run(
+                            shell_cmd, shell=True, check=False
+                        )
+                    except Exception as exc:
+                        console.print(f"  [{RED}]shell error:[/] {exc}")
+                continue
+
+            # use <deck> / use (clear)
+            if stripped == "use" or stripped.startswith("use "):
+                rest = stripped[3:].strip()
+                if rest:
+                    deck_context = rest
+                    console.print(f"  [{DIM}]deck context -> {deck_context}[/]")
+                else:
+                    deck_context = None
+                    console.print(f"  [{DIM}]deck context cleared[/]")
+                _refresh_due()
+                continue
+
+            if (
+                stripped.startswith("set format ")
+                or stripped.startswith(":set format ")
+            ):
                 fmt = stripped.split("format", 1)[1].strip().lower()
                 if fmt in {"table", "json", "md", "csv", "plain"}:
                     ctx_obj["format"] = fmt
-                    click.echo(f"  format -> {fmt}")
+                    console.print(f"  [{DIM}]format -> {fmt}[/]")
                 else:
-                    click.echo("  usage: set format table|json|md|csv|plain", err=True)
+                    console.print(
+                        f"  [{RED}]usage: set format table|json|md|csv|plain[/]"
+                    )
                 continue
 
             if stripped.startswith("review ") or stripped == "review":
                 parts = stripped.split(None, 1)
-                if len(parts) == 1 or parts[1] in {"start", "inline"}:
-                    _inline_review(ctx_obj, deck=None)
+                tail = parts[1] if len(parts) > 1 else ""
+                if not tail or tail in {"start", "inline"}:
+                    _inline_review(ctx_obj, deck=deck_context)
+                    _refresh_due()
+                    last_command = stripped
                     continue
-                if parts[1].startswith("start ") or parts[1].startswith("inline "):
-                    deck_arg = parts[1].split(None, 1)
-                    deck = deck_arg[1].strip() if len(deck_arg) > 1 else None
+                if tail.startswith("start ") or tail.startswith("inline "):
+                    deck_arg = tail.split(None, 1)
+                    deck = (
+                        deck_arg[1].strip() if len(deck_arg) > 1
+                        else deck_context
+                    )
                     _inline_review(ctx_obj, deck=deck)
+                    _refresh_due()
+                    last_command = stripped
                     continue
 
             try:
                 parts = shlex.split(stripped)
             except ValueError as exc:
-                click.echo(f"Parse error: {exc}", err=True)
+                console.print(f"[{RED}]Parse error:[/] {exc}")
                 continue
 
+            # Inject --deck from context if command supports it
+            # and user didn't explicitly provide one
+            if (
+                deck_context
+                and "--deck" not in parts
+                and len(parts) >= 1
+            ):
+                resolved = _ALIASES.get(parts[0], parts[0])
+                cmd = get_command(resolved)
+                if cmd is not None:
+                    deck_params = [
+                        p for p in cmd.params
+                        if isinstance(p, click.Option)
+                        and "--deck" in p.opts
+                    ]
+                    if deck_params:
+                        parts.extend(["--deck", deck_context])
+
+            last_command = stripped
             t0 = time.monotonic()
-            _invoke_command(ctx_obj, parts)
+            
+            with console.status(f"[{DIM}]Running...[/]", spinner="dots"):
+                _invoke_command(ctx_obj, parts)
+                
             last_cmd_ms = (time.monotonic() - t0) * 1000
+            _refresh_due()
 
     finally:
         _IN_REPL = False

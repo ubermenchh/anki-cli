@@ -114,10 +114,7 @@ def _resolve_direct_collection(col_override: Path | None) -> Path | None:
         resolved = col_override.expanduser().resolve()
         return resolved if resolved.exists() else None
 
-    roots = [
-        Path.home() / ".local" / "share" / "Anki2",
-        Path.home() / ".var" / "app" / "net.ankiweb.Anki" / "data" / "Anki2",
-    ]
+    roots = _anki_data_roots()
     filenames = ["collection.anki21b", "collection.anki2"]
 
     candidates: list[Path] = []
@@ -148,7 +145,54 @@ def _resolve_standalone_collection(col_override: Path | None) -> Path:
     return (Path.home() / ".local" / "share" / "anki-cli" / "collection.db").resolve()
 
 
+def _anki_data_roots() -> list[Path]:
+    import sys
+
+    home = Path.home()
+    roots: list[Path] = []
+
+    if sys.platform == "darwin":
+        roots.append(home / "Library" / "Application Support" / "Anki2")
+
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            roots.append(Path(appdata) / "Anki2")
+        else:
+            roots.append(home / "AppData" / "Roaming" / "Anki2")
+
+    else:
+        # Linux: native / AppImage
+        xdg_data = os.environ.get("XDG_DATA_HOME")
+        if xdg_data:
+            roots.append(Path(xdg_data) / "Anki2")
+        else:
+            roots.append(home / ".local" / "share" / "Anki2")
+
+        # Linux: Flatpak
+        roots.append(
+            home / ".var" / "app" / "net.ankiweb.Anki" / "data" / "Anki2"
+        )
+
+        # Linux: Snap
+        roots.append(
+            home / "snap" / "anki" / "current" / ".local" / "share" / "Anki2"
+        )
+
+    return roots
+
+
 def _anki_process_running() -> bool:
+    import sys
+
+    if sys.platform == "win32":
+        return _anki_process_running_windows()
+    if sys.platform == "darwin":
+        return _anki_process_running_macos()
+    return _anki_process_running_linux()
+
+
+def _anki_process_running_linux() -> bool:
     proc_root = Path("/proc")
     if not proc_root.exists():
         return False
@@ -166,7 +210,9 @@ def _anki_process_running() -> bool:
 
         try:
             if comm.exists():
-                name = comm.read_text(encoding="utf-8", errors="ignore").strip().lower()
+                name = comm.read_text(
+                    encoding="utf-8", errors="ignore"
+                ).strip().lower()
                 if name in desktop_names:
                     return True
 
@@ -180,19 +226,49 @@ def _anki_process_running() -> bool:
                 if not argv:
                     continue
 
-                # Check executable token only (avoid matching args like `uv run anki`)
                 argv0_name = Path(argv[0]).name.lower()
                 if argv0_name in desktop_names:
                     return True
 
-                # Flatpak Anki process: `flatpak run net.ankiweb.Anki`
-                if argv0_name == "flatpak" and any(tok == flatpak_app_id for tok in argv[1:]):
+                if argv0_name == "flatpak" and any(
+                    tok == flatpak_app_id for tok in argv[1:]
+                ):
                     return True
 
         except OSError:
             continue
 
     return False
+
+
+def _anki_process_running_macos() -> bool:
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["pgrep", "-xi", "anki"],
+            capture_output=True,
+            timeout=2,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _anki_process_running_windows() -> bool:
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq anki.exe", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        output = result.stdout.lower()
+        return "anki.exe" in output
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
 
 
 def _sqlite_write_locked(db_path: Path) -> bool:

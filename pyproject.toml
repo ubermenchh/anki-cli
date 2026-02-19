@@ -11,6 +11,7 @@ dependencies = [
   "httpx",
   "betterproto[compiler]>=2.0.0b7",
   "pyperclip>=1.11.0",
+  "markdownify>=1.2.2",
 ]
 
 [project.optional-dependencies]
