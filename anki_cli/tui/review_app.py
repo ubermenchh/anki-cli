@@ -17,7 +17,7 @@ from anki_cli.core.template import render_template
 from anki_cli.core.undo import UndoItem, UndoStore, now_epoch_ms
 
 _TAG_RE = re.compile(r"<[^>]+>")
-_BR_RE = re.compile(r"(?i)<br\\s*/?>")
+_BR_RE = re.compile(r"(?i)<br\s*/?>")
 _HR_RE = re.compile(r"(?i)<hr[^>]*>")
 
 
