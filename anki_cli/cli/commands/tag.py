@@ -12,6 +12,7 @@ from anki_cli.backends.factory import (
 )
 from anki_cli.cli.dispatcher import register_command
 from anki_cli.cli.formatter import formatter_from_ctx
+from anki_cli.core.search import SearchParseError
 
 
 def _emit_backend_unavailable(
@@ -29,6 +30,26 @@ def _emit_backend_unavailable(
         details={"backend": str(obj.get("backend", "unknown"))},
     )
     raise click.exceptions.Exit(7) from error
+
+def _emit_invalid_query(
+    *,
+    ctx: click.Context,
+    command: str,
+    query: str | None,
+    error: Exception,
+) -> None:
+    formatter = formatter_from_ctx(ctx)
+    details: dict[str, Any] = {"query": query or ""}
+    if isinstance(error, SearchParseError) and error.position is not None:
+        details["position"] = error.position
+
+    formatter.emit_error(
+        command=command,
+        code="INVALID_INPUT",
+        message=f"Invalid search query: {error}",
+        details=details,
+    )
+    raise click.exceptions.Exit(2) from error
 
 
 def _collect_note_ids(
@@ -89,6 +110,10 @@ def tag_cmd(ctx: click.Context, tag_name: str) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             note_ids = backend.find_notes(query=query)
+    except SearchParseError as exc:
+        _emit_invalid_query(ctx=ctx, command="tag", query=query, error=exc)
+    except AnkiConnectAPIError as exc:
+        _emit_invalid_query(ctx=ctx, command="tag", query=query, error=exc)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="tag", obj=obj, error=exc)
 
@@ -134,6 +159,8 @@ def tag_add_cmd(
         with backend_session_from_context(obj) as backend:
             ids = _collect_note_ids(backend=backend, note_id=note_id, query=query)
             result = backend.add_tags(ids, tags)
+    except SearchParseError as exc:
+        _emit_invalid_query(ctx=ctx, command="tag:add", query=query, error=exc)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="tag:add", obj=obj, error=exc)
     except AnkiConnectAPIError as exc:
@@ -183,6 +210,8 @@ def tag_remove_cmd(
         with backend_session_from_context(obj) as backend:
             ids = _collect_note_ids(backend=backend, note_id=note_id, query=query)
             result = backend.remove_tags(ids, tags)
+    except SearchParseError as exc:
+        _emit_invalid_query(ctx=ctx, command="tag:remove", query=query, error=exc)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="tag:remove", obj=obj, error=exc)
     except AnkiConnectAPIError as exc:

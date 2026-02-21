@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import anki_cli.db.anki_direct as direct_mod
+from anki_cli.core.search import SearchParseError
 from anki_cli.db.anki_direct import AnkiDirectReadStore
 
 
@@ -44,7 +45,11 @@ def _make_store(
             nid INTEGER NOT NULL,
             did INTEGER NOT NULL,
             queue INTEGER NOT NULL,
-            due INTEGER NOT NULL
+            due INTEGER NOT NULL,
+            ivl INTEGER NOT NULL DEFAULT 0,
+            reps INTEGER NOT NULL DEFAULT 0,
+            lapses INTEGER NOT NULL DEFAULT 0,
+            flags INTEGER NOT NULL DEFAULT 0
         );
         """
     )
@@ -59,7 +64,7 @@ def _make_store(
 
 
 def _seed_store(tmp_path: Path) -> AnkiDirectReadStore:
-    return _make_store(
+    store = _make_store(
         tmp_path,
         decks=[
             (1, "Default"),
@@ -81,9 +86,25 @@ def _seed_store(tmp_path: Path) -> AnkiDirectReadStore:
             (1005, 102, 3, 2, 11),        # review due (with now=1_000_000, crt=0)
             (1006, 103, 1, 2, 12),        # review not due
             (1007, 104, 4, -1, 0),        # suspended
+            (1008, 104, 4, -2, 0),        # buried (manual)
+            (1009, 103, 1, -3, 0),        # buried (scheduler)
         ],
         col_crt=0,
     )
+
+    conn = sqlite3.connect(str(store.db_path))
+    conn.executemany(
+        "UPDATE cards SET ivl = ?, reps = ?, lapses = ?, flags = ? WHERE id = ?",
+        [
+            (3, 6, 1, 3, 1002),
+            (20, 15, 2, 3, 1005),
+            (7, 2, 0, 1, 1006),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    return store
 
 
 def test_find_note_ids_by_tag_and_exact_deck(tmp_path: Path) -> None:
@@ -132,3 +153,56 @@ def test_find_card_ids_combines_due_and_deck_filters(
 
     assert store.find_card_ids("is:due deck:Lang::French") == [1004, 1005]
     assert store.find_card_ids("is:due deck:Default") == []
+
+def test_find_note_ids_supports_or_and_parentheses(tmp_path: Path) -> None:
+    store = _seed_store(tmp_path)
+
+    assert store.find_note_ids("tag:spanish OR tag:bar deck:Default") == [101, 103]
+    assert store.find_note_ids("(tag:spanish OR tag:bar) deck:Default") == [103]
+
+
+def test_find_card_ids_supports_or_and_parentheses(tmp_path: Path) -> None:
+    store = _seed_store(tmp_path)
+
+    assert store.find_card_ids("tag:spanish OR tag:french is:new") == [1001, 1002, 1003]
+    assert store.find_card_ids("(tag:spanish OR tag:french) is:new") == [1001]
+
+
+def test_find_note_and_card_ids_support_unary_not(tmp_path: Path) -> None:
+    store = _seed_store(tmp_path)
+
+    assert store.find_note_ids("tag:foo -deck:Lang::French") == [101]
+    assert store.find_card_ids("is:review -deck:Default") == [1005]
+
+
+def test_find_card_and_note_ids_flag_filters(tmp_path: Path) -> None:
+    store = _seed_store(tmp_path)
+
+    assert store.find_card_ids("flag:3") == [1002, 1005]
+    assert store.find_note_ids("flag:3") == [101, 102]
+
+
+def test_find_card_and_note_ids_prop_filters(tmp_path: Path) -> None:
+    store = _seed_store(tmp_path)
+
+    assert store.find_card_ids("prop:ivl>10") == [1005]
+    assert store.find_card_ids("prop:reps>=6") == [1002, 1005]
+    assert store.find_note_ids("prop:reps>=6") == [101, 102]
+    assert store.find_note_ids("prop:lapses>1") == [102]
+
+
+def test_find_card_and_note_ids_is_buried(tmp_path: Path) -> None:
+    store = _seed_store(tmp_path)
+
+    assert store.find_card_ids("is:buried") == [1008, 1009]
+    assert store.find_note_ids("is:buried") == [103, 104]
+
+
+def test_invalid_queries_raise_parse_errors(tmp_path: Path) -> None:
+    store = _seed_store(tmp_path)
+
+    with pytest.raises(SearchParseError, match="Missing closing"):
+        store.find_card_ids("(tag:foo OR tag:bar")
+
+    with pytest.raises(SearchParseError, match="Invalid prop filter"):
+        store.find_note_ids("prop:ivl>>3")

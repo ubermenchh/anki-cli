@@ -4,6 +4,7 @@ from typing import Any
 
 import click
 
+from anki_cli.backends.ankiconnect import AnkiConnectAPIError
 from anki_cli.backends.factory import (
     BackendFactoryError,
     BackendNotImplementedError,
@@ -11,6 +12,7 @@ from anki_cli.backends.factory import (
 )
 from anki_cli.cli.dispatcher import register_command
 from anki_cli.cli.formatter import formatter_from_ctx
+from anki_cli.core.search import SearchParseError
 
 
 def _emit_backend_unavailable(
@@ -30,6 +32,27 @@ def _emit_backend_unavailable(
     raise click.exceptions.Exit(7) from error
 
 
+def _emit_invalid_query(
+    *,
+    ctx: click.Context,
+    command: str,
+    query: str | None,
+    error: Exception,
+) -> None:
+    formatter = formatter_from_ctx(ctx)
+    details: dict[str, Any] = {"query": query or ""}
+    if isinstance(error, SearchParseError) and error.position is not None:
+        details["position"] = error.position
+
+    formatter.emit_error(
+        command=command,
+        code="INVALID_INPUT",
+        message=f"Invalid search query: {error}",
+        details=details,
+    )
+    raise click.exceptions.Exit(2) from error
+
+
 @click.command("search")
 @click.option("--query", required=True, help="Anki search query")
 @click.pass_context
@@ -46,6 +69,8 @@ def search_cmd(ctx: click.Context, query: str) -> None:
                 cards.append(backend.get_card(cid))
     except (BackendNotImplementedError, BackendFactoryError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="search", obj=obj, error=exc)
+    except (SearchParseError, AnkiConnectAPIError) as exc:
+        _emit_invalid_query(ctx=ctx, command="search", query=query, error=exc)
 
     formatter.emit_success(
         command="search",

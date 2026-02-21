@@ -22,6 +22,7 @@ from anki_cli.cli.commands.cards import (
     cards_cmd,
 )
 from anki_cli.cli.dispatcher import get_command
+from anki_cli.core.search import SearchParseError
 
 
 def _base_obj(**overrides: Any) -> dict[str, Any]:
@@ -348,3 +349,35 @@ def test_cards_command_registration() -> None:
     assert get_command("card:unbury") is not None
     assert get_command("card:reschedule") is not None
     assert get_command("card:reset") is not None
+
+def test_cards_cmd_invalid_query_parse_error_exit_2(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Backend:
+        def find_cards(self, query: str) -> list[int]:
+            raise SearchParseError("Missing closing ')'", query=query, position=4)
+
+    _patch_session(monkeypatch, Backend())
+
+    runner = CliRunner()
+    result = runner.invoke(cards_cmd, ["--query", "(tag:foo"], obj=_base_obj())
+    payload = _error_payload(result)
+
+    assert result.exit_code == 2
+    assert payload["error"]["code"] == "INVALID_INPUT"
+    assert payload["error"]["details"]["query"] == "(tag:foo"
+    assert payload["error"]["details"]["position"] == 4
+
+
+def test_cards_cmd_invalid_query_ankiconnect_error_exit_2(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Backend:
+        def find_cards(self, query: str) -> list[int]:
+            raise AnkiConnectAPIError("findCards", "Invalid search")
+
+    _patch_session(monkeypatch, Backend())
+
+    runner = CliRunner()
+    result = runner.invoke(cards_cmd, ["--query", "bad("], obj=_base_obj(backend="ankiconnect"))
+    payload = _error_payload(result)
+
+    assert result.exit_code == 2
+    assert payload["error"]["code"] == "INVALID_INPUT"
+    assert payload["error"]["details"]["query"] == "bad("

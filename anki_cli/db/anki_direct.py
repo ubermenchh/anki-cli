@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 import sqlite3
 import time
 from collections.abc import Iterator, Mapping, Sequence
@@ -14,6 +13,8 @@ from typing import TYPE_CHECKING, Any, cast
 import betterproto
 from fsrs import Card as FSRSCard
 from fsrs import Rating, ReviewLog, Scheduler, State
+
+from anki_cli.core.search import compile_card_query, compile_note_query
 
 if TYPE_CHECKING:
     from anki_cli.backends.protocol import JSONValue
@@ -586,18 +587,23 @@ class AnkiDirectReadStore:
     # ---- notes ------------------------------------------------------------
 
     def find_note_ids(self, query: str) -> list[int]:
-        clauses, params, joins = self._note_query_to_sql(query)
+        now_sec = int(time.time())
+        due_day_index = self._today_due_index(now_sec)
+        compiled = compile_note_query(query, now_sec=now_sec, due_day_index=due_day_index)
+
+        joins_sql = ""
+        if compiled.joins:
+            joins_sql = "\n            " + "\n            ".join(compiled.joins)
 
         sql = f"""
             SELECT DISTINCT n.id
-            FROM notes AS n
-            {joins}
-            WHERE {" AND ".join(clauses)}
+            FROM notes AS n{joins_sql}
+            WHERE {compiled.where}
             ORDER BY n.id
         """
 
         with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
+            rows = conn.execute(sql, compiled.params).fetchall()
         return [int(row["id"]) for row in rows]
 
     def get_note(self, note_id: int) -> dict[str, JSONValue]:
@@ -667,19 +673,23 @@ class AnkiDirectReadStore:
     # ---- cards ------------------------------------------------------------
 
     def find_card_ids(self, query: str) -> list[int]:
-        clauses, params, joins = self._card_query_to_sql(query)
+        now_sec = int(time.time())
+        due_day_index = self._today_due_index(now_sec)
+        compiled = compile_card_query(query, now_sec=now_sec, due_day_index=due_day_index)
+
+        joins_sql = ""
+        if compiled.joins:
+            joins_sql = "\n            " + "\n            ".join(compiled.joins)
 
         sql = f"""
             SELECT DISTINCT c.id
-            FROM cards AS c
-            JOIN notes AS n ON n.id = c.nid
-            {joins}
-            WHERE {" AND ".join(clauses)}
+            FROM cards AS c{joins_sql}
+            WHERE {compiled.where}
             ORDER BY c.id
         """
 
         with self._connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
+            rows = conn.execute(sql, compiled.params).fetchall()
         return [int(row["id"]) for row in rows]
 
     def get_card(self, card_id: int) -> dict[str, JSONValue]:
@@ -2091,93 +2101,6 @@ class AnkiDirectReadStore:
 
         return [self._revlog_row_to_item(row) for row in rows]
 
-    def _note_query_to_sql(self, query: str) -> tuple[list[str], list[JSONValue], str]:
-        tokens = self._tokenize(query)
-        clauses = ["1=1"]
-        params: list[JSONValue] = []
-        joins = "LEFT JOIN cards AS c ON c.nid = n.id LEFT JOIN decks AS d ON d.id = c.did"
-
-        for token in tokens:
-            low = token.lower()
-            if low.startswith("nid:"):
-                nid = self._parse_int_token(token, "nid:")
-                clauses.append("n.id = ?")
-                params.append(nid)
-            elif low.startswith("tag:"):
-                tag = self._strip_quotes(token[4:])
-                clauses.append("n.tags LIKE ?")
-                params.append(f"% {tag} %")
-            elif low.startswith("deck:"):
-                deck = self._deck_like_value(token[5:])
-                clauses.append("d.name LIKE ?")
-                params.append(deck)
-            elif low.startswith("added:"):
-                days = self._parse_int_token(token, "added:")
-                cutoff = int(time.time()) - (days * 86400)
-                clauses.append("n.mod >= ?")
-                params.append(cutoff)
-            else:
-                clauses.append("n.flds LIKE ?")
-                params.append(f"%{token}%")
-
-        return clauses, params, joins
-
-    def _card_query_to_sql(self, query: str) -> tuple[list[str], list[JSONValue], str]:
-        tokens = self._tokenize(query)
-        clauses = ["1=1"]
-        params: list[JSONValue] = []
-        joins = "LEFT JOIN decks AS d ON d.id = c.did"
-
-        now_sec = int(time.time())
-        due_day_index = self._today_due_index(now_sec)
-
-        for token in tokens:
-            low = token.lower()
-            if low.startswith("cid:"):
-                cid = self._parse_int_token(token, "cid:")
-                clauses.append("c.id = ?")
-                params.append(cid)
-            elif low.startswith("nid:"):
-                nid = self._parse_int_token(token, "nid:")
-                clauses.append("c.nid = ?")
-                params.append(nid)
-            elif low.startswith("tag:"):
-                tag = self._strip_quotes(token[4:])
-                clauses.append("n.tags LIKE ?")
-                params.append(f"% {tag} %")
-            elif low.startswith("deck:"):
-                deck = self._deck_like_value(token[5:])
-                clauses.append("d.name LIKE ?")
-                params.append(deck)
-            elif low.startswith("added:"):
-                days = self._parse_int_token(token, "added:")
-                cutoff = int(time.time()) - (days * 86400)
-                clauses.append("n.mod >= ?")
-                params.append(cutoff)
-            elif low == "is:new":
-                clauses.append("c.queue = 0")
-            elif low == "is:learn":
-                clauses.append("c.queue IN (1, 3)")
-            elif low == "is:review":
-                clauses.append("c.queue = 2")
-            elif low == "is:suspended":
-                clauses.append("c.queue = -1")
-            elif low == "is:due":
-                clauses.append(
-                    "("
-                    "c.queue = 0 OR "
-                    "(c.queue IN (1, 3) AND c.due <= ?) OR "
-                    "(c.queue = 2 AND c.due <= ?)"
-                    ")"
-                )
-                params.append(now_sec)
-                params.append(due_day_index)
-            else:
-                clauses.append("n.flds LIKE ?")
-                params.append(f"%{token}%")
-
-        return clauses, params, joins
-
     # ---- low-level helpers ------------------------------------------------
 
     def _today_due_index(self, now_sec: int) -> int:
@@ -2206,31 +2129,6 @@ class AnkiDirectReadStore:
 
         placeholders = ", ".join(["?"] * len(ids))
         return f" AND did IN ({placeholders})", tuple(ids)
-
-    def _tokenize(self, query: str) -> list[str]:
-        raw = query.strip()
-        if not raw:
-            return []
-        try:
-            return shlex.split(raw)
-        except ValueError:
-            return [raw]
-
-    def _parse_int_token(self, token: str, prefix: str) -> int:
-        raw = token[len(prefix) :].strip()
-        return int(self._strip_quotes(raw))
-
-    def _strip_quotes(self, value: str) -> str:
-        out = value.strip()
-        if (out.startswith('"') and out.endswith('"')) or (
-            out.startswith("'") and out.endswith("'")
-        ):
-            return out[1:-1]
-        return out
-
-    def _deck_like_value(self, raw: str) -> str:
-        deck = self._strip_quotes(raw)
-        return deck.replace("*", "%")
 
     def _split_fields(self, value: str) -> list[str]:
         return value.split("\x1f") if value else []

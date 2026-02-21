@@ -7,9 +7,11 @@ from typing import Any
 from click.testing import CliRunner
 
 import anki_cli.cli.commands.search as search_cmd_mod
+from anki_cli.backends.ankiconnect import AnkiConnectAPIError
 from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.cli.commands.search import search_cmd
 from anki_cli.cli.dispatcher import get_command
+from anki_cli.core.search import SearchParseError
 
 
 def _base_obj(**overrides: Any) -> dict[str, Any]:
@@ -90,3 +92,41 @@ def test_search_cmd_backend_unavailable_exit_7(monkeypatch) -> None:
 
 def test_search_command_registered() -> None:
     assert get_command("search") is not None
+
+def test_search_cmd_invalid_query_parse_error_exit_2(monkeypatch) -> None:
+    class Backend:
+        def find_cards(self, query: str) -> list[int]:
+            raise SearchParseError("Unexpected token", query=query, position=1)
+
+        def get_card(self, card_id: int) -> dict[str, Any]:
+            raise AssertionError("get_card should not be called on invalid query")
+
+    _patch_session(monkeypatch, Backend())
+
+    runner = CliRunner()
+    result = runner.invoke(search_cmd, ["--query", "("], obj=_base_obj())
+    payload = _error_payload(result)
+
+    assert result.exit_code == 2
+    assert payload["error"]["code"] == "INVALID_INPUT"
+    assert payload["error"]["details"]["query"] == "("
+    assert payload["error"]["details"]["position"] == 1
+
+
+def test_search_cmd_invalid_query_ankiconnect_error_exit_2(monkeypatch) -> None:
+    class Backend:
+        def find_cards(self, query: str) -> list[int]:
+            raise AnkiConnectAPIError("findCards", "Invalid query")
+
+        def get_card(self, card_id: int) -> dict[str, Any]:
+            raise AssertionError("get_card should not be called on invalid query")
+
+    _patch_session(monkeypatch, Backend())
+
+    runner = CliRunner()
+    result = runner.invoke(search_cmd, ["--query", "bad("], obj=_base_obj(backend="ankiconnect"))
+    payload = _error_payload(result)
+
+    assert result.exit_code == 2
+    assert payload["error"]["code"] == "INVALID_INPUT"
+    assert payload["error"]["details"]["query"] == "bad("

@@ -13,6 +13,7 @@ from anki_cli.backends.factory import (
 )
 from anki_cli.cli.dispatcher import register_command
 from anki_cli.cli.formatter import formatter_from_ctx
+from anki_cli.core.search import SearchParseError
 from anki_cli.core.template import render_template
 
 
@@ -32,6 +33,26 @@ def _emit_backend_unavailable(
     )
     raise click.exceptions.Exit(7) from error
 
+def _emit_invalid_query(
+    *,
+    ctx: click.Context,
+    command: str,
+    query: str | None,
+    error: Exception,
+) -> None:
+    formatter = formatter_from_ctx(ctx)
+    details: dict[str, Any] = {"query": query or ""}
+    if isinstance(error, SearchParseError) and error.position is not None:
+        details["position"] = error.position
+
+    formatter.emit_error(
+        command=command,
+        code="INVALID_INPUT",
+        message=f"Invalid search query: {error}",
+        details=details,
+    )
+    raise click.exceptions.Exit(2) from error
+
 
 def _collect_card_ids(*, backend: Any, card_id: int | None, query: str | None) -> list[int]:
     if card_id is not None:
@@ -50,6 +71,10 @@ def cards_cmd(ctx: click.Context, query: str) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             ids = backend.find_cards(query=query)
+    except SearchParseError as exc:
+        _emit_invalid_query(ctx=ctx, command="cards", query=query, error=exc)
+    except AnkiConnectAPIError as exc:
+        _emit_invalid_query(ctx=ctx, command="cards", query=query, error=exc)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="cards", obj=obj, error=exc)
 
@@ -239,6 +264,8 @@ def card_suspend_cmd(ctx: click.Context, card_id: int | None, query: str | None)
         with backend_session_from_context(obj) as backend:
             target_ids = [card_id] if card_id is not None else backend.find_cards(query=query or "")
             result = backend.suspend_cards(target_ids)
+    except SearchParseError as exc:
+        _emit_invalid_query(ctx=ctx, command="card:suspend", query=query, error=exc)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="card:suspend", obj=obj, error=exc)
     except AnkiConnectAPIError as exc:
@@ -274,6 +301,8 @@ def card_unsuspend_cmd(ctx: click.Context, card_id: int | None, query: str | Non
         with backend_session_from_context(obj) as backend:
             target_ids = [card_id] if card_id is not None else backend.find_cards(query=query or "")
             result = backend.unsuspend_cards(target_ids)
+    except SearchParseError as exc:
+        _emit_invalid_query(ctx=ctx, command="card:unsuspend", query=query, error=exc)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="card:unsuspend", obj=obj, error=exc)
     except AnkiConnectAPIError as exc:
@@ -345,6 +374,8 @@ def card_move_cmd(
         with backend_session_from_context(obj) as backend:
             ids = _collect_card_ids(backend=backend, card_id=card_id, query=query)
             result = backend.move_cards(ids, deck_name.strip())
+    except SearchParseError as exc:
+        _emit_invalid_query(ctx=ctx, command="card:move", query=query, error=exc)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="card:move", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError, ValueError) as exc:
@@ -373,6 +404,8 @@ def card_flag_cmd(ctx: click.Context, card_id: int | None, query: str | None, fl
         with backend_session_from_context(obj) as backend:
             ids = _collect_card_ids(backend=backend, card_id=card_id, query=query)
             result = backend.set_card_flag(ids, flag)
+    except SearchParseError as exc:
+        _emit_invalid_query(ctx=ctx, command="card:flag", query=query, error=exc)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="card:flag", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError, ValueError) as exc:
@@ -400,6 +433,8 @@ def card_bury_cmd(ctx: click.Context, card_id: int | None, query: str | None) ->
         with backend_session_from_context(obj) as backend:
             ids = _collect_card_ids(backend=backend, card_id=card_id, query=query)
             result = backend.bury_cards(ids)
+    except SearchParseError as exc:
+        _emit_invalid_query(ctx=ctx, command="card:bury", query=query, error=exc)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="card:bury", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError, ValueError) as exc:
@@ -453,6 +488,8 @@ def card_reschedule_cmd(
         with backend_session_from_context(obj) as backend:
             ids = _collect_card_ids(backend=backend, card_id=card_id, query=query)
             result = backend.reschedule_cards(ids, days)
+    except SearchParseError as exc:
+        _emit_invalid_query(ctx=ctx, command="card:reschedule", query=query, error=exc)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="card:reschedule", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError, ValueError) as exc:
@@ -482,6 +519,8 @@ def card_reset_cmd(ctx: click.Context, card_id: int | None, query: str | None) -
         with backend_session_from_context(obj) as backend:
             ids = _collect_card_ids(backend=backend, card_id=card_id, query=query)
             result = backend.reset_cards(ids)
+    except SearchParseError as exc:
+        _emit_invalid_query(ctx=ctx, command="card:reset", query=query, error=exc)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="card:reset", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError, ValueError) as exc:
