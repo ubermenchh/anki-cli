@@ -19,7 +19,7 @@ from anki_cli.cli.commands.cards import (
     card_suspend_cmd,
     card_unbury_cmd,
     card_unsuspend_cmd,
-    cards_cmd,
+    cards_ids_cmd,
 )
 from anki_cli.cli.dispatcher import get_command
 from anki_cli.core.search import SearchParseError
@@ -60,7 +60,7 @@ def _patch_session(monkeypatch: pytest.MonkeyPatch, backend: Any) -> None:
     monkeypatch.setattr(cards_cmd_mod, "backend_session_from_context", fake_session)
 
 
-def test_cards_cmd_success(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cards_ids_cmd_success(monkeypatch: pytest.MonkeyPatch) -> None:
     class Backend:
         def find_cards(self, query: str) -> list[int]:
             assert query == "deck:Default"
@@ -69,21 +69,21 @@ def test_cards_cmd_success(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_session(monkeypatch, Backend())
 
     runner = CliRunner()
-    result = runner.invoke(cards_cmd, ["--query", "deck:Default"], obj=_base_obj())
+    result = runner.invoke(cards_ids_cmd, ["--query", "deck:Default"], obj=_base_obj())
     payload = _success_payload(result)
 
-    assert payload["meta"]["command"] == "cards"
+    assert payload["meta"]["command"] == "cards:ids"
     assert payload["data"] == {"query": "deck:Default", "count": 2, "ids": [1, 2]}
 
 
-def test_cards_cmd_backend_unavailable_exit_7(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cards_ids_cmd_backend_unavailable_exit_7(monkeypatch: pytest.MonkeyPatch) -> None:
     def failing_session(obj: dict[str, Any]):
         raise BackendFactoryError("backend down")
 
     monkeypatch.setattr(cards_cmd_mod, "backend_session_from_context", failing_session)
 
     runner = CliRunner()
-    result = runner.invoke(cards_cmd, ["--query", ""], obj=_base_obj(backend="direct"))
+    result = runner.invoke(cards_ids_cmd, ["--query", ""], obj=_base_obj(backend="direct"))
 
     payload = _error_payload(result)
     assert result.exit_code == 7
@@ -340,7 +340,7 @@ def test_card_unbury_success_with_and_without_deck(monkeypatch: pytest.MonkeyPat
 
 
 def test_cards_command_registration() -> None:
-    assert get_command("cards") is not None
+    assert get_command("cards:ids") is not None
     assert get_command("card:suspend") is not None
     assert get_command("card:unsuspend") is not None
     assert get_command("card:move") is not None
@@ -350,7 +350,7 @@ def test_cards_command_registration() -> None:
     assert get_command("card:reschedule") is not None
     assert get_command("card:reset") is not None
 
-def test_cards_cmd_invalid_query_parse_error_exit_2(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cards_ids_cmd_invalid_query_parse_error_exit_2(monkeypatch: pytest.MonkeyPatch) -> None:
     class Backend:
         def find_cards(self, query: str) -> list[int]:
             raise SearchParseError("Missing closing ')'", query=query, position=4)
@@ -358,7 +358,7 @@ def test_cards_cmd_invalid_query_parse_error_exit_2(monkeypatch: pytest.MonkeyPa
     _patch_session(monkeypatch, Backend())
 
     runner = CliRunner()
-    result = runner.invoke(cards_cmd, ["--query", "(tag:foo"], obj=_base_obj())
+    result = runner.invoke(cards_ids_cmd, ["--query", "(tag:foo"], obj=_base_obj())
     payload = _error_payload(result)
 
     assert result.exit_code == 2
@@ -367,7 +367,7 @@ def test_cards_cmd_invalid_query_parse_error_exit_2(monkeypatch: pytest.MonkeyPa
     assert payload["error"]["details"]["position"] == 4
 
 
-def test_cards_cmd_invalid_query_ankiconnect_error_exit_2(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cards_ids_cmd_invalid_query_ankiconnect_error_exit_2(monkeypatch: pytest.MonkeyPatch) -> None:
     class Backend:
         def find_cards(self, query: str) -> list[int]:
             raise AnkiConnectAPIError("findCards", "Invalid search")
@@ -375,7 +375,7 @@ def test_cards_cmd_invalid_query_ankiconnect_error_exit_2(monkeypatch: pytest.Mo
     _patch_session(monkeypatch, Backend())
 
     runner = CliRunner()
-    result = runner.invoke(cards_cmd, ["--query", "bad("], obj=_base_obj(backend="ankiconnect"))
+    result = runner.invoke(cards_ids_cmd, ["--query", "bad("], obj=_base_obj(backend="ankiconnect"))
     payload = _error_payload(result)
 
     assert result.exit_code == 2
