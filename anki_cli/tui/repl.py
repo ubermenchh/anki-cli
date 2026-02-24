@@ -24,6 +24,7 @@ from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
+from anki_cli import __version__
 from anki_cli.cli.dispatcher import get_command, list_commands
 from anki_cli.cli.params import preprocess_argv
 
@@ -75,6 +76,7 @@ _ALIASES: dict[str, str] = {
     "nb": "note:bulk",
     "nt": "notetypes",
     "c": "cards",
+    "ci": "cards:ids",
     "t": "tags",
     "s": "search",
     "r": "review:next",
@@ -661,7 +663,7 @@ def _render_header(
 
     return Panel(
         layout,
-        title=f"[bold {BLUE}]anki-cli 0.1.0[/]",
+        title=f"[bold {BLUE}]anki-cli {__version__}[/]",
         border_style=BORDER,
         box=box.ROUNDED,
         padding=(1, 2),
@@ -801,6 +803,33 @@ def run_repl(ctx_obj: dict[str, Any]) -> None:
                     _refresh_due()
                     last_command = stripped
                     continue
+
+            # cards / c  → launch TUI browse app
+            resolved_cmd = _ALIASES.get(stripped.split()[0], stripped.split()[0])
+            if resolved_cmd == "cards":
+                parts = stripped.split(None, 1)
+                query = parts[1].strip() if len(parts) > 1 else ""
+                if deck_context and "deck:" not in query:
+                    if query:
+                        query = f"deck:{deck_context} {query}".strip()
+                    else:
+                        query = f"deck:{deck_context}"
+                try:
+                    from anki_cli.backends.factory import backend_session_from_context as _bsc
+                    from anki_cli.tui.browse_app import BrowseApp
+                    with _bsc(ctx_obj) as browse_backend:
+                        app = BrowseApp(backend=browse_backend, query=query)
+                        app.run()
+                except ImportError:
+                    console.print(
+                        f"[{RED}]Textual is not installed.[/] "
+                        f"[{DIM}]Run: uv sync --extra tui[/]"
+                    )
+                except Exception as exc:
+                    console.print(f"[{RED}]Error:[/] {exc}")
+                last_command = stripped
+                _refresh_due()
+                continue
 
             try:
                 parts = shlex.split(stripped)

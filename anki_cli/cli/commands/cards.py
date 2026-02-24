@@ -60,10 +60,10 @@ def _collect_card_ids(*, backend: Any, card_id: int | None, query: str | None) -
     return backend.find_cards(query=query or "")
 
 
-@click.command("cards")
+@click.command("cards:ids")
 @click.option("--query", default="", help="Anki search query")
 @click.pass_context
-def cards_cmd(ctx: click.Context, query: str) -> None:
+def cards_ids_cmd(ctx: click.Context, query: str) -> None:
     """List card IDs matching a query."""
     obj: dict[str, Any] = ctx.obj or {}
     formatter = formatter_from_ctx(ctx)
@@ -72,14 +72,14 @@ def cards_cmd(ctx: click.Context, query: str) -> None:
         with backend_session_from_context(obj) as backend:
             ids = backend.find_cards(query=query)
     except SearchParseError as exc:
-        _emit_invalid_query(ctx=ctx, command="cards", query=query, error=exc)
+        _emit_invalid_query(ctx=ctx, command="cards:ids", query=query, error=exc)
     except AnkiConnectAPIError as exc:
-        _emit_invalid_query(ctx=ctx, command="cards", query=query, error=exc)
+        _emit_invalid_query(ctx=ctx, command="cards:ids", query=query, error=exc)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="cards", obj=obj, error=exc)
+        _emit_backend_unavailable(ctx=ctx, command="cards:ids", obj=obj, error=exc)
 
     formatter.emit_success(
-        command="cards",
+        command="cards:ids",
         data={"query": query, "count": len(ids), "ids": ids},
     )
 
@@ -532,7 +532,7 @@ def card_reset_cmd(ctx: click.Context, card_id: int | None, query: str | None) -
     formatter.emit_success(command="card:reset", data=result)
 
 
-register_command("cards", cards_cmd)
+register_command("cards:ids", cards_ids_cmd)
 register_command("card", card_cmd)
 register_command("card:suspend", card_suspend_cmd)
 register_command("card:unsuspend", card_unsuspend_cmd)
