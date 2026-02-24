@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from contextlib import contextmanager
 from typing import Any
 
@@ -25,12 +27,18 @@ def _base_obj(**overrides: Any) -> dict[str, Any]:
     return base
 
 
-def _patch_session(monkeypatch, backend: Any) -> None:
+def _patch_session(monkeypatch: pytest.MonkeyPatch, backend: Any) -> None:
     @contextmanager
     def fake_session(obj: dict[str, Any]):
         yield backend
 
     monkeypatch.setattr(browse_cmd_mod, "backend_session_from_context", fake_session)
+
+
+def _patch_browse_module(monkeypatch: pytest.MonkeyPatch, app_cls: type[Any]) -> None:
+    module = types.ModuleType("anki_cli.tui.browse_app")
+    module.BrowseApp = app_cls
+    monkeypatch.setitem(sys.modules, "anki_cli.tui.browse_app", module)
 
 
 def test_cards_command_is_registered() -> None:
@@ -52,12 +60,7 @@ def test_cards_cmd_success_launches_browse_app(monkeypatch: pytest.MonkeyPatch) 
         pass
 
     _patch_session(monkeypatch, Backend())
-    monkeypatch.setattr(browse_cmd_mod, "BrowseApp", FakeApp, raising=False)
-
-    # We need to patch the deferred import inside cards_cmd
-    import anki_cli.tui.browse_app as browse_app_mod
-    original_class = browse_app_mod.BrowseApp
-    monkeypatch.setattr(browse_app_mod, "BrowseApp", FakeApp)
+    _patch_browse_module(monkeypatch, FakeApp)
 
     runner = CliRunner()
     result = runner.invoke(cards_cmd, ["--query", "deck:Test"], obj=_base_obj())
@@ -68,10 +71,12 @@ def test_cards_cmd_success_launches_browse_app(monkeypatch: pytest.MonkeyPatch) 
 def test_cards_cmd_import_error_emits_tui_not_available(monkeypatch: pytest.MonkeyPatch) -> None:
     import builtins
 
+    monkeypatch.delitem(sys.modules, "anki_cli.tui.browse_app", raising=False)
+
     real_import = builtins.__import__
 
     def fake_import(name, *args, **kwargs):
-        if "browse_app" in name:
+        if name == "anki_cli.tui.browse_app":
             raise ImportError("No module named 'textual'")
         return real_import(name, *args, **kwargs)
 
@@ -87,6 +92,15 @@ def test_cards_cmd_import_error_emits_tui_not_available(monkeypatch: pytest.Monk
 
 
 def test_cards_cmd_backend_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeApp:
+        def __init__(self, *, backend: Any, query: str = "") -> None:
+            pass
+
+        def run(self) -> None:
+            pass
+
+    _patch_browse_module(monkeypatch, FakeApp)
+
     def failing_session(obj: dict[str, Any]):
         raise BackendFactoryError("backend down")
 
