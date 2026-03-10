@@ -92,7 +92,11 @@ class AnkiConnectBackend(AnkiBackend):
         }
 
         try:
-            response = self._client.post(self._url, json=payload)
+            response = self._client.post(
+                self._url,
+                json=payload,
+                headers={"Connection": "close"},
+            )
             response.raise_for_status()
         except httpx.TimeoutException as exc:
             raise AnkiConnectUnavailableError(
@@ -101,6 +105,10 @@ class AnkiConnectBackend(AnkiBackend):
         except httpx.ConnectError as exc:
             raise AnkiConnectUnavailableError(
                 f"Cannot connect to AnkiConnect at {self._url}. Is Anki running with the add-on?"
+            ) from exc
+        except httpx.RemoteProtocolError as exc:
+            raise AnkiConnectUnavailableError(
+                f"AnkiConnect at {self._url} disconnected unexpectedly: {exc}"
             ) from exc
         except httpx.HTTPError as exc:
             raise AnkiConnectUnavailableError(

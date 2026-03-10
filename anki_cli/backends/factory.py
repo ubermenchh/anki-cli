@@ -25,8 +25,10 @@ def create_backend_from_context(obj: dict[str, Any]) -> AnkiBackend:
     app_config = obj.get("app_config")
 
     ankiconnect_url = "http://localhost:8765"
+    allow_non_localhost = False
     if isinstance(app_config, AppConfig):
         ankiconnect_url = app_config.backend.ankiconnect_url
+        allow_non_localhost = app_config.backend.allow_non_localhost
 
     if backend_name == "ankiconnect":
         try:
@@ -34,6 +36,7 @@ def create_backend_from_context(obj: dict[str, Any]) -> AnkiBackend:
                 url=ankiconnect_url,
                 collection_path=collection_path,
                 verify_version=True,
+                allow_non_localhost=allow_non_localhost,
             )
         except AnkiConnectError as exc:
             raise BackendFactoryError(str(exc)) from exc

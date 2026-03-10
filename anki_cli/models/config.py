@@ -11,6 +11,7 @@ class CollectionConfig(BaseModel):
 class BackendConfig(BaseModel):
     prefer: str = Field(default="auto")
     ankiconnect_url: str = "http://localhost:8765"
+    allow_non_localhost: bool = False
 
 
 class DisplayConfig(BaseModel):

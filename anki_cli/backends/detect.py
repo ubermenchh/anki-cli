@@ -40,7 +40,7 @@ def detect_backend(
     if forced == "ankiconnect":
         if not _ankiconnect_reachable(ankiconnect_url):
             raise DetectionError(
-                "AnkiConnect backend forced, but it is not reachable at localhost:8765.",
+                f"AnkiConnect backend forced, but it is not reachable at {ankiconnect_url}.",
                 exit_code=7
             )
         return DetectionResult(
