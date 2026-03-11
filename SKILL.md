@@ -245,11 +245,21 @@ Location: `~/.config/anki-cli/config.toml`
 [backend]
 prefer = "auto"
 ankiconnect_url = "http://localhost:8765"
+allow_non_localhost = false
 
 [display]
 default_output = "table"
 color = true
 day_boundary_hour = 4
+```
+
+For remote AnkiConnect (e.g. via Tailscale or LAN):
+
+```toml
+[backend]
+prefer = "ankiconnect"
+ankiconnect_url = "http://192.168.1.100:8765"
+allow_non_localhost = true
 ```
 
 ## Common Agent Workflows

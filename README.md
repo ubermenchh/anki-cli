@@ -84,6 +84,20 @@ Backend behavior:
 - `ankiconnect`: forwards search queries to `findCards` and `findNotes`
 - `direct`: compiles queries to SQL and executes directly on the collection DB
 
+### Remote AnkiConnect
+
+To connect to AnkiConnect running on a different machine (e.g. via Tailscale or LAN):
+
+```toml
+# ~/.config/anki-cli/config.toml
+[backend]
+prefer = "ankiconnect"
+ankiconnect_url = "http://192.168.1.100:8765"
+allow_non_localhost = true
+```
+
+The remote Anki Desktop must have AnkiConnect configured to accept non-localhost connections. Set `"webBindAddress"` to a specific interface address (e.g. your Tailscale IP) or `"0.0.0.0"` for all interfaces. If binding to all interfaces, consider restricting access with firewall rules.
+
 ## Search Query Language
 
 Supported filters:
