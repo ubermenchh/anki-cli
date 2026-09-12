@@ -35,7 +35,27 @@ def test_emit_success_json_structure(capsys) -> None:
     assert payload["meta"]["backend"] == "direct"
     assert payload["meta"]["collection"] == "/tmp/collection.db"
     assert payload["meta"]["timestamp"].endswith("Z")
+    assert payload["meta"]["warnings"] == []
     assert captured.err == ""
+
+
+def test_emit_success_json_carries_warnings_in_meta_not_stderr(capsys) -> None:
+    formatter = _formatter("json")
+    formatter.emit_success(command="status", data={}, warnings=["full sync ahead"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["meta"]["warnings"] == ["full sync ahead"]
+    assert captured.err == ""
+
+
+def test_emit_success_plain_prints_warnings_to_stderr(capsys) -> None:
+    formatter = _formatter("plain")
+    formatter.emit_success(command="status", data={"a": 1}, warnings=["full sync ahead"])
+
+    captured = capsys.readouterr()
+    assert "warning: full sync ahead" in captured.err
+    assert "warning:" not in captured.out
 
 
 def test_emit_success_accepts_pydantic_model(capsys) -> None:

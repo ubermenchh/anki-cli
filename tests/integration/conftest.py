@@ -33,9 +33,10 @@ CREATE TABLE col (
 """
 
 # Baseline timestamps chosen so tests can assert "moved" without depending on
-# the wall clock: any real ``int(time.time() * 1000)`` is far larger.
-COL_BASE_MOD_MS = 1_000
-COL_BASE_SCM_MS = 2_000
+# the wall clock: negative, so no real or monkeypatched ``time.time()`` (even
+# ``lambda: 0``) can collide with them.
+COL_BASE_MOD_MS = -1
+COL_BASE_SCM_MS = -2
 
 
 def insert_col_row(conn: sqlite3.Connection, *, crt: int = 0) -> None:

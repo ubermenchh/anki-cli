@@ -428,6 +428,11 @@ class AnkiDirectReadStore:
                 (ntid,),
             ).fetchone()
             next_ord = int(max_ord_row["max_ord"]) + 1
+            field_count_before = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM fields WHERE ntid = ?", (ntid,)
+                ).fetchone()[0]
+            )
             now_sec = int(time.time())
             conn.execute(
                 """
@@ -439,7 +444,7 @@ class AnkiDirectReadStore:
             # notes.flds is positional: every existing note needs an empty slot
             # appended or Anki reports a field-count mismatch.
             updated_notes = self._append_field_to_notes(
-                conn, ntid=ntid, field_count=next_ord, now_sec=now_sec
+                conn, ntid=ntid, field_count=field_count_before, now_sec=now_sec
             )
             conn.execute(
                 "UPDATE notetypes SET mtime_secs = ?, usn = -1 WHERE id = ?",
@@ -559,8 +564,9 @@ class AnkiDirectReadStore:
         """Append one empty slot to every note's positional field list.
 
         ``field_count`` is the number of fields *before* the addition; short
-        (legacy) rows are padded to it first so the new slot lands at the right
-        ordinal. Mirrors Anki's ``Note::reorder_fields`` for the append case.
+        (legacy) rows are padded to it and over-long rows truncated to it first
+        so the new slot lands at the right ordinal. Mirrors Anki's
+        ``Note::reorder_fields`` for the append case.
         """
         note_rows = conn.execute(
             "SELECT id, flds FROM notes WHERE mid = ?",
@@ -571,7 +577,7 @@ class AnkiDirectReadStore:
 
         updates: list[tuple[str, int, int]] = []
         for note_row in note_rows:
-            values = self._split_fields(str(note_row["flds"] or ""))
+            values = self._split_fields(str(note_row["flds"] or ""))[:field_count]
             if len(values) < field_count:
                 values.extend([""] * (field_count - len(values)))
             values.append("")

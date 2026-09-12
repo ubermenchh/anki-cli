@@ -18,6 +18,7 @@ from anki_cli.proto.anki.notetypes import (
 from tests.integration.conftest import (
     COL_TABLE_SQL,
     assert_col_modified,
+    col_row,
     insert_col_row,
 )
 
@@ -110,7 +111,22 @@ def _create_basic_notetype(store: AnkiDirectReadStore, *, name: str = "Basic") -
         css="",
         kind="normal",
     )
-    return int(cast(int | str, result["id"]))
+    ntid = int(cast(int | str, result["id"]))
+    _mark_synced(store.db_path, ntid)
+    return ntid
+
+
+def _mark_synced(db_path: Path, ntid: int) -> None:
+    """Pretend a sync completed: mutators must re-flag usn = -1 themselves.
+
+    Without this, the ``usn == -1`` written by ``create_notetype`` would satisfy
+    every later assertion before the mutator under test even runs.
+    """
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE notetypes SET usn = 0, mtime_secs = 0 WHERE id = ?", (ntid,))
+    conn.execute("UPDATE templates SET usn = 0, mtime_secs = 0 WHERE ntid = ?", (ntid,))
+    conn.commit()
+    conn.close()
 
 
 def _notetype_row_by_id(db_path: Path, ntid: int) -> dict[str, Any]:
@@ -329,19 +345,22 @@ def test_add_notetype_field_adds_next_ord_and_duplicate_noop(
     _insert_note(db_path, note_id=100, mid=ntid, fields=["q", "a"])
     # A short (legacy) row must be padded to the old count before the new slot.
     _insert_note(db_path, note_id=101, mid=ntid, fields=["only"])
+    # An over-long (malformed) row is truncated first, as Anki's reorder_fields does.
+    _insert_note(db_path, note_id=102, mid=ntid, fields=["x", "y", "stale"])
 
     added = store.add_notetype_field(name="Basic", field_name=" Hint ")
     assert added == {
         "name": "Basic",
         "field": "Hint",
         "added": True,
-        "updated_notes": 2,
+        "updated_notes": 3,
         "full_sync_required": True,
     }
     # Regression for #42: every note gains an empty trailing slot.
     assert _note_row(db_path, 100)["flds"] == "q\x1fa\x1f"
     assert _note_row(db_path, 100)["usn"] == -1
     assert _note_row(db_path, 101)["flds"] == "only\x1f\x1f"
+    assert _note_row(db_path, 102)["flds"] == "x\x1fy\x1f"
     assert store.get_note_fields(note_id=100) == {"Front": "q", "Back": "a", "Hint": ""}
     assert _notetype_row_by_id(db_path, ntid)["usn"] == -1
     assert_col_modified(db_path, schema=True)
@@ -353,8 +372,11 @@ def test_add_notetype_field_adds_next_ord_and_duplicate_noop(
         (2, "Hint"),
     ]
 
+    before = col_row(db_path)
     dup = store.add_notetype_field(name="Basic", field_name="Hint")
     assert dup == {"name": "Basic", "field": "Hint", "added": False}
+    # A no-op must not move col.mod, and above all must not force a full sync.
+    assert col_row(db_path) == before
 
     fields_after = _fields_for_ntid(db_path, ntid)
     assert [(int(row["ord"]), str(row["name"])) for row in fields_after] == [
@@ -362,6 +384,26 @@ def test_add_notetype_field_adds_next_ord_and_duplicate_noop(
         (1, "Back"),
         (2, "Hint"),
     ]
+
+
+def test_add_notetype_field_pads_to_field_count_not_max_ord(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A malformed collection with a gap in fields.ord must not over-pad notes."""
+    store, db_path = _make_store(tmp_path)
+    _enable_writes(monkeypatch, store)
+    ntid = _create_basic_notetype(store)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE fields SET ord = 2 WHERE ntid = ? AND ord = 1", (ntid,))  # ords 0, 2
+    conn.commit()
+    conn.close()
+    _insert_note(db_path, note_id=100, mid=ntid, fields=["q", "a"])
+
+    store.add_notetype_field(name="Basic", field_name="Hint")
+
+    # Two fields existed, so the note must end up with exactly three slots.
+    assert _note_row(db_path, 100)["flds"] == "q\x1fa\x1f"
 
 
 def test_add_notetype_field_missing_notetype_raises(
@@ -381,6 +423,7 @@ def test_remove_notetype_field_removes_and_reorders(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     _enable_writes(monkeypatch, store)
+    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
 
     store.create_notetype(
         name="Tri",
@@ -398,6 +441,8 @@ def test_remove_notetype_field_removes_and_reorders(
         "full_sync_required": True,
     }
     assert_col_modified(db_path, schema=True)
+    # scm is a millisecond epoch like mod.
+    assert col_row(db_path)["scm"] == 1_700_000_000_000
 
     fields = _fields_for_ntid(db_path, ntid)
     assert [(int(row["ord"]), str(row["name"])) for row in fields] == [(0, "A"), (1, "C")]
@@ -665,6 +710,7 @@ def test_add_notetype_template_adds_next_ord_and_duplicate_noop(
     assert int(templates[1]["mtime_secs"]) == 1_700_000_000
     assert int(templates[1]["usn"]) == -1
 
+    before = col_row(db_path)
     dup = store.add_notetype_template(
         name="Basic",
         template_name="Card 2",
@@ -672,6 +718,7 @@ def test_add_notetype_template_adds_next_ord_and_duplicate_noop(
         back="y",
     )
     assert dup == {"name": "Basic", "template": "Card 2", "added": False}
+    assert col_row(db_path) == before
 
 
 def test_add_notetype_template_missing_notetype_raises(
@@ -719,7 +766,9 @@ def test_edit_notetype_template_updates_front_and_back(
 
     # Editing template text is not a schema change (no forced full sync), but
     # the notetype row must be flagged so a normal sync ships it.
-    assert _notetype_row_by_id(db_path, ntid)["usn"] == -1
+    nt_row = _notetype_row_by_id(db_path, ntid)
+    assert nt_row["usn"] == -1
+    assert nt_row["mtime_secs"] > 0
     assert_col_modified(db_path, schema=False)
 
 
