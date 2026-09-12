@@ -1444,7 +1444,7 @@ class AnkiDirectReadStore:
         with self._connect_write() as conn:
             deck_rows = conn.execute(
                 """
-                SELECT id, name
+                SELECT id, name, kind
                 FROM decks
                 WHERE name = ? OR name LIKE ?
                 ORDER BY id
@@ -1458,57 +1458,82 @@ class AnkiDirectReadStore:
                     "deleted_decks": 0,
                     "deleted_notes": 0,
                     "deleted_cards": 0,
+                    "returned_cards": 0,
                 }
 
             deck_ids = [int(row["id"]) for row in deck_rows]
-            deck_placeholders = ", ".join(["?"] * len(deck_ids))
+            if 1 in deck_ids:
+                raise ValueError("Cannot delete the Default deck.")
 
-            card_rows = conn.execute(
-                f"SELECT id, nid FROM cards WHERE did IN ({deck_placeholders})",
-                tuple(deck_ids),
-            ).fetchall()
-            card_ids = [int(row["id"]) for row in card_rows]
+            # Filtered decks only borrow cards; deleting one must send the cards
+            # back to their home deck (did = odid, due = odue) rather than delete
+            # them. Normal decks own their cards, including any currently on loan
+            # to a filtered deck (odid = this deck).
+            filtered_ids: list[int] = []
+            normal_ids: list[int] = []
+            for row in deck_rows:
+                did = int(row["id"])
+                kind = self._decode_deck_kind(bytes(row["kind"] or b""), did=did)
+                kind_name, _ = betterproto.which_one_of(kind, "kind")
+                (filtered_ids if kind_name == "filtered" else normal_ids).append(did)
 
-            target_note_ids = sorted({int(row["nid"]) for row in card_rows})
-            note_ids_to_delete: list[int] = []
-            if target_note_ids:
-                note_placeholders = ", ".join(["?"] * len(target_note_ids))
-                membership = conn.execute(
-                    f"""
-                    SELECT
-                        c.nid AS nid,
-                        COUNT(*) AS total_cards,
-                        SUM(CASE WHEN c.did IN ({deck_placeholders}) THEN 1 ELSE 0 END)
-                            AS in_scope_cards
-                    FROM cards AS c
-                    WHERE c.nid IN ({note_placeholders})
-                    GROUP BY c.nid
-                    """,
-                    (*deck_ids, *target_note_ids),
-                ).fetchall()
-                for row in membership:
-                    if int(row["total_cards"]) == int(row["in_scope_cards"]):
-                        note_ids_to_delete.append(int(row["nid"]))
+            now_sec = int(time.time())
+            returned_cards = 0
+            if filtered_ids:
+                returned_cards = self._return_cards_from_filtered_decks(
+                    conn, filtered_ids, now_sec=now_sec
+                )
 
             deleted_cards = 0
-            if deck_ids:
+            deleted_notes = 0
+            note_ids_to_delete: list[int] = []
+            card_ids: list[int] = []
+            if normal_ids:
+                placeholders = ", ".join(["?"] * len(normal_ids))
+                scope = f"(did IN ({placeholders}) OR odid IN ({placeholders}))"
+                scope_params = (*normal_ids, *normal_ids)
+
+                card_ids = [
+                    int(row["id"])
+                    for row in conn.execute(
+                        f"SELECT id FROM cards WHERE {scope}", scope_params
+                    ).fetchall()
+                ]
+
+                # Notes whose every card is in scope are orphaned and go too.
+                note_ids_to_delete = [
+                    int(row["nid"])
+                    for row in conn.execute(
+                        f"""
+                        SELECT nid
+                        FROM cards
+                        WHERE nid IN (SELECT nid FROM cards WHERE {scope})
+                        GROUP BY nid
+                        HAVING SUM(CASE WHEN {scope} THEN 0 ELSE 1 END) = 0
+                        """,
+                        (*scope_params, *scope_params),
+                    ).fetchall()
+                ]
+
+                if note_ids_to_delete:
+                    deleted_notes = int(
+                        conn.execute(
+                            f"""
+                            DELETE FROM notes
+                            WHERE id IN (SELECT nid FROM cards WHERE {scope})
+                              AND id NOT IN (SELECT nid FROM cards WHERE NOT {scope})
+                            """,
+                            (*scope_params, *scope_params),
+                        ).rowcount
+                    )
+
                 deleted_cards = int(
                     conn.execute(
-                        f"DELETE FROM cards WHERE did IN ({deck_placeholders})",
-                        tuple(deck_ids),
+                        f"DELETE FROM cards WHERE {scope}", scope_params
                     ).rowcount
                 )
 
-            deleted_notes = 0
-            if note_ids_to_delete:
-                note_placeholders = ", ".join(["?"] * len(note_ids_to_delete))
-                deleted_notes = int(
-                    conn.execute(
-                        f"DELETE FROM notes WHERE id IN ({note_placeholders})",
-                        tuple(note_ids_to_delete),
-                    ).rowcount
-                )
-
+            deck_placeholders = ", ".join(["?"] * len(deck_ids))
             deleted_decks = int(
                 conn.execute(
                     f"DELETE FROM decks WHERE id IN ({deck_placeholders})",
@@ -1526,7 +1551,60 @@ class AnkiDirectReadStore:
             "deleted_decks": deleted_decks,
             "deleted_notes": deleted_notes,
             "deleted_cards": deleted_cards,
+            "returned_cards": returned_cards,
         }
+
+    def _return_cards_from_filtered_decks(
+        self,
+        conn: sqlite3.Connection,
+        filtered_deck_ids: list[int],
+        *,
+        now_sec: int,
+    ) -> int:
+        """Move cards out of the given filtered decks back to their home decks.
+
+        Mirrors Anki's ``remove_from_filtered_deck_restoring_queue``: restore
+        ``did``/``due`` from ``odid``/``odue`` and recompute ``queue`` from the
+        card type. Suspended and buried cards keep their negative queue.
+        """
+        placeholders = ", ".join(["?"] * len(filtered_deck_ids))
+        # SQLite evaluates SET expressions against the pre-update row, so the
+        # restored due value has to be spelled out again inside the queue CASE.
+        restored_due = "CASE WHEN odue > 0 THEN odue ELSE due END"
+        cursor = conn.execute(
+            f"""
+            UPDATE cards
+            SET did = odid,
+                due = {restored_due},
+                odid = 0,
+                odue = 0,
+                queue = CASE
+                    WHEN queue < 0 THEN queue
+                    WHEN type = 0 THEN 0
+                    WHEN type IN (1, 3) THEN
+                        CASE WHEN ({restored_due}) > 1000000000 THEN 1 ELSE 3 END
+                    ELSE 2
+                END,
+                mod = ?,
+                usn = -1
+            WHERE did IN ({placeholders}) AND odid != 0
+            """,
+            (now_sec, *filtered_deck_ids),
+        )
+        returned = int(cursor.rowcount)
+
+        # A card in a filtered deck with no home deck recorded is malformed;
+        # rather than leave it pointing at a deck that no longer exists, park it
+        # in Default (the same recovery Anki's Check Database performs).
+        stray = conn.execute(
+            f"""
+            UPDATE cards
+            SET did = 1, mod = ?, usn = -1
+            WHERE did IN ({placeholders}) AND odid = 0
+            """,
+            (now_sec, *filtered_deck_ids),
+        )
+        return returned + int(stray.rowcount)
 
     def set_deck_config(
         self,
