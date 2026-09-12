@@ -475,6 +475,33 @@ def test_delete_deck_refuses_unknown_kind_and_leaves_collection_untouched(
     assert _grave_rows(db_path) == []
 
 
+def test_delete_deck_with_malformed_child_rolls_back_the_whole_subtree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A valid parent plus a malformed child: nothing in the subtree may be deleted."""
+    store, db_path = _make_store(tmp_path)
+    _insert_deck(db_path, deck_id=10, name="Parent")
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO decks (id, name, mtime_secs, usn, common, kind) VALUES (?, ?, 1, 0, ?, ?)",
+        (11, "Parent::Broken", _common_blob(), b""),
+    )
+    conn.commit()
+    conn.close()
+    _insert_note(db_path, note_id=100)
+    _insert_card(db_path, card_id=1000, note_id=100, deck_id=10)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+
+    with pytest.raises(ValueError, match="unknown kind"):
+        store.delete_deck("Parent")
+
+    assert _deck_names(db_path) == ["Default", "Parent", "Parent::Broken"]
+    assert _card_ids(db_path) == [1000]
+    assert _note_ids(db_path) == [100]
+    assert _grave_rows(db_path) == []
+
+
 def test_delete_filtered_deck_returns_cards_home_instead_of_deleting(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

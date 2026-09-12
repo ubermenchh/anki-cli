@@ -446,6 +446,7 @@ class AnkiDirectReadStore:
             if target_row is None:
                 raise LookupError(f"Field not found: {normalized_field}")
             removed_ord = int(target_row["ord"])
+            stored_field_name = str(target_row["name"])
             old_field_count = len(fields)
             new_field_count = old_field_count - 1
             now_sec = int(time.time())
@@ -464,8 +465,9 @@ class AnkiDirectReadStore:
             sort_idx = int(config.sort_field_idx)
             if sort_idx > removed_ord:
                 sort_idx -= 1
-            # If the sort field itself was removed (or the index was already out of
-            # range), Anki caps the ordinal to the last remaining field.
+            # If the sort field itself was removed, Anki (reposition_sort_idx) keeps
+            # the ordinal, so the field that slides into that slot becomes the sort
+            # field; the clamp only matters when the removed field was the last one.
             sort_idx = max(0, min(sort_idx, new_field_count - 1))
             config.sort_field_idx = sort_idx
 
@@ -498,7 +500,7 @@ class AnkiDirectReadStore:
 
         return {
             "name": normalized_name,
-            "field": normalized_field,
+            "field": stored_field_name,
             "removed": True,
             "updated_notes": updated_notes,
         }
@@ -1534,7 +1536,10 @@ class AnkiDirectReadStore:
         Returns ``(deleted_cards, deleted_notes)``.
         """
         placeholders = ", ".join(["?"] * len(deck_ids))
-        scope = f"(did IN ({placeholders}) OR odid IN ({placeholders}))"
+        # The explicit `odid != 0` is redundant for correctness (deck ids are never
+        # 0) but lets SQLite use Anki's partial index `idx_cards_odid ... WHERE
+        # odid != 0` via MULTI-INDEX OR instead of scanning the cards table.
+        scope = f"(did IN ({placeholders}) OR (odid != 0 AND odid IN ({placeholders})))"
         scope_params = (*deck_ids, *deck_ids)
 
         conn.execute("CREATE TEMP TABLE IF NOT EXISTS _del_cids (id INTEGER PRIMARY KEY)")

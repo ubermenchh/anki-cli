@@ -324,9 +324,12 @@ def test_notetype_field_remove_success(monkeypatch) -> None:
 
 
 def test_notetype_field_remove_requires_yes_exit_2(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
     class Backend:
         def remove_notetype_field(self, name: str, field_name: str) -> dict[str, Any]:
-            raise AssertionError("backend must not be reached without --yes")
+            calls.append((name, field_name))
+            return {"name": name, "field": field_name, "removed": True}
 
     _patch_session(monkeypatch, Backend())
 
@@ -341,6 +344,7 @@ def test_notetype_field_remove_requires_yes_exit_2(monkeypatch) -> None:
     assert result.exit_code == 2
     assert payload["error"]["code"] == "CONFIRMATION_REQUIRED"
     assert payload["error"]["details"]["field"] == "Extra"
+    assert calls == [], "backend must not be reached without --yes"
 
 
 def test_notetype_template_add_success(monkeypatch) -> None:

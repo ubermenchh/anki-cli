@@ -428,10 +428,44 @@ def test_remove_notetype_field_matches_name_case_insensitively(
     _insert_note(db_path, note_id=100, mid=ntid, fields=["q", "a"])
 
     result = store.remove_notetype_field(name="Basic", field_name="back")
-    assert result["field"] == "back"
+    # The canonical stored name is echoed back, not the caller's spelling.
+    assert result["field"] == "Back"
     assert result["updated_notes"] == 1
     assert [str(row["name"]) for row in _fields_for_ntid(db_path, ntid)] == ["Front"]
     assert _note_row(db_path, 100)["flds"] == "q"
+
+
+def test_remove_notetype_field_removing_the_sort_field_keeps_its_ordinal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Anki's reposition_sort_idx keeps the ordinal when the sort field itself is
+    removed (and it wasn't last), so the field sliding into that slot takes over."""
+    store, db_path = _make_store(tmp_path)
+    _enable_writes(monkeypatch, store)
+
+    store.create_notetype(
+        name="Tri",
+        fields=["A", "B", "C"],
+        templates=[{"name": "Card 1", "front": "{{A}}", "back": "{{B}}"}],
+    )
+    nt_row = _notetype_row_by_name(db_path, "Tri")
+    ntid = int(nt_row["id"])
+    cfg = NotetypeConfig().parse(bytes(nt_row["config"]))
+    cfg.sort_field_idx = 1  # "B"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE notetypes SET config = ? WHERE id = ?", (bytes(cfg), ntid))
+    conn.commit()
+    conn.close()
+    _insert_note(db_path, note_id=100, mid=ntid, fields=["a", "b", "c"])
+
+    store.remove_notetype_field(name="Tri", field_name="B")
+
+    after = NotetypeConfig().parse(bytes(_notetype_row_by_id(db_path, ntid)["config"]))
+    assert int(after.sort_field_idx) == 1  # now "C", not "A"
+    note = _note_row(db_path, 100)
+    assert note["flds"] == "a\x1fc"
+    assert note["sfld"] == "c"
 
 
 def test_remove_notetype_field_removing_first_field_recomputes_sfld_and_csum(
