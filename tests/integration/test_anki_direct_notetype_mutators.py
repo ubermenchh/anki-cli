@@ -10,6 +10,7 @@ import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
 from anki_cli.proto.anki.notetypes import (
     NotetypeConfig,
+    NotetypeConfigCardRequirement,
     NotetypeConfigCardRequirementKind,
     NotetypeConfigKind,
     NotetypeTemplateConfig,
@@ -46,12 +47,48 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
             usn INTEGER NOT NULL,
             config BLOB NOT NULL
         );
+
+        CREATE TABLE notes (
+            id INTEGER PRIMARY KEY,
+            guid TEXT NOT NULL DEFAULT '',
+            mid INTEGER NOT NULL,
+            mod INTEGER NOT NULL DEFAULT 0,
+            usn INTEGER NOT NULL DEFAULT 0,
+            tags TEXT NOT NULL DEFAULT '',
+            flds TEXT NOT NULL,
+            sfld INTEGER NOT NULL DEFAULT '',
+            csum INTEGER NOT NULL DEFAULT 0,
+            flags INTEGER NOT NULL DEFAULT 0,
+            data TEXT NOT NULL DEFAULT ''
+        );
         """
     )
     conn.commit()
     conn.close()
 
     return AnkiDirectReadStore(db_path), db_path
+
+
+def _insert_note(db_path: Path, *, note_id: int, mid: int, fields: list[str]) -> None:
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO notes (id, mid, flds, sfld, csum) VALUES (?, ?, ?, ?, ?)",
+        (note_id, mid, "\x1f".join(fields), fields[0], 0),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _note_row(db_path: Path, note_id: int) -> dict[str, Any]:
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT id, mid, mod, usn, flds, sfld, csum FROM notes WHERE id = ?",
+        (note_id,),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    return dict(row)
 
 
 def _enable_writes(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectReadStore) -> None:
@@ -329,10 +366,128 @@ def test_remove_notetype_field_removes_and_reorders(
     ntid = int(_notetype_row_by_name(db_path, "Tri")["id"])
 
     result = store.remove_notetype_field(name="Tri", field_name="B")
-    assert result == {"name": "Tri", "field": "B", "removed": True}
+    assert result == {"name": "Tri", "field": "B", "removed": True, "updated_notes": 0}
 
     fields = _fields_for_ntid(db_path, ntid)
     assert [(int(row["ord"]), str(row["name"])) for row in fields] == [(0, "A"), (1, "C")]
+
+
+def test_remove_notetype_field_rewrites_note_field_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Regression for #17: notes.flds is positional and must drop the removed slot."""
+    store, db_path = _make_store(tmp_path)
+    _enable_writes(monkeypatch, store)
+    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+
+    store.create_notetype(
+        name="Tri",
+        fields=["Front", "Extra", "Back"],
+        templates=[{"name": "Card 1", "front": "{{Front}}", "back": "{{Back}}"}],
+    )
+    ntid = int(_notetype_row_by_name(db_path, "Tri")["id"])
+    _insert_note(db_path, note_id=100, mid=ntid, fields=["a", "b", "c"])
+    _insert_note(db_path, note_id=101, mid=ntid, fields=["x", "y"])  # short row gets padded
+    _insert_note(db_path, note_id=200, mid=ntid + 1, fields=["other", "type"])  # untouched
+
+    result = store.remove_notetype_field(name="Tri", field_name="Extra")
+    assert result["updated_notes"] == 2
+
+    note = _note_row(db_path, 100)
+    assert note["flds"] == "a\x1fc"
+    assert note["sfld"] == "a"
+    assert note["csum"] == store._field_checksum("a")
+    assert note["mod"] == 1_700_000_000
+    assert note["usn"] == -1
+
+    short = _note_row(db_path, 101)
+    assert short["flds"] == "x\x1f"
+
+    other = _note_row(db_path, 200)
+    assert other["flds"] == "other\x1ftype"
+    assert other["usn"] == 0
+
+    # The notetype itself is marked modified so sync picks up the schema change.
+    nt_row = _notetype_row_by_id(db_path, ntid)
+    assert nt_row["usn"] == -1
+    assert nt_row["mtime_secs"] == 1_700_000_000
+
+    # get_note_fields must map the remaining names onto the right values.
+    assert store.get_note_fields(note_id=100) == {"Front": "a", "Back": "c"}
+
+
+def test_remove_notetype_field_removing_first_field_recomputes_sfld_and_csum(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    _enable_writes(monkeypatch, store)
+
+    store.create_notetype(
+        name="Tri",
+        fields=["A", "B", "C"],
+        templates=[{"name": "Card 1", "front": "{{A}}", "back": "{{B}}"}],
+    )
+    ntid = int(_notetype_row_by_name(db_path, "Tri")["id"])
+    _insert_note(db_path, note_id=100, mid=ntid, fields=["a", "b", "c"])
+
+    store.remove_notetype_field(name="Tri", field_name="A")
+
+    note = _note_row(db_path, 100)
+    assert note["flds"] == "b\x1fc"
+    assert note["sfld"] == "b"
+    assert note["csum"] == store._field_checksum("b")
+
+
+def test_remove_notetype_field_shifts_sort_idx_and_requirement_ords(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    _enable_writes(monkeypatch, store)
+
+    store.create_notetype(
+        name="Quad",
+        fields=["A", "B", "C", "D"],
+        templates=[
+            {"name": "Card 1", "front": "{{A}}", "back": "{{B}}"},
+            {"name": "Card 2", "front": "{{B}}", "back": "{{C}}"},
+        ],
+    )
+    nt_row = _notetype_row_by_name(db_path, "Quad")
+    ntid = int(nt_row["id"])
+
+    cfg = NotetypeConfig().parse(bytes(nt_row["config"]))
+    cfg.sort_field_idx = 2  # "C"
+    # Requirements as Anki would compute them from the templates above.
+    cfg.reqs = [
+        NotetypeConfigCardRequirement(
+            card_ord=0, kind=NotetypeConfigCardRequirementKind.KIND_ANY, field_ords=[0]
+        ),
+        NotetypeConfigCardRequirement(
+            card_ord=1, kind=NotetypeConfigCardRequirementKind.KIND_ANY, field_ords=[1]
+        ),
+    ]
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE notetypes SET config = ? WHERE id = ?", (bytes(cfg), ntid))
+    conn.commit()
+    conn.close()
+
+    _insert_note(db_path, note_id=100, mid=ntid, fields=["a", "b", "c", "d"])
+
+    store.remove_notetype_field(name="Quad", field_name="B")
+
+    after = NotetypeConfig().parse(bytes(_notetype_row_by_id(db_path, ntid)["config"]))
+    # Sort field "C" moved from ord 2 to ord 1.
+    assert int(after.sort_field_idx) == 1
+    # Card 1 still requires "A" (ord 0); Card 2 required "B", which is gone.
+    assert [list(req.field_ords) for req in after.reqs] == [[0], []]
+    assert after.reqs[1].kind == NotetypeConfigCardRequirementKind.KIND_NONE
+
+    note = _note_row(db_path, 100)
+    assert note["flds"] == "a\x1fc\x1fd"
+    assert note["sfld"] == "c"
 
 
 def test_remove_notetype_field_updates_sort_field_idx_when_out_of_range(

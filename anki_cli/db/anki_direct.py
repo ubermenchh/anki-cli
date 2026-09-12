@@ -443,6 +443,9 @@ class AnkiDirectReadStore:
             if target_row is None:
                 raise LookupError(f"Field not found: {normalized_field}")
             removed_ord = int(target_row["ord"])
+            old_field_count = len(fields)
+            new_field_count = old_field_count - 1
+            now_sec = int(time.time())
 
             conn.execute(
                 "DELETE FROM fields WHERE ntid = ? AND ord = ?",
@@ -453,15 +456,101 @@ class AnkiDirectReadStore:
                 (ntid, removed_ord),
             )
 
+            # Keep the notetype config consistent with the new field layout.
             config = self._decode_notetype_config(bytes(row["config"] or b""), ntid=ntid)
-            if int(config.sort_field_idx) >= len(fields) - 1:
-                config.sort_field_idx = max(0, len(fields) - 2)
-                conn.execute(
-                    "UPDATE notetypes SET mtime_secs = ?, usn = -1, config = ? WHERE id = ?",
-                    (int(time.time()), bytes(config), ntid),
-                )
+            sort_idx = int(config.sort_field_idx)
+            if sort_idx > removed_ord:
+                sort_idx -= 1
+            elif sort_idx == removed_ord:
+                # Anki caps a dangling sort ordinal to the last remaining field.
+                sort_idx = min(sort_idx, new_field_count - 1)
+            sort_idx = max(0, min(sort_idx, new_field_count - 1))
+            config.sort_field_idx = sort_idx
 
-        return {"name": normalized_name, "field": normalized_field, "removed": True}
+            for req in config.reqs:
+                remaining = [
+                    ord_ - 1 if ord_ > removed_ord else ord_
+                    for ord_ in req.field_ords
+                    if ord_ != removed_ord
+                ]
+                if remaining != list(req.field_ords):
+                    req.field_ords = remaining
+                    if not remaining:
+                        req.kind = NotetypeConfigCardRequirementKind.KIND_NONE
+
+            conn.execute(
+                "UPDATE notetypes SET mtime_secs = ?, usn = -1, config = ? WHERE id = ?",
+                (now_sec, bytes(config), ntid),
+            )
+
+            # Field values are stored positionally in notes.flds, so every note of
+            # this notetype must drop the removed slot or all later fields shift.
+            updated_notes = self._remove_field_from_notes(
+                conn,
+                ntid=ntid,
+                removed_ord=removed_ord,
+                field_count=old_field_count,
+                sort_idx=sort_idx,
+                now_sec=now_sec,
+            )
+
+        return {
+            "name": normalized_name,
+            "field": normalized_field,
+            "removed": True,
+            "updated_notes": updated_notes,
+        }
+
+    def _remove_field_from_notes(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        ntid: int,
+        removed_ord: int,
+        field_count: int,
+        sort_idx: int,
+        now_sec: int,
+    ) -> int:
+        """Drop ``removed_ord`` from every note's positional field list.
+
+        ``field_count`` is the number of fields *before* removal; ``sort_idx`` is
+        the sort field index *after* removal.
+        """
+        note_rows = conn.execute(
+            "SELECT id, flds FROM notes WHERE mid = ?",
+            (ntid,),
+        ).fetchall()
+        if not note_rows:
+            return 0
+
+        updates: list[tuple[str, str, int, int, int]] = []
+        for note_row in note_rows:
+            values = self._split_fields(str(note_row["flds"] or ""))
+            if len(values) < field_count:
+                values.extend([""] * (field_count - len(values)))
+            del values[removed_ord]
+            sfld = (
+                values[sort_idx] if 0 <= sort_idx < len(values) else (values[0] if values else "")
+            )
+            updates.append(
+                (
+                    "\x1f".join(values),
+                    sfld,
+                    self._field_checksum(values[0] if values else ""),
+                    now_sec,
+                    int(note_row["id"]),
+                )
+            )
+
+        conn.executemany(
+            """
+            UPDATE notes
+            SET flds = ?, sfld = ?, csum = ?, mod = ?, usn = -1
+            WHERE id = ?
+            """,
+            updates,
+        )
+        return len(updates)
 
     def add_notetype_template(
         self,
