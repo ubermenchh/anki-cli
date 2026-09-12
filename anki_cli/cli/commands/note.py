@@ -10,7 +10,6 @@ import click
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError
 from anki_cli.backends.factory import (
     BackendFactoryError,
-    BackendNotImplementedError,
     backend_session_from_context,
 )
 from anki_cli.backends.protocol import JSONValue
@@ -111,7 +110,7 @@ def notes_cmd(ctx: click.Context, query: str) -> None:
         _emit_invalid_query(ctx=ctx, command="notes", query=query, error=exc)
     except AnkiConnectAPIError as exc:
         _emit_invalid_query(ctx=ctx, command="notes", query=query, error=exc)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="notes", obj=obj, error=exc)
 
     payload: dict[str, JSONValue] = {
@@ -133,7 +132,7 @@ def note_cmd(ctx: click.Context, note_id: int) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             note = backend.get_note(note_id)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="note", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError) as exc:
         formatter.emit_error(
@@ -194,7 +193,7 @@ def note_add_cmd(
                 tags=_parse_tags(tags),
                 allow_duplicate=allow_duplicate,
             )
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="note:add", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError) as exc:
         formatter.emit_error(
@@ -250,7 +249,7 @@ def note_edit_cmd(ctx: click.Context, note_id: int, tags: str | None) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             result = backend.update_note(note_id=note_id, fields=fields or None, tags=parsed_tags)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="note:edit", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError) as exc:
         formatter.emit_error(
@@ -284,7 +283,7 @@ def note_delete_cmd(ctx: click.Context, note_id: int) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             result = backend.delete_notes([note_id])
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="note:delete", obj=obj, error=exc)
     except AnkiConnectAPIError as exc:
         formatter.emit_error(
@@ -364,7 +363,7 @@ def note_bulk_cmd(
     try:
         with backend_session_from_context(obj) as backend:
             results = backend.add_notes(notes_payload)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="note:bulk", obj=obj, error=exc)
     except AnkiConnectAPIError as exc:
         formatter.emit_error(
@@ -402,7 +401,7 @@ def note_fields_cmd(ctx: click.Context, note_id: int, fields: str) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             values = backend.get_note_fields(note_id=note_id, fields=selected)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="note:fields", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError, ValueError) as exc:
         formatter.emit_error(

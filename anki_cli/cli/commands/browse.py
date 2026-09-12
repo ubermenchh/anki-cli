@@ -6,7 +6,6 @@ import click
 
 from anki_cli.backends.factory import (
     BackendFactoryError,
-    BackendNotImplementedError,
     backend_session_from_context,
 )
 from anki_cli.cli.dispatcher import register_command
@@ -36,7 +35,7 @@ def cards_cmd(ctx: click.Context, query: str) -> None:
         with backend_session_from_context(obj) as backend:
             app = BrowseApp(backend=backend, query=query)
             app.run()
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         formatter.emit_error(
             command="cards",
             code="BACKEND_UNAVAILABLE",

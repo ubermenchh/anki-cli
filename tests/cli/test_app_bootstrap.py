@@ -94,7 +94,7 @@ def test_config_error_emits_invalid_config_exit_2(monkeypatch) -> None:
 
 
 def test_detection_error_emits_backend_unavailable_with_exit_code(monkeypatch) -> None:
-    runtime = _runtime(backend="standalone", output_format="json")
+    runtime = _runtime(backend="direct", output_format="json")
     monkeypatch.setattr(app_mod, "resolve_runtime_config", lambda **kwargs: runtime)
 
     def fail_detect(**kwargs: Any):
@@ -108,7 +108,7 @@ def test_detection_error_emits_backend_unavailable_with_exit_code(monkeypatch) -
     payload = _error_payload(result)
     assert result.exit_code == 9
     assert payload["error"]["code"] == "BACKEND_UNAVAILABLE"
-    assert payload["error"]["details"] == {"forced_backend": "standalone"}
+    assert payload["error"]["details"] == {"forced_backend": "direct"}
     assert payload["meta"]["command"] == "bootstrap"
 
 
@@ -216,8 +216,8 @@ def test_cli_parameter_sources_not_marked_when_defaults(monkeypatch) -> None:
         app_mod,
         "detect_backend",
         lambda **kwargs: DetectionResult(
-            backend="standalone",
-            collection_path=Path("/tmp/standalone.db"),
+            backend="direct",
+            collection_path=Path("/tmp/detected.db"),
             reason="fallback",
         ),
     )

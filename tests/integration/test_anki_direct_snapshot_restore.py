@@ -76,7 +76,7 @@ def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
     ).fetchone()
     conn.close()
     assert row is not None
-    return {k: row[k] for k in row.keys()}
+    return dict(row)
 
 
 def _revlog_rows(db_path: Path) -> list[dict[str, Any]]:
@@ -86,7 +86,7 @@ def _revlog_rows(db_path: Path) -> list[dict[str, Any]]:
         "SELECT id, cid, usn, ease, ivl, lastIvl, factor, time, type FROM revlog ORDER BY id"
     ).fetchall()
     conn.close()
-    return [{k: row[k] for k in row.keys()} for row in rows]
+    return [dict(row) for row in rows]
 
 
 def test_snapshot_card_state_returns_expected_fields(tmp_path: Path) -> None:

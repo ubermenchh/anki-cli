@@ -403,11 +403,11 @@ def test_get_notetypes_returns_sorted_counts_and_names(tmp_path: Path) -> None:
     _insert_field(db_path, ntid=20, ord_=0, name="Text")
     _insert_field(db_path, ntid=20, ord_=1, name="Extra")
     _insert_template(
-        db_path, 
-        ntid=20, 
-        ord_=0, 
-        name="Cloze", 
-        qfmt="{{cloze:Text}}", 
+        db_path,
+        ntid=20,
+        ord_=0,
+        name="Cloze",
+        qfmt="{{cloze:Text}}",
         afmt="{{cloze:Text}}<br>{{Extra}}"
     )
 

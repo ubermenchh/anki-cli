@@ -83,7 +83,7 @@ def _insert_deck(
         INSERT INTO decks (id, name, mtime_secs, usn, common, kind)
         VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (deck_id, name, mtime_secs, usn, _common_blob(), 
+        (deck_id, name, mtime_secs, usn, _common_blob(),
         _kind_blob(config_id=config_id, description=description)),
     )
     conn.commit()
@@ -117,7 +117,7 @@ def _deck_row(db_path: Path, deck_id: int) -> dict[str, Any]:
     ).fetchone()
     conn.close()
     assert row is not None
-    return {k: row[k] for k in row.keys()}
+    return dict(row)
 
 
 def _deck_names(db_path: Path) -> list[str]:

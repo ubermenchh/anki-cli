@@ -21,7 +21,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --group dev --extra tui --frozen
-      - run: uv run ruff check anki_cli
+      - run: uv run ruff check .
       - run: uv run ty check anki_cli
 
   test:

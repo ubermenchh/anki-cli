@@ -367,7 +367,9 @@ def test_cards_ids_cmd_invalid_query_parse_error_exit_2(monkeypatch: pytest.Monk
     assert payload["error"]["details"]["position"] == 4
 
 
-def test_cards_ids_cmd_invalid_query_ankiconnect_error_exit_2(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cards_ids_cmd_invalid_query_ankiconnect_error_exit_2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Backend:
         def find_cards(self, query: str) -> list[int]:
             raise AnkiConnectAPIError("findCards", "Invalid search")

@@ -242,9 +242,9 @@ def test_card_revlog_cmd_success_with_limit_bounds(monkeypatch) -> None:
     result_low = runner.invoke(card_revlog_cmd, ["--id", "5", "--limit", "0"], obj=_base_obj())
     payload_low = _success_payload(result_low)
     assert payload_low["data"] == {
-        "id": 5, 
-        "limit": 1, 
-        "count": 2, 
+        "id": 5,
+        "limit": 1,
+        "count": 2,
         "items": [{"id": 10}, {"id": 11}]
     }
 

@@ -303,7 +303,7 @@ class AnkiConnectBackend(AnkiBackend):
                     if "{{cloze:" in front or "{{cloze:" in back:
                         kind = "cloze"
                         break
-                    
+
         result["kind"] = kind
 
         try:

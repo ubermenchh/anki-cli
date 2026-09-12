@@ -8,7 +8,7 @@ from typing import Any
 from click.testing import CliRunner
 
 from anki_cli import __version__
-from anki_cli.cli.commands.general import init_cmd, status_cmd, version_cmd
+from anki_cli.cli.commands.general import status_cmd, version_cmd
 from anki_cli.cli.dispatcher import get_command
 
 
@@ -49,7 +49,7 @@ def test_version_cmd_emits_expected_json_payload() -> None:
     assert data["collection"] == str(col)
 
 
-def test_status_cmd_emits_backend_collection_and_message() -> None:
+def test_status_cmd_emits_backend_and_collection() -> None:
     payload = _invoke_json(status_cmd, obj=_base_obj(backend="ankiconnect", collection_path=None))
 
     assert payload["meta"]["command"] == "status"
@@ -58,29 +58,9 @@ def test_status_cmd_emits_backend_collection_and_message() -> None:
     assert data == {
         "backend": "ankiconnect",
         "collection": None,
-        "message": "foundation in progress",
     }
-
-
-def test_init_cmd_uses_default_collection_when_none() -> None:
-    payload = _invoke_json(init_cmd, obj=_base_obj(collection_path=None))
-
-    expected_default = str(Path("~/.local/share/anki-cli/collection.db").expanduser())
-
-    assert payload["meta"]["command"] == "init"
-    assert payload["data"]["target"] == expected_default
-    assert payload["data"]["implemented"] is False
-
-
-def test_init_cmd_uses_provided_collection_path() -> None:
-    target = Path("/tmp/custom.db")
-    payload = _invoke_json(init_cmd, obj=_base_obj(collection_path=target))
-
-    assert payload["data"]["target"] == str(target)
-    assert payload["data"]["implemented"] is False
 
 
 def test_general_commands_are_registered() -> None:
     assert get_command("version") is not None
     assert get_command("status") is not None
-    assert get_command("init") is not None

@@ -176,7 +176,7 @@ def _note_row(db_path: Path, note_id: int) -> dict[str, Any]:
     ).fetchone()
     conn.close()
     assert row is not None
-    return {k: row[k] for k in row.keys()}
+    return dict(row)
 
 
 def _cards_for_note(db_path: Path, note_id: int) -> list[dict[str, Any]]:
@@ -192,7 +192,7 @@ def _cards_for_note(db_path: Path, note_id: int) -> list[dict[str, Any]]:
         (note_id,),
     ).fetchall()
     conn.close()
-    return [{k: row[k] for k in row.keys()} for row in rows]
+    return [dict(row) for row in rows]
 
 
 def _note_ids(db_path: Path) -> list[int]:

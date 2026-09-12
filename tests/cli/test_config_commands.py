@@ -31,9 +31,9 @@ def _base_obj(**overrides: Any) -> dict[str, Any]:
 
 
 def _invoke_success_json(
-    command, 
-    *, 
-    args: list[str] | None = None, 
+    command,
+    *,
+    args: list[str] | None = None,
     obj: dict[str, Any]
 ) -> dict[str, Any]:
     runner = CliRunner()
@@ -46,9 +46,9 @@ def _invoke_success_json(
 
 
 def _invoke_error_json(
-    command, 
-    *, 
-    args: list[str], 
+    command,
+    *,
+    args: list[str],
     obj: dict[str, Any]
 ) -> tuple[Any, dict[str, Any]]:
     runner = CliRunner()
@@ -124,16 +124,12 @@ def test_config_path_cmd_uses_context_paths() -> None:
     assert payload["meta"]["command"] == "config:path"
     assert data["collection"] == "/tmp/collection.db"
     assert data["config"] == "/tmp/config.toml"
-    assert data["backups"] == str(Path("~/.local/share/anki-cli/backups").expanduser())
-    assert data["standalone_default"] == str(
-        Path("~/.local/share/anki-cli/collection.db").expanduser()
-    )
     assert data["anki_profiles"] == str(Path("~/.local/share/Anki2").expanduser())
 
 
 def test_config_path_cmd_defaults_when_paths_absent() -> None:
     payload = _invoke_success_json(
-        config_path_cmd, 
+        config_path_cmd,
         obj=_base_obj(collection_path=None, config_path=None)
     )
     data = payload["data"]

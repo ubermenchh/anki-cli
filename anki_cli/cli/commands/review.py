@@ -8,7 +8,6 @@ import click
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError, AnkiConnectProtocolError
 from anki_cli.backends.factory import (
     BackendFactoryError,
-    BackendNotImplementedError,
     backend_session_from_context,
 )
 from anki_cli.cli.dispatcher import register_command
@@ -183,7 +182,7 @@ def review_cmd(ctx: click.Context, deck: str | None) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             counts = backend.get_due_counts(deck=deck.strip() if deck else None)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="review", obj=obj, error=exc)
 
     formatter.emit_success(
@@ -224,7 +223,7 @@ def review_next_cmd(ctx: click.Context, deck: str | None) -> None:
                 return
 
             rendered = _render_card(backend=backend, card_id=card_id, reveal_answer=False)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="review:next", obj=obj, error=exc)
     except (AnkiConnectAPIError, AnkiConnectProtocolError, LookupError, ValueError) as exc:
         formatter.emit_error(
@@ -265,7 +264,7 @@ def review_show_cmd(ctx: click.Context, deck: str | None) -> None:
                 )
                 return
             rendered = _render_card(backend=backend, card_id=card_id, reveal_answer=True)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="review:show", obj=obj, error=exc)
     except (AnkiConnectAPIError, AnkiConnectProtocolError, LookupError, ValueError) as exc:
         formatter.emit_error(
@@ -301,7 +300,7 @@ def review_preview_cmd(ctx: click.Context, card_id: int) -> None:
                 raise NotImplementedError("review:preview is supported only for direct backend.")
             store = cast(Any, backend._store)
             items = store.preview_ratings(int(card_id))
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="review:preview", obj=obj, error=exc)
     except (AnkiConnectAPIError, AnkiConnectProtocolError, LookupError, ValueError) as exc:
         formatter.emit_error(
@@ -341,7 +340,7 @@ def review_undo_cmd(ctx: click.Context) -> None:
 
             direct_store = cast(Any, backend._store)
             result = direct_store.restore_card_state(item.snapshot)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="review:undo", obj=obj, error=exc)
     except (LookupError, ValueError) as exc:
         formatter.emit_error(
@@ -392,7 +391,7 @@ def review_answer_cmd(ctx: click.Context, card_id: int, rating: str) -> None:
                 )
 
             result = backend.answer_card(card_id=int(card_id), ease=ease)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="review:answer", obj=obj, error=exc)
     except (AnkiConnectAPIError, AnkiConnectProtocolError, LookupError) as exc:
         formatter.emit_error(
@@ -437,7 +436,7 @@ def review_start_cmd(ctx: click.Context, deck: str | None) -> None:
 
             app = ReviewApp(backend=backend, deck=deck.strip() if deck else None)
             app.run()
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="review:start", obj=obj, error=exc)
 
 

@@ -20,12 +20,6 @@ def test_app_config_defaults() -> None:
     assert cfg.backend.ankiconnect_url == "http://localhost:8765"
     assert cfg.display.default_output == "table"
     assert cfg.display.color is True
-    assert cfg.display.day_boundary_hour == 4
-    assert cfg.backup.enabled is True
-    assert cfg.backup.max_backups == 30
-    assert cfg.backup.path == "~/.local/share/anki-cli/backups"
-    assert cfg.review.show_timer is False
-    assert cfg.review.max_answer_seconds == 60
 
 
 def test_app_config_instances_are_independent() -> None:
@@ -33,10 +27,10 @@ def test_app_config_instances_are_independent() -> None:
     second = AppConfig()
 
     first.collection.path = "/tmp/one.db"
-    first.review.max_answer_seconds = 10
+    first.display.color = False
 
     assert second.collection.path == "~/.local/share/anki-cli/collection.db"
-    assert second.review.max_answer_seconds == 60
+    assert second.display.color is True
 
 
 def test_meta_collection_defaults_to_none() -> None:

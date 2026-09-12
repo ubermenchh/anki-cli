@@ -7,7 +7,6 @@ import click
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError
 from anki_cli.backends.factory import (
     BackendFactoryError,
-    BackendNotImplementedError,
     backend_session_from_context,
 )
 from anki_cli.cli.dispatcher import register_command
@@ -55,7 +54,7 @@ def notetypes_cmd(ctx: click.Context) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             items = backend.get_notetypes()
-    except (BackendNotImplementedError, BackendFactoryError) as exc:
+    except BackendFactoryError as exc:
         _emit_backend_unavailable(ctx=ctx, command="notetypes", obj=obj, error=exc)
 
     formatter.emit_success(
@@ -91,7 +90,7 @@ def notetype_cmd(ctx: click.Context, notetype_name: str) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             item = backend.get_notetype(normalized_name)
-    except (BackendNotImplementedError, BackendFactoryError) as exc:
+    except BackendFactoryError as exc:
         _emit_backend_unavailable(ctx=ctx, command="notetype", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError) as exc:
         formatter.emit_error(
@@ -161,7 +160,7 @@ def notetype_create_cmd(
                 css=css,
                 kind=normalized_kind,
             )
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="notetype:create", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError, ValueError) as exc:
         formatter.emit_error(
@@ -197,7 +196,7 @@ def notetype_field_add_cmd(ctx: click.Context, notetype_name: str, field_name: s
     try:
         with backend_session_from_context(obj) as backend:
             data = backend.add_notetype_field(normalized_name, normalized_field)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="notetype:field:add", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError, ValueError) as exc:
         formatter.emit_error(
@@ -233,7 +232,7 @@ def notetype_field_remove_cmd(ctx: click.Context, notetype_name: str, field_name
     try:
         with backend_session_from_context(obj) as backend:
             data = backend.remove_notetype_field(normalized_name, normalized_field)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="notetype:field:remove", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError, ValueError) as exc:
         formatter.emit_error(
@@ -282,7 +281,7 @@ def notetype_template_add_cmd(
                 front_tmpl,
                 back_tmpl,
             )
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="notetype:template:add", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError, ValueError) as exc:
         formatter.emit_error(
@@ -338,7 +337,7 @@ def notetype_template_edit_cmd(
                 front=front_tmpl,
                 back=back_tmpl,
             )
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="notetype:template:edit", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError, ValueError) as exc:
         formatter.emit_error(
@@ -386,7 +385,7 @@ def notetype_css_cmd(
                 data: dict[str, Any] = {"name": normalized_name, "css": css}
             else:
                 data = backend.set_notetype_css(normalized_name, css_value)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="notetype:css", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError, ValueError) as exc:
         formatter.emit_error(

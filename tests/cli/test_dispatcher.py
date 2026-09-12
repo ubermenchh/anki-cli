@@ -92,8 +92,8 @@ def test_discover_commands_imports_non_init_modules(monkeypatch) -> None:
 
 def test_list_commands_sorts_and_discovers(monkeypatch) -> None:
     monkeypatch.setattr(
-        dispatcher_mod, 
-        "_registry", 
+        dispatcher_mod,
+        "_registry",
         {"b": click.Command("b"), "a": click.Command("a")}
     )
 

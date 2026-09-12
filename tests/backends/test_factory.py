@@ -8,7 +8,6 @@ import pytest
 import anki_cli.backends.factory as factory_mod
 from anki_cli.backends.factory import (
     BackendFactoryError,
-    BackendNotImplementedError,
     backend_session_from_context,
     create_backend_from_context,
 )
@@ -20,11 +19,6 @@ def test_create_backend_unknown_backend_raises() -> None:
         create_backend_from_context({"backend": "nope"})
 
 
-def test_create_backend_standalone_not_implemented() -> None:
-    with pytest.raises(BackendNotImplementedError, match="not implemented"):
-        create_backend_from_context({"backend": "standalone"})
-
-
 def test_create_backend_direct_requires_collection_path() -> None:
     with pytest.raises(BackendFactoryError, match="requires a collection path"):
         create_backend_from_context({"backend": "direct", "collection_path": None})
@@ -34,7 +28,7 @@ def test_create_backend_direct_missing_file_maps_to_factory_error(tmp_path: Path
     missing = tmp_path / "missing.db"
 
     with pytest.raises(
-        BackendFactoryError, 
+        BackendFactoryError,
         match=r"Direct collection not found|Direct DB not found"
     ):
         create_backend_from_context({"backend": "direct", "collection_path": missing})

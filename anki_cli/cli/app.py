@@ -54,12 +54,10 @@ class NamespaceGroup(click.Group):
 @click.option("--col", "collection_path", type=click.Path(path_type=Path), default=None)
 @click.option(
     "--backend",
-    type=click.Choice(["auto", "ankiconnect", "direct", "standalone"], case_sensitive=False),
+    type=click.Choice(["auto", "ankiconnect", "direct"], case_sensitive=False),
     default="auto",
     show_default=True,
 )
-@click.option("--quiet", is_flag=True, default=False)
-@click.option("--verbose", is_flag=True, default=False)
 @click.option("--no-color", is_flag=True, default=False)
 @click.option("--yes", is_flag=True, default=False)
 @click.option("--copy", is_flag=True, default=False)
@@ -78,8 +76,6 @@ def main(
     output_format: str,
     collection_path: Path | None,
     backend: str,
-    quiet: bool,
-    verbose: bool,
     no_color: bool,
     yes: bool,
     copy: bool,
@@ -90,8 +86,6 @@ def main(
             "format": output_format.lower(),
             "collection_path": collection_path,
             "backend": "none",
-            "quiet": quiet,
-            "verbose": verbose,
             "no_color": no_color,
             "yes": yes,
             "copy": copy,
@@ -134,6 +128,7 @@ def main(
             forced_backend=runtime.backend,
             col_override=runtime.collection_override,
             ankiconnect_url=runtime.app.backend.ankiconnect_url,
+            anki_profile=runtime.app.collection.anki_profile,
         )
     except DetectionError as exc:
         formatter = formatter_from_ctx(ctx)

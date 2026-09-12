@@ -6,7 +6,6 @@ import click
 
 from anki_cli.backends.factory import (
     BackendFactoryError,
-    BackendNotImplementedError,
     backend_session_from_context,
 )
 from anki_cli.backends.protocol import JSONValue
@@ -95,7 +94,7 @@ def decks_cmd(ctx: click.Context) -> None:
                         "level": level,
                     }
                 items.append(item)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_error(ctx=ctx, command="decks", obj=obj, error=exc, exit_code=7)
 
     formatter.emit_success(
@@ -124,7 +123,7 @@ def deck_cmd(ctx: click.Context, deck_name: str) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             deck = backend.get_deck(normalized)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_error(ctx=ctx, command="deck", obj=obj, error=exc, exit_code=7)
     except LookupError as exc:
         formatter.emit_error(
@@ -177,7 +176,7 @@ def deck_create_cmd(ctx: click.Context, name: str) -> None:
                     created.append(result)
                 else:
                     existing.append(result)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_error(ctx=ctx, command="deck:create", obj=obj, error=exc, exit_code=7)
 
     formatter.emit_success(
@@ -225,7 +224,7 @@ def deck_rename_cmd(ctx: click.Context, from_name: str, to_name: str) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             result = backend.rename_deck(old_name=source, new_name=target)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_error(ctx=ctx, command="deck:rename", obj=obj, error=exc, exit_code=7)
     except LookupError as exc:
         formatter.emit_error(
@@ -267,7 +266,7 @@ def deck_delete_cmd(ctx: click.Context, deck_name: str) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             result = backend.delete_deck(name=deck_name.strip())
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_error(ctx=ctx, command="deck:delete", obj=obj, error=exc, exit_code=7)
 
     formatter.emit_success(command="deck:delete", data=result)
@@ -293,7 +292,7 @@ def deck_config_cmd(ctx: click.Context, deck_name: str) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             data = backend.get_deck_config(normalized)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_error(ctx=ctx, command="deck:config", obj=obj, error=exc, exit_code=7)
     except (LookupError, ValueError) as exc:
         formatter.emit_error(
@@ -374,7 +373,7 @@ def deck_config_set_cmd(
     try:
         with backend_session_from_context(obj) as backend:
             data = backend.set_deck_config(normalized, updates)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_error(ctx=ctx, command="deck:config:set", obj=obj, error=exc, exit_code=7)
     except (LookupError, ValueError) as exc:
         formatter.emit_error(

@@ -397,9 +397,9 @@ def test_note_fields_success_parses_selected_fields(monkeypatch: pytest.MonkeyPa
 
     class Backend:
         def get_note_fields(
-            self, 
-            *, 
-            note_id: int, 
+            self,
+            *,
+            note_id: int,
             fields: list[str] | None = None
         ) -> dict[str, str]:
             captured["note_id"] = note_id
@@ -424,9 +424,9 @@ def test_note_fields_success_parses_selected_fields(monkeypatch: pytest.MonkeyPa
 def test_note_fields_backend_failure_exit_1(monkeypatch: pytest.MonkeyPatch) -> None:
     class Backend:
         def get_note_fields(
-            self, 
-            *, 
-            note_id: int, 
+            self,
+            *,
+            note_id: int,
             fields: list[str] | None = None
         ) -> dict[str, str]:
             raise LookupError("missing")

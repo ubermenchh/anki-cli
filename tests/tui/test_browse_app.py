@@ -44,37 +44,6 @@ def test_queue_labels_mapping() -> None:
     assert browse_mod.QUEUE_LABELS[-2] == "Buried"
 
 
-def test_format_card_row_extracts_fields() -> None:
-    card = {
-        "cardId": 123,
-        "deckName": "Default",
-        "notetype_name": "Basic",
-        "fields": ["<b>Hello</b> world", "Back side"],
-        "due_info": "2024-01-01",
-        "queue": 2,
-        "interval": 10,
-        "reps": 5,
-        "lapses": 1,
-    }
-    row = browse_mod._format_card_row(card)
-    # Row values are Rich Text objects — compare .plain for content
-    assert row[0].plain == "123"
-    assert row[1].plain == "Default"
-    assert row[2].plain == "Basic"
-    assert row[3].plain == "Hello world"
-    assert row[4].plain == "2024-01-01"
-    assert row[5].plain == "Review"
-    assert row[6].plain == "10"
-    assert row[7].plain == "5"
-    assert row[8].plain == "1"
-
-
-def test_format_card_row_empty_fields() -> None:
-    card: dict[str, Any] = {"cardId": 1, "fields": []}
-    row = browse_mod._format_card_row(card)
-    assert row[3].plain == ""  # question should be empty
-
-
 def test_format_card_detail_includes_all_info() -> None:
     card = {
         "cardId": 42,
@@ -108,29 +77,6 @@ def test_format_card_detail_no_tags_or_fields() -> None:
     detail = browse_mod._format_card_detail(card)
     assert "Card ID:    1" in detail
     assert "Tags:" not in detail
-
-
-def test_format_card_row_queue_has_color_style() -> None:
-    from anki_cli.tui.colors import BLUE, GREEN
-    card = {"cardId": 1, "queue": 2, "lapses": 0}
-    row = browse_mod._format_card_row(card)
-    assert row[5].plain == "Review"
-    assert GREEN in str(row[5].style)
-
-    card_new = {"cardId": 2, "queue": 0, "lapses": 0}
-    row_new = browse_mod._format_card_row(card_new)
-    assert row_new[5].plain == "New"
-    assert BLUE in str(row_new[5].style)
-
-
-def test_format_card_row_high_lapses_highlighted() -> None:
-    from anki_cli.tui.colors import DIM, RED
-    card_ok = {"cardId": 1, "lapses": 2}
-    card_bad = {"cardId": 2, "lapses": 5}
-    row_ok = browse_mod._format_card_row(card_ok)
-    row_bad = browse_mod._format_card_row(card_bad)
-    assert DIM in str(row_ok[8].style)
-    assert RED in str(row_bad[8].style)
 
 
 def test_browse_app_constructor() -> None:

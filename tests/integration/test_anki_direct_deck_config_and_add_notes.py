@@ -191,7 +191,7 @@ def _deck_config_row(db_path: Path, config_id: int) -> dict[str, Any]:
     ).fetchone()
     conn.close()
     assert row is not None
-    return {k: row[k] for k in row.keys()}
+    return dict(row)
 
 
 def _deck_row_by_id(db_path: Path, did: int) -> dict[str, Any]:
@@ -203,7 +203,7 @@ def _deck_row_by_id(db_path: Path, did: int) -> dict[str, Any]:
     ).fetchone()
     conn.close()
     assert row is not None
-    return {k: row[k] for k in row.keys()}
+    return dict(row)
 
 
 def _notes_rows(db_path: Path) -> list[dict[str, Any]]:
@@ -211,7 +211,7 @@ def _notes_rows(db_path: Path) -> list[dict[str, Any]]:
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT id, tags, flds FROM notes ORDER BY id").fetchall()
     conn.close()
-    return [{k: row[k] for k in row.keys()} for row in rows]
+    return [dict(row) for row in rows]
 
 
 def _cards_count(db_path: Path) -> int:

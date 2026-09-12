@@ -53,7 +53,7 @@ def test_resolve_runtime_config_cli_overrides_env_and_file(
     monkeypatch.setattr(config_runtime, "load_app_config", lambda config_path=None: loaded)
 
     runtime = resolve_runtime_config(
-        cli_backend="standalone",
+        cli_backend="direct",
         cli_backend_set=True,
         cli_output_format="json",
         cli_output_set=True,
@@ -69,7 +69,7 @@ def test_resolve_runtime_config_cli_overrides_env_and_file(
         },
     )
 
-    assert runtime.backend == "standalone"
+    assert runtime.backend == "direct"
     assert runtime.output_format == "json"
     assert runtime.no_color is True
     assert runtime.collection_override == (tmp_path / "from-cli.db").resolve()
@@ -121,9 +121,9 @@ def test_collection_override_from_file_only_when_key_explicit(
         file_data={},
     )
     monkeypatch.setattr(
-        config_runtime, 
-        "load_app_config", 
-        lambda config_path=None: 
+        config_runtime,
+        "load_app_config",
+        lambda config_path=None:
         loaded_without_key
     )
 
@@ -225,11 +225,16 @@ def test_set_config_value_unknown_key_raises(tmp_path: Path) -> None:
         )
 
 
-def test_set_config_value_invalid_int_raises(tmp_path: Path) -> None:
+def test_coerce_raw_value_invalid_int_raises() -> None:
     with pytest.raises(ConfigError, match="Expected integer"):
+        config_runtime._coerce_raw_value("not-an-int", 4)
+
+
+def test_set_config_value_rejects_unknown_section(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="Unknown config key"):
         set_config_value(
             key="review.max_answer_seconds",
-            raw_value="not-an-int",
+            raw_value="60",
             config_path=tmp_path / "config.toml",
         )
 

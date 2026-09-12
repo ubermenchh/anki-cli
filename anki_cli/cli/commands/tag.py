@@ -7,7 +7,6 @@ import click
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError
 from anki_cli.backends.factory import (
     BackendFactoryError,
-    BackendNotImplementedError,
     backend_session_from_context,
 )
 from anki_cli.cli.dispatcher import register_command
@@ -89,7 +88,7 @@ def tags_cmd(ctx: click.Context) -> None:
                 return
             except Exception:
                 tags = backend.get_tags()
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="tags", obj=obj, error=exc)
 
     formatter.emit_success(
@@ -114,7 +113,7 @@ def tag_cmd(ctx: click.Context, tag_name: str) -> None:
         _emit_invalid_query(ctx=ctx, command="tag", query=query, error=exc)
     except AnkiConnectAPIError as exc:
         _emit_invalid_query(ctx=ctx, command="tag", query=query, error=exc)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="tag", obj=obj, error=exc)
 
     formatter.emit_success(
@@ -161,7 +160,7 @@ def tag_add_cmd(
             result = backend.add_tags(ids, tags)
     except SearchParseError as exc:
         _emit_invalid_query(ctx=ctx, command="tag:add", query=query, error=exc)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="tag:add", obj=obj, error=exc)
     except AnkiConnectAPIError as exc:
         formatter.emit_error(
@@ -212,7 +211,7 @@ def tag_remove_cmd(
             result = backend.remove_tags(ids, tags)
     except SearchParseError as exc:
         _emit_invalid_query(ctx=ctx, command="tag:remove", query=query, error=exc)
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="tag:remove", obj=obj, error=exc)
     except AnkiConnectAPIError as exc:
         formatter.emit_error(
@@ -237,7 +236,7 @@ def tag_rename_cmd(ctx: click.Context, old_tag: str, new_tag: str) -> None:
     try:
         with backend_session_from_context(obj) as backend:
             result = backend.rename_tag(old_tag.strip(), new_tag.strip())
-    except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
+    except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="tag:rename", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError, ValueError) as exc:
         formatter.emit_error(

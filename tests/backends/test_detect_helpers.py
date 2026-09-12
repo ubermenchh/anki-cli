@@ -148,43 +148,28 @@ def test_resolve_direct_collection_returns_none_when_no_candidates(
     assert detect_mod._resolve_direct_collection(None) is None
 
 
-def test_resolve_standalone_collection_override(tmp_path: Path) -> None:
-    override = tmp_path / "x" / "collection.db"
-    expected = override.resolve()
-
-    assert detect_mod._resolve_standalone_collection(override) == expected
-
-
-def test_resolve_standalone_collection_prefers_nearest_parent(
+def test_resolve_direct_collection_prefers_configured_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    project = tmp_path / "project"
-    nested = project / "a" / "b"
-    nested.mkdir(parents=True)
+    root = tmp_path / "root"
+    profile_a = root / "User 1"
+    profile_b = root / "Custom"
+    profile_a.mkdir(parents=True)
+    profile_b.mkdir(parents=True)
 
-    db = project / ".anki-cli" / "collection.db"
-    db.parent.mkdir(parents=True)
-    db.touch()
+    db_a = profile_a / "collection.anki2"
+    db_b = profile_b / "collection.anki2"
+    db_a.touch()
+    db_b.touch()
 
-    monkeypatch.chdir(nested)
+    monkeypatch.setattr(detect_mod, "_anki_data_roots", lambda: [root])
 
-    assert detect_mod._resolve_standalone_collection(None) == db.resolve()
-
-
-def test_resolve_standalone_collection_falls_back_to_home(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    home = tmp_path / "home"
-    work = tmp_path / "work"
-    work.mkdir()
-
-    _patch_path_home(monkeypatch, home)
-    monkeypatch.chdir(work)
-
-    expected = (home / ".local" / "share" / "anki-cli" / "collection.db").resolve()
-    assert detect_mod._resolve_standalone_collection(None) == expected
+    assert detect_mod._resolve_direct_collection(None) == db_b.resolve()
+    assert (
+        detect_mod._resolve_direct_collection(None, anki_profile="User 1")
+        == db_a.resolve()
+    )
 
 
 def test_anki_data_roots_darwin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

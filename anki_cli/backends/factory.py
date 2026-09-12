@@ -8,15 +8,11 @@ from typing import Any
 from anki_cli.backends.ankiconnect import AnkiConnectBackend, AnkiConnectError
 from anki_cli.backends.direct import DirectBackend
 from anki_cli.backends.protocol import AnkiBackend
-from anki_cli.models.config import AppConfig
+from anki_cli.models.config import DEFAULT_ANKICONNECT_URL, AppConfig
 
 
 class BackendFactoryError(RuntimeError):
     """Base backend factory error."""
-
-
-class BackendNotImplementedError(BackendFactoryError):
-    """Raised when backend exists in design but is not implemented yet."""
 
 
 def create_backend_from_context(obj: dict[str, Any]) -> AnkiBackend:
@@ -24,7 +20,7 @@ def create_backend_from_context(obj: dict[str, Any]) -> AnkiBackend:
     collection_path = _coerce_path(obj.get("collection_path"))
     app_config = obj.get("app_config")
 
-    ankiconnect_url = "http://localhost:8765"
+    ankiconnect_url = DEFAULT_ANKICONNECT_URL
     allow_non_localhost = False
     if isinstance(app_config, AppConfig):
         ankiconnect_url = app_config.backend.ankiconnect_url
@@ -48,11 +44,6 @@ def create_backend_from_context(obj: dict[str, Any]) -> AnkiBackend:
             return DirectBackend(collection_path)
         except FileNotFoundError as exc:
             raise BackendFactoryError(str(exc)) from exc
-
-    if backend_name == "standalone":
-        raise BackendNotImplementedError(
-            f"Backend '{backend_name}' is detected but not implemented yet."
-        )
 
     raise BackendFactoryError(f"Unknown backend '{backend_name}'.")
 

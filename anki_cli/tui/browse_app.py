@@ -18,6 +18,7 @@ from textual.widgets import Button, DataTable, Input, Static
 
 from anki_cli import __version__
 
+from ._utils import _relative_eta
 from .colors import (
     BLUE,
     BORDER,
@@ -56,8 +57,6 @@ _QUEUE_COLORS: dict[str, str] = {
     "Buried": DIM,
 }
 
-_COLUMNS = ("ID", "Deck", "Type", "Question", "Due", "Queue", "Interval", "Reps", "Lapses")
-
 _BROWSE_COLUMNS = ("Deck", "Type", "Question", "Due", "Ivl")
 
 
@@ -89,33 +88,6 @@ def _truncate(text: str, length: int = 80) -> str:
     if len(text) <= length:
         return text
     return text[:length - 1] + "\u2026"
-
-
-def _format_card_row(card: Mapping[str, Any]) -> tuple[Text | str, ...]:
-    card_id = Text(str(card.get("cardId", "")), style=DIM)
-    deck = Text(str(card.get("deckName", "")), style=CYAN)
-    notetype = Text(str(card.get("notetype_name", "")), style=DIM)
-
-    fields = card.get("fields")
-    if isinstance(fields, (list, tuple)) and fields:
-        question = Text(_truncate(_strip_html_basic(str(fields[0]))), style=TEXT)
-    else:
-        question = Text("", style=TEXT)
-
-    due = Text(str(card.get("due_info", "")), style=DIM)
-
-    queue_int = card.get("queue")
-    queue_label = QUEUE_LABELS.get(int(queue_int), str(queue_int)) if queue_int is not None else ""
-    queue_color = _QUEUE_COLORS.get(queue_label, DIM)
-    queue = Text(queue_label, style=queue_color)
-
-    interval = Text(str(card.get("interval", "")), style=DIM)
-    reps = Text(str(card.get("reps", "")), style=DIM)
-    lapses_val = card.get("lapses", "")
-    lapses_int = int(lapses_val) if isinstance(lapses_val, int) else 0
-    lapses = Text(str(lapses_val), style=RED if lapses_int > 3 else DIM)
-
-    return (card_id, deck, notetype, question, due, queue, interval, reps, lapses)
 
 
 def _format_card_detail(card: Mapping[str, Any]) -> Text:
@@ -166,21 +138,6 @@ def _format_card_detail(card: Mapping[str, Any]) -> Text:
         t.append("\n")
 
     return t
-
-def _relative_eta(epoch_secs: int) -> str:
-    now = int(time.time())
-    delta = max(0, int(epoch_secs) - now)
-    if delta < 60:
-        return "<1m"
-    minutes = delta // 60
-    if minutes < 60:
-        return f"{minutes}m"
-    hours = minutes // 60
-    if hours < 24:
-        return f"{hours}h"
-    days = (hours + 23) // 24
-    return f"{days}d"
-
 
 def _format_due_short(card: Mapping[str, Any]) -> str:
     queue = _to_int(card.get("queue"), 0)
@@ -249,7 +206,7 @@ def _extract_field_values(card: Mapping[str, Any]) -> list[str]:
 
         ordered.sort(key=lambda pair: pair[0])
         return [value for _, value in ordered] + unordered
-        
+
     return []
 
 
@@ -789,9 +746,6 @@ class BrowseApp(App[None]):
         if key == "suspended":
             return queue == -1
         return True
-
-    def _count_for_filter(self, filter_key: str) -> int:
-        return sum(1 for card in self._cards if self._matches_filter(card, filter_key))
 
     def _count_label(self) -> str:
         return f"{len(self._visible_cards)}/{len(self._cards)} cards"

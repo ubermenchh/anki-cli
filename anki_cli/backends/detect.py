@@ -8,8 +8,9 @@ from typing import Final, Literal
 
 import httpx
 
-BackendName = Literal["ankiconnect", "direct", "standalone"]
-DEFAULT_ANKICONNECT_URL: Final[str] = "http://localhost:8765"
+from anki_cli.models.config import DEFAULT_ANKICONNECT_URL
+
+BackendName = Literal["ankiconnect", "direct"]
 DEFAULT_ANKICONNECT_TIMEOUT_S: Final[float] = 0.35
 
 class DetectionError(RuntimeError):
@@ -28,12 +29,13 @@ def detect_backend(
     forced_backend: str = "auto",
     col_override: Path | None = None,
     ankiconnect_url: str = DEFAULT_ANKICONNECT_URL,
+    anki_profile: str | None = None,
 ) -> DetectionResult:
     forced = forced_backend.strip().lower()
 
-    if forced not in {"auto", "ankiconnect", "direct", "standalone"}:
+    if forced not in {"auto", "ankiconnect", "direct"}:
         raise DetectionError(
-            f"Unsupported backend '{forced_backend}'. Expected auto|ankiconnect|direct|standalone.",
+            f"Unsupported backend '{forced_backend}'. Expected auto|ankiconnect|direct.",
             exit_code=2
         )
 
@@ -44,13 +46,13 @@ def detect_backend(
                 exit_code=7
             )
         return DetectionResult(
-            "ankiconnect", 
-            _resolve_direct_collection(col_override),
+            "ankiconnect",
+            _resolve_direct_collection(col_override, anki_profile=anki_profile),
             "forced"
         )
 
     if forced == "direct":
-        path = _resolve_direct_collection(col_override)
+        path = _resolve_direct_collection(col_override, anki_profile=anki_profile)
         if path is None:
             raise DetectionError(
                 "Direct backend forced, but no Anki collection DB was found.",
@@ -64,21 +66,14 @@ def detect_backend(
             )
         return DetectionResult("direct", path, "forced")
 
-    if forced == "standalone":
-        return DetectionResult(
-            "standalone",
-            _resolve_standalone_collection(col_override),
-            "forced"
-        )
-
     if _ankiconnect_reachable(ankiconnect_url):
         return DetectionResult(
             "ankiconnect",
-            _resolve_direct_collection(col_override),
+            _resolve_direct_collection(col_override, anki_profile=anki_profile),
             "ankiconnect reachable"
         )
 
-    direct_path = _resolve_direct_collection(col_override)
+    direct_path = _resolve_direct_collection(col_override, anki_profile=anki_profile)
     if direct_path is not None:
         if _anki_process_running() or _sqlite_write_locked(direct_path):
             raise DetectionError(
@@ -92,10 +87,9 @@ def detect_backend(
             "ankiconnect unavailable, direct collection found"
         )
 
-    return DetectionResult(
-        "standalone",
-        _resolve_standalone_collection(col_override),
-        "no ankiconnect and no direct collection found",
+    raise DetectionError(
+        "No AnkiConnect and no collection found.",
+        exit_code=3,
     )
 
 def _ankiconnect_reachable(url: str) -> bool:
@@ -109,7 +103,10 @@ def _ankiconnect_reachable(url: str) -> bool:
         return False
     return isinstance(data, dict) and data.get("error") is None and "result" in data
 
-def _resolve_direct_collection(col_override: Path | None) -> Path | None:
+def _resolve_direct_collection(
+    col_override: Path | None,
+    anki_profile: str | None = None,
+) -> Path | None:
     if col_override is not None:
         resolved = col_override.expanduser().resolve()
         return resolved if resolved.exists() else None
@@ -129,20 +126,15 @@ def _resolve_direct_collection(col_override: Path | None) -> Path | None:
                 if db_path.exists():
                     candidates.append(db_path)
 
-    return candidates[0] if candidates else None
+    if not candidates:
+        return None
 
+    if anki_profile:
+        for path in candidates:
+            if path.parent.name == anki_profile:
+                return path
 
-def _resolve_standalone_collection(col_override: Path | None) -> Path:
-    if col_override is not None:
-        return col_override.expanduser().resolve()
-
-    cwd = Path.cwd().resolve()
-    for base in (cwd, *cwd.parents):
-        candidate = base / ".anki-cli" / "collection.db"
-        if candidate.exists():
-            return candidate
-
-    return (Path.home() / ".local" / "share" / "anki-cli" / "collection.db").resolve()
+    return candidates[0]
 
 
 def _anki_data_roots() -> list[Path]:

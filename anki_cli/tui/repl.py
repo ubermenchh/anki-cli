@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shlex
 import subprocess
 from collections.abc import Mapping
@@ -86,10 +85,6 @@ _ALIASES: dict[str, str] = {
     "ru": "review:undo",
     "v": "version",
 }
-
-_TAG_RE = re.compile(r"<[^>]+>")
-_BR_RE = re.compile(r"(?i)<br\\s*/?>")
-
 
 def _strip_html(value: str) -> str:
     return markdownify(value).strip()
@@ -247,14 +242,14 @@ def _grouped_help() -> None:
             else group_name.capitalize()
         )
         console.print(f"  [bold {BLUE}]{label}[/]")
-        
+
         table = Table(show_header=False, box=None, padding=(0, 2))
         table.add_column("Command", style=CYAN, width=24)
         table.add_column("Description", style=DIM)
-        
+
         for name, desc in groups[group_name]:
             table.add_row(f"    {name}", desc)
-            
+
         console.print(table)
         console.print()
 
@@ -301,15 +296,6 @@ def _fetch_due_counts(
     except Exception:
         return {}
 
-
-def _due_counts_inline(counts: dict[str, int]) -> str:
-    if not counts:
-        return ""
-    return (
-        f"new={counts.get('new', 0)} "
-        f"learn={counts.get('learn', 0)} "
-        f"review={counts.get('review', 0)}"
-    )
 
 def _render_review_progress(reviewed: int, total: int, deck: str | None) -> Table:
     bar = ProgressBar(
@@ -422,7 +408,7 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
                 border_style=GREEN,
                 padding=(1, 2)
             ))
-            
+
             console.print(f"  [{DIM}]1=again  2=hard  3=good  4=easy  u=undo  q=stop[/]")
 
             while True:

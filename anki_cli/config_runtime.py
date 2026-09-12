@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import tomllib
 from collections.abc import Mapping
@@ -12,7 +11,7 @@ from pydantic import ValidationError
 
 from anki_cli.models.config import AppConfig
 
-_ALLOWED_BACKENDS = {"auto", "ankiconnect", "direct", "standalone"}
+_ALLOWED_BACKENDS = {"auto", "ankiconnect", "direct"}
 _ALLOWED_OUTPUTS = {"table", "json", "md", "csv", "plain"}
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -314,24 +313,6 @@ def _coerce_raw_value(raw_value: str, old_value: Any) -> Any:
     if isinstance(old_value, str):
         return raw_value
 
-    if isinstance(old_value, list):
-        try:
-            parsed = json.loads(raw_value)
-        except json.JSONDecodeError as exc:
-            raise ConfigError("Expected JSON list for this key.") from exc
-        if not isinstance(parsed, list):
-            raise ConfigError("Expected JSON list for this key.")
-        return parsed
-
-    if isinstance(old_value, dict):
-        try:
-            parsed = json.loads(raw_value)
-        except json.JSONDecodeError as exc:
-            raise ConfigError("Expected JSON object for this key.") from exc
-        if not isinstance(parsed, dict):
-            raise ConfigError("Expected JSON object for this key.")
-        return parsed
-
     raise ConfigError(f"Unsupported value type for config update: {type(old_value).__name__}.")
 
 
@@ -347,7 +328,7 @@ def _write_config_file(path: Path, app_config: AppConfig) -> None:
 def _serialize_config_toml(app_config: AppConfig) -> str:
     data = app_config.model_dump(mode="python")
 
-    sections = ["collection", "backend", "display", "backup", "review"]
+    sections = list(data)
     lines: list[str] = []
 
     for idx, section in enumerate(sections):
