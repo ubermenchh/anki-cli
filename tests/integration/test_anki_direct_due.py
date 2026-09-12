@@ -50,9 +50,10 @@ def test_get_due_counts_all_decks_counts_only_due_cards(tmp_path: Path) -> None:
         decks=[(1, "DeckA"), (2, "DeckB")],
         cards=[
             (1, 1, 0, 999),          # new (always counted)
-            (2, 1, 1, 0),            # learn due
-            (3, 1, 1, 10**12),       # learn not due
-            (4, 1, 3, 0),            # relearn due
+            (2, 1, 1, 0),            # intraday learn due (epoch)
+            (3, 1, 1, 10**12),       # intraday learn not due
+            (4, 1, 3, 0),            # day-learn due (day index 0)
+            (7, 1, 3, 10**6),        # day-learn not due (day index far ahead) -- #19
             (5, 2, 2, 0),            # review due
             (6, 2, 2, 10**9),        # review not due
         ],
@@ -108,17 +109,47 @@ def test_get_next_due_card_prefers_learning_before_review_and_new(tmp_path: Path
 
 
 def test_get_next_due_card_learning_uses_due_then_id_order(tmp_path: Path) -> None:
+    # crt = 0, so a day-learn (queue 3) due of N means epoch N * 86400.
     store = _make_store(
         tmp_path,
         decks=[(1, "DeckA")],
         cards=[
-            (50, 1, 1, 100),  # due 100
-            (40, 1, 3, 100),  # due 100, lower id -> should win
-            (60, 1, 1, 200),  # due 200
+            (50, 1, 1, 86_400 * 2),  # intraday learn, epoch = day 2
+            (40, 1, 1, 86_400 * 2),  # same instant, lower id -> should win
+            (30, 1, 3, 3),           # day-learn due day 3 (later than day 2)
+            (60, 1, 1, 86_400 * 4),  # intraday learn, day 4
         ],
     )
 
     assert store.get_next_due_card() == {"card_id": 40, "kind": "learn_due"}
+
+
+def test_get_next_due_card_orders_day_learn_by_absolute_time(tmp_path: Path) -> None:
+    """Regression for #19: a day-learn due is a day index, not an epoch."""
+    store = _make_store(
+        tmp_path,
+        decks=[(1, "DeckA")],
+        cards=[
+            (50, 1, 1, 86_400 * 5),  # intraday learn due on day 5
+            (40, 1, 3, 1),           # day-learn due on day 1 -> earlier, wins
+        ],
+    )
+
+    assert store.get_next_due_card() == {"card_id": 40, "kind": "learn_due"}
+
+
+def test_get_next_due_card_skips_day_learn_not_yet_due(tmp_path: Path) -> None:
+    """A day-learn card 30 days out must not be treated as an epoch from 1970."""
+    store = _make_store(
+        tmp_path,
+        decks=[(1, "DeckA")],
+        cards=[
+            (40, 1, 3, 10**6),  # day index far in the future
+            (10, 1, 2, 0),      # review due today
+        ],
+    )
+
+    assert store.get_next_due_card() == {"card_id": 10, "kind": "review_due"}
 
 
 def test_get_next_due_card_falls_back_review_then_new(tmp_path: Path) -> None:

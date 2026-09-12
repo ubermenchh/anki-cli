@@ -35,6 +35,7 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
             id INTEGER PRIMARY KEY,
             type INTEGER NOT NULL,
             queue INTEGER NOT NULL,
+            due INTEGER NOT NULL DEFAULT 0,
             mod INTEGER NOT NULL,
             usn INTEGER NOT NULL
         );
@@ -64,13 +65,14 @@ def _insert_card(
     card_id: int,
     card_type: int,
     queue: int,
+    due: int = 0,
     mod: int = 1,
     usn: int = 0,
 ) -> None:
     conn = sqlite3.connect(str(db_path))
     conn.execute(
-        "INSERT INTO cards (id, type, queue, mod, usn) VALUES (?, ?, ?, ?, ?)",
-        (card_id, card_type, queue, mod, usn),
+        "INSERT INTO cards (id, type, queue, due, mod, usn) VALUES (?, ?, ?, ?, ?, ?)",
+        (card_id, card_type, queue, due, mod, usn),
     )
     conn.commit()
     conn.close()
@@ -92,7 +94,7 @@ def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        "SELECT id, type, queue, mod, usn FROM cards WHERE id = ?",
+        "SELECT id, type, queue, due, mod, usn FROM cards WHERE id = ?",
         (card_id,),
     ).fetchone()
     conn.close()
@@ -156,21 +158,29 @@ def test_unsuspend_cards_restores_queue_by_type(
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
     monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
 
-    _insert_card(db_path, card_id=11, card_type=0, queue=-1)
-    _insert_card(db_path, card_id=12, card_type=2, queue=-1)
-    _insert_card(db_path, card_id=13, card_type=3, queue=-1)
-    _insert_card(db_path, card_id=14, card_type=1, queue=-1)
+    _insert_card(db_path, card_id=11, card_type=0, queue=-1, due=5)
+    _insert_card(db_path, card_id=12, card_type=2, queue=-1, due=19_800)
+    # Learning/relearning cards: an epoch due means intraday (queue 1), a day
+    # index means day-learn (queue 3), regardless of type 1 vs 3 (#19, #43).
+    _insert_card(db_path, card_id=13, card_type=3, queue=-1, due=1_700_000_600)
+    _insert_card(db_path, card_id=14, card_type=1, queue=-1, due=1_700_000_300)
+    _insert_card(db_path, card_id=15, card_type=1, queue=-1, due=20_050)
+    _insert_card(db_path, card_id=16, card_type=3, queue=-1, due=20_051)
 
-    result = store.unsuspend_cards([14, 13, 12, 11, 999])
+    result = store.unsuspend_cards([16, 15, 14, 13, 12, 11, 999])
 
-    assert result["updated"] == 4
-    assert result["unsuspended"] == 4
-    assert set(cast(list[int], result["card_ids"])) == {11, 12, 13, 14}
+    assert result["updated"] == 6
+    assert result["unsuspended"] == 6
+    assert set(cast(list[int], result["card_ids"])) == {11, 12, 13, 14, 15, 16}
 
     assert _card_row(db_path, 11)["queue"] == 0
     assert _card_row(db_path, 12)["queue"] == 2
-    assert _card_row(db_path, 13)["queue"] == 3
+    assert _card_row(db_path, 13)["queue"] == 1
     assert _card_row(db_path, 14)["queue"] == 1
+    assert _card_row(db_path, 15)["queue"] == 3
+    assert _card_row(db_path, 16)["queue"] == 3
+    # due values are untouched by unsuspend.
+    assert _card_row(db_path, 15)["due"] == 20_050
 
 
 def test_suspend_and_unsuspend_return_noop_when_no_existing_ids(

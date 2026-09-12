@@ -112,6 +112,7 @@ def test_format_card_detail_no_tags_or_fields() -> None:
 
 def test_format_card_row_queue_has_color_style() -> None:
     from anki_cli.tui.colors import BLUE, GREEN
+
     card = {"cardId": 1, "queue": 2, "lapses": 0}
     row = browse_mod._format_card_row(card)
     assert row[5].plain == "Review"
@@ -125,6 +126,7 @@ def test_format_card_row_queue_has_color_style() -> None:
 
 def test_format_card_row_high_lapses_highlighted() -> None:
     from anki_cli.tui.colors import DIM, RED
+
     card_ok = {"cardId": 1, "lapses": 2}
     card_bad = {"cardId": 2, "lapses": 5}
     row_ok = browse_mod._format_card_row(card_ok)
@@ -142,6 +144,7 @@ def test_browse_app_constructor() -> None:
 def test_browse_app_constructor_default_query() -> None:
     app = browse_mod.BrowseApp(backend=object())
     assert app._query == ""
+
 
 def test_extract_field_values_ankiconnect_mapping_by_order() -> None:
     card: dict[str, Any] = {
@@ -203,3 +206,24 @@ def test_format_card_detail_renders_mapping_fields() -> None:
     detail = browse_mod._format_card_detail(card)
     assert "[0] Q" in detail
     assert "[1] A" in detail
+
+
+def test_format_due_short_handles_day_learn_like_review(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Day-learn cards (#19) carry a day index + epoch, not an intraday epoch."""
+    now = 1_700_000_000
+    monkeypatch.setattr(browse_mod.time, "time", lambda: now)
+    tomorrow = now + 86_400 + 60
+
+    day_learn = {
+        "queue": 3,
+        "due_info": {"kind": "learn_day_index", "day_index": 5, "epoch_secs": tomorrow},
+    }
+    review = {
+        "queue": 2,
+        "due_info": {"kind": "review_day_index", "day_index": 5, "epoch_secs": tomorrow},
+    }
+    intraday = {"queue": 1, "due_info": {"kind": "learn_epoch_secs", "epoch_secs": now + 600}}
+
+    assert browse_mod._format_due_short(day_learn) == "tomorrow"
+    assert browse_mod._format_due_short(review) == "tomorrow"
+    assert browse_mod._format_due_short(intraday) == "10m"

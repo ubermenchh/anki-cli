@@ -122,7 +122,7 @@ def _format_due_info_short(due_info: Any) -> str:
             if isinstance(epoch, int):
                 return _relative_eta(epoch)
             return "learn"
-        if kind == "review_day_index":
+        if kind in ("review_day_index", "learn_day_index"):
             epoch = due_info.get("epoch_secs")
             if isinstance(epoch, int):
                 now = int(time.time())

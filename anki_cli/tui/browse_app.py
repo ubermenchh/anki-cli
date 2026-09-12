@@ -198,7 +198,7 @@ def _format_due_short(card: Mapping[str, Any]) -> str:
         if kind == "learn_epoch_secs":
             epoch = _to_int(due_info.get("epoch_secs"), 0)
             return _relative_eta(epoch)
-        if kind == "review_day_index":
+        if kind in ("review_day_index", "learn_day_index"):
             epoch = due_info.get("epoch_secs")
             if isinstance(epoch, int):
                 now = int(time.time())

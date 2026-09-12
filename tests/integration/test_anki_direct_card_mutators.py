@@ -216,8 +216,10 @@ def test_bury_then_unbury_all_restores_queue_by_type(
 
     _insert_card(db_path, card_id=1, card_type=0, queue=0)    # new
     _insert_card(db_path, card_id=2, card_type=2, queue=2)    # review
-    _insert_card(db_path, card_id=3, card_type=3, queue=-2)   # buried relearn
-    _insert_card(db_path, card_id=4, card_type=1, queue=-3)   # buried learn/sib
+    # Buried relearn with a day-index due -> day-learn queue (3) on unbury.
+    _insert_card(db_path, card_id=3, card_type=3, queue=-2, due=20_050)
+    # Buried learn with an epoch due -> intraday learn queue (1) on unbury.
+    _insert_card(db_path, card_id=4, card_type=1, queue=-3, due=1_700_000_300)
 
     buried = store.bury_cards(card_ids=[2, 1, 2, 999])
     assert buried == {"buried": 2, "card_ids": [1, 2, 999]}
