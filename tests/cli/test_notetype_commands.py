@@ -315,12 +315,32 @@ def test_notetype_field_remove_success(monkeypatch) -> None:
     result = runner.invoke(
         notetype_field_remove_cmd,
         ["--notetype", "Basic", "--field", "Extra"],
-        obj=_base_obj(),
+        obj=_base_obj(yes=True),
     )
     payload = _success_payload(result)
 
     assert payload["data"] == {"name": "Basic", "field": "Extra", "removed": True}
     assert captured == {"name": "Basic", "field_name": "Extra"}
+
+
+def test_notetype_field_remove_requires_yes_exit_2(monkeypatch) -> None:
+    class Backend:
+        def remove_notetype_field(self, name: str, field_name: str) -> dict[str, Any]:
+            raise AssertionError("backend must not be reached without --yes")
+
+    _patch_session(monkeypatch, Backend())
+
+    runner = CliRunner()
+    result = runner.invoke(
+        notetype_field_remove_cmd,
+        ["--notetype", "Basic", "--field", "Extra"],
+        obj=_base_obj(yes=False),
+    )
+    payload = _error_payload(result)
+
+    assert result.exit_code == 2
+    assert payload["error"]["code"] == "CONFIRMATION_REQUIRED"
+    assert payload["error"]["details"]["field"] == "Extra"
 
 
 def test_notetype_template_add_success(monkeypatch) -> None:

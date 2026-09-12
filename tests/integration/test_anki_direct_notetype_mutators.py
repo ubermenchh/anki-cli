@@ -417,6 +417,23 @@ def test_remove_notetype_field_rewrites_note_field_values(
     assert store.get_note_fields(note_id=100) == {"Front": "a", "Back": "c"}
 
 
+def test_remove_notetype_field_matches_name_case_insensitively(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """fields.name is COLLATE unicase in Anki; add_notetype_field already honors that."""
+    store, db_path = _make_store(tmp_path)
+    _enable_writes(monkeypatch, store)
+    ntid = _create_basic_notetype(store)
+    _insert_note(db_path, note_id=100, mid=ntid, fields=["q", "a"])
+
+    result = store.remove_notetype_field(name="Basic", field_name="back")
+    assert result["field"] == "back"
+    assert result["updated_notes"] == 1
+    assert [str(row["name"]) for row in _fields_for_ntid(db_path, ntid)] == ["Front"]
+    assert _note_row(db_path, 100)["flds"] == "q"
+
+
 def test_remove_notetype_field_removing_first_field_recomputes_sfld_and_csum(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -468,6 +485,10 @@ def test_remove_notetype_field_shifts_sort_idx_and_requirement_ords(
         NotetypeConfigCardRequirement(
             card_ord=1, kind=NotetypeConfigCardRequirementKind.KIND_ANY, field_ords=[1]
         ),
+        # Ords past the removed one must shift down by one.
+        NotetypeConfigCardRequirement(
+            card_ord=2, kind=NotetypeConfigCardRequirementKind.KIND_ALL, field_ords=[0, 2, 3]
+        ),
     ]
     conn = sqlite3.connect(str(db_path))
     conn.execute("UPDATE notetypes SET config = ? WHERE id = ?", (bytes(cfg), ntid))
@@ -481,13 +502,17 @@ def test_remove_notetype_field_shifts_sort_idx_and_requirement_ords(
     after = NotetypeConfig().parse(bytes(_notetype_row_by_id(db_path, ntid)["config"]))
     # Sort field "C" moved from ord 2 to ord 1.
     assert int(after.sort_field_idx) == 1
-    # Card 1 still requires "A" (ord 0); Card 2 required "B", which is gone.
-    assert [list(req.field_ords) for req in after.reqs] == [[0], []]
+    # Card 1 still requires "A" (ord 0); Card 2 required "B", which is gone;
+    # Card 3's "C"/"D" moved from ords 2/3 to 1/2.
+    assert [list(req.field_ords) for req in after.reqs] == [[0], [], [0, 1, 2]]
     assert after.reqs[1].kind == NotetypeConfigCardRequirementKind.KIND_NONE
+    assert after.reqs[2].kind == NotetypeConfigCardRequirementKind.KIND_ALL
 
     note = _note_row(db_path, 100)
     assert note["flds"] == "a\x1fc\x1fd"
+    # sfld follows the sort field; csum always hashes the first field.
     assert note["sfld"] == "c"
+    assert note["csum"] == store._field_checksum("a")
 
 
 def test_remove_notetype_field_updates_sort_field_idx_when_out_of_range(

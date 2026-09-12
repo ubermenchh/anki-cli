@@ -179,7 +179,7 @@ anki deck:config:set --deck "Default" --new-per-day 20 --reviews-per-day 200
 ```bash
 anki notetype:create --name "MyType" --field "Front" --field "Back"
 anki notetype:field:add --notetype "Basic" --field "Extra"
-anki notetype:field:remove --notetype "Basic" --field "Extra"
+anki --yes notetype:field:remove --notetype "Basic" --field "Extra"   # deletes the field from every note
 anki notetype:template:add --notetype "MyType" --template "Card 1" --front "{{Front}}" --back "{{Back}}"
 anki notetype:template:edit --notetype "MyType" --template "Card 1" --front "{{Front}}" --back "{{FrontSide}}<hr>{{Back}}"
 anki notetype:css --notetype "Basic"

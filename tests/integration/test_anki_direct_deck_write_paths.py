@@ -27,7 +27,8 @@ def _make_store(
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
+    conn.executescript(
+        """
         CREATE TABLE decks (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
@@ -60,7 +61,8 @@ def _make_store(
             usn INTEGER NOT NULL,
             PRIMARY KEY (oid, type)
         );
-        """)
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -447,6 +449,32 @@ def test_delete_deck_refuses_default_deck(
     assert _deck_names(db_path) == ["Default", "Default::Sub"]
 
 
+def test_delete_deck_refuses_unknown_kind_and_leaves_collection_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A deck whose kind blob decodes to neither normal nor filtered must fail closed."""
+    store, db_path = _make_store(tmp_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO decks (id, name, mtime_secs, usn, common, kind) VALUES (?, ?, 1, 0, ?, ?)",
+        (10, "Broken", _common_blob(), b""),
+    )
+    conn.commit()
+    conn.close()
+    _insert_note(db_path, note_id=100)
+    _insert_card(db_path, card_id=1000, note_id=100, deck_id=10)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+
+    with pytest.raises(ValueError, match="unknown kind"):
+        store.delete_deck("Broken")
+
+    assert _deck_names(db_path) == ["Default", "Broken"]
+    assert _card_ids(db_path) == [1000]
+    assert _note_ids(db_path) == [100]
+    assert _grave_rows(db_path) == []
+
+
 def test_delete_filtered_deck_returns_cards_home_instead_of_deleting(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -510,6 +538,30 @@ def test_delete_filtered_deck_returns_cards_home_instead_of_deleting(
     )
     # Card that lives in Home and is not on loan: untouched.
     _insert_card(db_path, card_id=1004, note_id=103, deck_id=10, type_=2, queue=2, due=19900)
+    # New card repositioned by the filtered deck with odue == 0: "leave due alone".
+    _insert_card(
+        db_path,
+        card_id=1005,
+        note_id=103,
+        deck_id=555,
+        type_=0,
+        queue=0,
+        due=-100001,
+        odid=10,
+        odue=0,
+    )
+    # Buried while in the filtered deck: must keep queue -3.
+    _insert_card(
+        db_path,
+        card_id=1006,
+        note_id=103,
+        deck_id=555,
+        type_=2,
+        queue=-3,
+        due=-5,
+        odid=10,
+        odue=19850,
+    )
 
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
     monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
@@ -521,12 +573,12 @@ def test_delete_filtered_deck_returns_cards_home_instead_of_deleting(
         "deleted_decks": 1,
         "deleted_notes": 0,
         "deleted_cards": 0,
-        "returned_cards": 4,
+        "returned_cards": 6,
     }
 
     assert _deck_names(db_path) == ["Default", "Home"]
     assert _note_ids(db_path) == [100, 101, 102, 103]
-    assert _card_ids(db_path) == [1000, 1001, 1002, 1003, 1004]
+    assert _card_ids(db_path) == [1000, 1001, 1002, 1003, 1004, 1005, 1006]
     # Only the deck is graved; no card or note graves.
     assert _grave_rows(db_path) == [(555, 2, -1)]
 
@@ -546,6 +598,17 @@ def test_delete_filtered_deck_returns_cards_home_instead_of_deleting(
 
     untouched = _card_row(db_path, 1004)
     assert (untouched["did"], untouched["due"], untouched["usn"]) == (10, 19900, 0)
+
+    kept_due = _card_row(db_path, 1005)
+    assert (kept_due["did"], kept_due["due"], kept_due["queue"], kept_due["odid"]) == (
+        10,
+        -100001,
+        0,
+        0,
+    )
+
+    buried = _card_row(db_path, 1006)
+    assert (buried["did"], buried["due"], buried["queue"]) == (10, 19850, -3)
 
 
 def test_delete_filtered_deck_restores_day_learn_queue_and_parks_stray_cards(

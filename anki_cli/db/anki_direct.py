@@ -436,8 +436,11 @@ class AnkiDirectReadStore:
             if len(fields) <= 1:
                 raise ValueError("Cannot remove the last remaining field.")
 
+            # Anki declares fields.name COLLATE unicase, so match case-insensitively
+            # (add_notetype_field's `name = ?` lookup already does via SQL).
+            wanted = normalized_field.casefold()
             target_row = next(
-                (item for item in fields if str(item["name"]) == normalized_field),
+                (item for item in fields if str(item["name"]).casefold() == wanted),
                 None,
             )
             if target_row is None:
@@ -461,9 +464,8 @@ class AnkiDirectReadStore:
             sort_idx = int(config.sort_field_idx)
             if sort_idx > removed_ord:
                 sort_idx -= 1
-            elif sort_idx == removed_ord:
-                # Anki caps a dangling sort ordinal to the last remaining field.
-                sort_idx = min(sort_idx, new_field_count - 1)
+            # If the sort field itself was removed (or the index was already out of
+            # range), Anki caps the ordinal to the last remaining field.
             sort_idx = max(0, min(sort_idx, new_field_count - 1))
             config.sort_field_idx = sort_idx
 
@@ -1475,7 +1477,15 @@ class AnkiDirectReadStore:
                 did = int(row["id"])
                 kind = self._decode_deck_kind(bytes(row["kind"] or b""), did=did)
                 kind_name, _ = betterproto.which_one_of(kind, "kind")
-                (filtered_ids if kind_name == "filtered" else normal_ids).append(did)
+                if kind_name == "filtered":
+                    filtered_ids.append(did)
+                elif kind_name == "normal":
+                    normal_ids.append(did)
+                else:
+                    # A destructive dispatch must fail closed on a malformed blob.
+                    raise ValueError(
+                        f"Deck {did} ({row['name']}) has an unknown kind; refusing to delete."
+                    )
 
             now_sec = int(time.time())
             returned_cards = 0
@@ -1486,51 +1496,9 @@ class AnkiDirectReadStore:
 
             deleted_cards = 0
             deleted_notes = 0
-            note_ids_to_delete: list[int] = []
-            card_ids: list[int] = []
             if normal_ids:
-                placeholders = ", ".join(["?"] * len(normal_ids))
-                scope = f"(did IN ({placeholders}) OR odid IN ({placeholders}))"
-                scope_params = (*normal_ids, *normal_ids)
-
-                card_ids = [
-                    int(row["id"])
-                    for row in conn.execute(
-                        f"SELECT id FROM cards WHERE {scope}", scope_params
-                    ).fetchall()
-                ]
-
-                # Notes whose every card is in scope are orphaned and go too.
-                note_ids_to_delete = [
-                    int(row["nid"])
-                    for row in conn.execute(
-                        f"""
-                        SELECT nid
-                        FROM cards
-                        WHERE nid IN (SELECT nid FROM cards WHERE {scope})
-                        GROUP BY nid
-                        HAVING SUM(CASE WHEN {scope} THEN 0 ELSE 1 END) = 0
-                        """,
-                        (*scope_params, *scope_params),
-                    ).fetchall()
-                ]
-
-                if note_ids_to_delete:
-                    deleted_notes = int(
-                        conn.execute(
-                            f"""
-                            DELETE FROM notes
-                            WHERE id IN (SELECT nid FROM cards WHERE {scope})
-                              AND id NOT IN (SELECT nid FROM cards WHERE NOT {scope})
-                            """,
-                            (*scope_params, *scope_params),
-                        ).rowcount
-                    )
-
-                deleted_cards = int(
-                    conn.execute(
-                        f"DELETE FROM cards WHERE {scope}", scope_params
-                    ).rowcount
+                deleted_cards, deleted_notes = self._delete_cards_owned_by_decks(
+                    conn, normal_ids
                 )
 
             deck_placeholders = ", ".join(["?"] * len(deck_ids))
@@ -1540,9 +1508,6 @@ class AnkiDirectReadStore:
                     tuple(deck_ids),
                 ).rowcount
             )
-
-            self._insert_graves(conn, card_ids, grave_type=0)
-            self._insert_graves(conn, note_ids_to_delete, grave_type=1)
             self._insert_graves(conn, deck_ids, grave_type=2)
 
         return {
@@ -1553,6 +1518,61 @@ class AnkiDirectReadStore:
             "deleted_cards": deleted_cards,
             "returned_cards": returned_cards,
         }
+
+    def _delete_cards_owned_by_decks(
+        self,
+        conn: sqlite3.Connection,
+        deck_ids: list[int],
+    ) -> tuple[int, int]:
+        """Delete every card owned by ``deck_ids`` plus notes left with no cards.
+
+        A card is owned by a deck if it lives there (``did``) or is on loan from
+        there to a filtered deck (``odid``). Ids are staged in temp tables so the
+        graves come from the same set that was deleted, and so we never build an
+        ``IN (?, ?, ...)`` list that could exceed SQLite's variable limit.
+
+        Returns ``(deleted_cards, deleted_notes)``.
+        """
+        placeholders = ", ".join(["?"] * len(deck_ids))
+        scope = f"(did IN ({placeholders}) OR odid IN ({placeholders}))"
+        scope_params = (*deck_ids, *deck_ids)
+
+        conn.execute("CREATE TEMP TABLE IF NOT EXISTS _del_cids (id INTEGER PRIMARY KEY)")
+        conn.execute("CREATE TEMP TABLE IF NOT EXISTS _del_nids (id INTEGER PRIMARY KEY)")
+        conn.execute("DELETE FROM _del_cids")
+        conn.execute("DELETE FROM _del_nids")
+
+        conn.execute(
+            f"INSERT INTO _del_cids SELECT id FROM cards WHERE {scope}",
+            scope_params,
+        )
+        # Notes whose every card is being deleted are orphaned and go too.
+        conn.execute(
+            """
+            INSERT INTO _del_nids
+            SELECT nid
+            FROM cards
+            WHERE nid IN (SELECT nid FROM cards WHERE id IN (SELECT id FROM _del_cids))
+            GROUP BY nid
+            HAVING SUM(CASE WHEN id IN (SELECT id FROM _del_cids) THEN 0 ELSE 1 END) = 0
+            """
+        )
+
+        deleted_notes = int(
+            conn.execute("DELETE FROM notes WHERE id IN (SELECT id FROM _del_nids)").rowcount
+        )
+        deleted_cards = int(
+            conn.execute("DELETE FROM cards WHERE id IN (SELECT id FROM _del_cids)").rowcount
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO graves (oid, type, usn) SELECT id, 0, -1 FROM _del_cids"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO graves (oid, type, usn) SELECT id, 1, -1 FROM _del_nids"
+        )
+        conn.execute("DELETE FROM _del_cids")
+        conn.execute("DELETE FROM _del_nids")
+        return deleted_cards, deleted_notes
 
     def _return_cards_from_filtered_decks(
         self,

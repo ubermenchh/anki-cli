@@ -216,7 +216,7 @@ def notetype_field_add_cmd(ctx: click.Context, notetype_name: str, field_name: s
 @click.option("--field", "field_name", required=True, help="Field name")
 @click.pass_context
 def notetype_field_remove_cmd(ctx: click.Context, notetype_name: str, field_name: str) -> None:
-    """Remove a field from a note type."""
+    """Remove a field from a note type and its value from every note (requires --yes)."""
     obj: dict[str, Any] = ctx.obj or {}
     formatter = formatter_from_ctx(ctx)
     normalized_name = notetype_name.strip()
@@ -227,6 +227,22 @@ def notetype_field_remove_cmd(ctx: click.Context, notetype_name: str, field_name
             command="notetype:field:remove",
             code="INVALID_INPUT",
             message="Both --notetype and --field are required.",
+        )
+        raise click.exceptions.Exit(2)
+
+    if not bool(obj.get("yes", False)):
+        formatter.emit_error(
+            command="notetype:field:remove",
+            code="CONFIRMATION_REQUIRED",
+            message=(
+                "Removing a field deletes its value from every note of the notetype; "
+                "requires --yes."
+            ),
+            details={
+                "notetype": normalized_name,
+                "field": normalized_field,
+                "hint": "Run with --yes before the command.",
+            },
         )
         raise click.exceptions.Exit(2)
 

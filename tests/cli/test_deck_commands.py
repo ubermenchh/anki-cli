@@ -329,6 +329,23 @@ def test_deck_delete_success_when_yes(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["name"] == "Root"
 
 
+def test_deck_delete_value_error_is_invalid_input_exit_2(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Backend:
+        def delete_deck(self, *, name: str) -> dict[str, Any]:
+            raise ValueError("Cannot delete the Default deck.")
+
+    _patch_session(monkeypatch, Backend())
+
+    runner = CliRunner()
+    result = runner.invoke(deck_delete_cmd, ["--deck", "Default"], obj=_base_obj(yes=True))
+
+    payload = _error_payload(result)
+    assert result.exit_code == 2
+    assert payload["error"]["code"] == "INVALID_INPUT"
+    assert payload["error"]["message"] == "Cannot delete the Default deck."
+    assert payload["error"]["details"] == {"deck": "Default"}
+
+
 def test_deck_config_lookup_error_exit_4(monkeypatch: pytest.MonkeyPatch) -> None:
     class Backend:
         def get_deck_config(self, name: str) -> dict[str, Any]:

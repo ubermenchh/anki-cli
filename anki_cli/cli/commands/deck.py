@@ -269,6 +269,14 @@ def deck_delete_cmd(ctx: click.Context, deck_name: str) -> None:
             result = backend.delete_deck(name=deck_name.strip())
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_error(ctx=ctx, command="deck:delete", obj=obj, error=exc, exit_code=7)
+    except ValueError as exc:
+        formatter.emit_error(
+            command="deck:delete",
+            code="INVALID_INPUT",
+            message=str(exc),
+            details={"deck": deck_name.strip()},
+        )
+        raise click.exceptions.Exit(2) from exc
 
     formatter.emit_success(command="deck:delete", data=result)
 

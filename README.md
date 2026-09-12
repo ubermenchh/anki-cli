@@ -174,7 +174,7 @@ anki notetypes
 anki notetype --name "Basic"
 anki notetype:create --name "MyType" --field "Front" --field "Back"
 anki notetype:field:add --notetype "Basic" --field "Extra"
-anki notetype:field:remove --notetype "Basic" --field "Extra"
+anki --yes notetype:field:remove --notetype "Basic" --field "Extra"   # deletes the field from every note
 anki notetype:css --notetype "Basic" --set ".card { font-size: 18px; }"
 ```
 
@@ -235,7 +235,7 @@ For other AI coding agents, point them at `SKILL.md` in the repo root or include
 
 ## Safety Notes
 
-- Use `--yes` for destructive operations (`note:delete`, `deck:delete`).
+- Use `--yes` for destructive operations (`note:delete`, `deck:delete`, `notetype:field:remove`).
 - In direct mode, avoid write operations while Anki Desktop is open.
 - If Anki Desktop is running, prefer `--backend ankiconnect`.
 
