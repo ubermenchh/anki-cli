@@ -16,6 +16,8 @@ class Meta(BaseModel):
     backend: str
     collection: str | None = None
     timestamp: str
+    warnings: list[str] = Field(default_factory=list)
+    """Non-fatal notices the caller should surface (e.g. "next sync is a full upload")."""
 
 
 class ErrorInfo(BaseModel):

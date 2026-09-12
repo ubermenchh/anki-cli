@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, cast
 
 import click
@@ -43,6 +44,16 @@ def _default_templates(kind: str) -> tuple[str, str, str]:
         "{{Front}}",
         "{{FrontSide}}\n\n<hr id=answer>\n\n{{Back}}",
     )
+
+
+FULL_SYNC_WARNING = (
+    "This changed the notetype schema; Anki will require a one-way full sync "
+    "(upload) the next time you sync."
+)
+
+
+def _schema_warnings(data: Mapping[str, Any]) -> list[str]:
+    return [FULL_SYNC_WARNING] if data.get("full_sync_required") else []
 
 
 @click.command("notetypes")
@@ -208,7 +219,7 @@ def notetype_field_add_cmd(ctx: click.Context, notetype_name: str, field_name: s
         )
         raise click.exceptions.Exit(1) from exc
 
-    formatter.emit_success(command="notetype:field:add", data=data)
+    formatter.emit_success(command="notetype:field:add", data=data, warnings=_schema_warnings(data))
 
 
 @click.command("notetype:field:remove")
@@ -260,7 +271,9 @@ def notetype_field_remove_cmd(ctx: click.Context, notetype_name: str, field_name
         )
         raise click.exceptions.Exit(1) from exc
 
-    formatter.emit_success(command="notetype:field:remove", data=data)
+    formatter.emit_success(
+        command="notetype:field:remove", data=data, warnings=_schema_warnings(data)
+    )
 
 
 @click.command("notetype:template:add")
@@ -309,7 +322,9 @@ def notetype_template_add_cmd(
         )
         raise click.exceptions.Exit(1) from exc
 
-    formatter.emit_success(command="notetype:template:add", data=data)
+    formatter.emit_success(
+        command="notetype:template:add", data=data, warnings=_schema_warnings(data)
+    )
 
 
 @click.command("notetype:template:edit")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -38,12 +39,18 @@ class OutputFormatter:
         self.no_color = no_color
         self.copy_output = copy_output
 
-    def emit_success(self, *, command: str, data: JSONValue | BaseModel) -> None:
+    def emit_success(
+        self,
+        *,
+        command: str,
+        data: JSONValue | BaseModel,
+        warnings: Sequence[str] | None = None,
+    ) -> None:
         normalized = self._normalize_data(data)
 
         response = SuccessResponse(
             data=normalized,
-            meta=self._build_meta(command),
+            meta=self._build_meta(command, warnings=warnings),
         )
 
         if self.output_format == "json":
@@ -54,6 +61,8 @@ class OutputFormatter:
 
         rendered = self._render_data(normalized)
         click.echo(rendered)
+        for warning in response.meta.warnings:
+            click.echo(f"warning: {warning}", err=True)
         self._copy_if_requested(rendered)
 
     def emit_error(
@@ -84,7 +93,7 @@ class OutputFormatter:
             for key, value in payload.error.details.items():
                 click.echo(f"- {key}: {self._stringify(value)}", err=True)
 
-    def _build_meta(self, command: str) -> Meta:
+    def _build_meta(self, command: str, *, warnings: Sequence[str] | None = None) -> Meta:
         timestamp = datetime.now(tz=UTC).isoformat(timespec="seconds").replace(
             "+00:00",
             "Z",
@@ -94,6 +103,7 @@ class OutputFormatter:
             backend=self.backend,
             collection=self.collection_path,
             timestamp=timestamp,
+            warnings=list(warnings or []),
         )
 
     def _normalize_data(self, data: JSONValue | BaseModel) -> JSONValue:

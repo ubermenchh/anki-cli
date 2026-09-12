@@ -16,6 +16,7 @@ from anki_cli.proto.anki.decks import (
     DeckKindContainer,
     DeckNormal,
 )
+from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
 
 
 def _make_store(
@@ -63,6 +64,8 @@ def _make_store(
         );
         """
     )
+    conn.executescript(COL_TABLE_SQL)
+    insert_col_row(conn, crt=0)
     conn.commit()
     conn.close()
 

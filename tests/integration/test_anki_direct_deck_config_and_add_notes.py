@@ -10,6 +10,7 @@ import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
 from anki_cli.proto.anki.decks import DeckCommon, DeckFiltered, DeckKindContainer, DeckNormal
+from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
@@ -96,6 +97,8 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
         );
         """
     )
+    conn.executescript(COL_TABLE_SQL)
+    insert_col_row(conn, crt=0)
     conn.commit()
     conn.close()
 

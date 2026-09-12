@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from anki_cli.db.anki_direct import AnkiDirectReadStore
+from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
 
 
 def _checksum(first_field: str) -> int:
@@ -22,10 +23,6 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
     conn = sqlite3.connect(str(db_path))
     conn.executescript(
         """
-        CREATE TABLE col (
-            crt INTEGER NOT NULL
-        );
-
         CREATE TABLE decks (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL
@@ -91,7 +88,8 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
         );
         """
     )
-    conn.execute("INSERT INTO col (crt) VALUES (0)")
+    conn.executescript(COL_TABLE_SQL)
+    insert_col_row(conn, crt=0)
     conn.executemany(
         "INSERT INTO decks (id, name) VALUES (?, ?)",
         [(1, "Default"), (2, "Other")],

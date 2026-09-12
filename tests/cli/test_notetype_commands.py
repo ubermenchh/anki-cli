@@ -298,6 +298,44 @@ def test_notetype_field_add_success(monkeypatch) -> None:
 
     assert payload["data"] == {"name": "Basic", "field": "Extra", "added": True}
     assert captured == {"name": "Basic", "field_name": "Extra"}
+    # AnkiConnect-style result without the flag: no warning.
+    assert payload["meta"]["warnings"] == []
+
+
+def test_notetype_field_add_surfaces_full_sync_warning(monkeypatch) -> None:
+    class Backend:
+        def add_notetype_field(self, name: str, field_name: str) -> dict[str, Any]:
+            return {"name": name, "field": field_name, "added": True, "full_sync_required": True}
+
+    _patch_session(monkeypatch, Backend())
+
+    runner = CliRunner()
+    result = runner.invoke(
+        notetype_field_add_cmd,
+        ["--notetype", "Basic", "--field", "Extra"],
+        obj=_base_obj(),
+    )
+    payload = _success_payload(result)
+    assert payload["data"]["full_sync_required"] is True
+    assert payload["meta"]["warnings"] == [nt_cmd_mod.FULL_SYNC_WARNING]
+
+
+def test_notetype_field_add_prints_warning_to_stderr_in_table_mode(monkeypatch) -> None:
+    class Backend:
+        def add_notetype_field(self, name: str, field_name: str) -> dict[str, Any]:
+            return {"name": name, "field": field_name, "added": True, "full_sync_required": True}
+
+    _patch_session(monkeypatch, Backend())
+
+    runner = CliRunner()
+    result = runner.invoke(
+        notetype_field_add_cmd,
+        ["--notetype", "Basic", "--field", "Extra"],
+        obj=_base_obj(format="plain"),
+    )
+    assert result.exit_code == 0, result.output
+    assert "warning: This changed the notetype schema" in result.stderr
+    assert "warning:" not in result.stdout
 
 
 def test_notetype_field_remove_success(monkeypatch) -> None:

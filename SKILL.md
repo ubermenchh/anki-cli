@@ -47,10 +47,17 @@ Success:
     "command": "cards",
     "backend": "direct",
     "collection": "/path/to/collection.anki2",
-    "timestamp": "2026-02-21T12:00:00Z"
+    "timestamp": "2026-02-21T12:00:00Z",
+    "warnings": []
   }
 }
 ```
+
+`meta.warnings` is a list of non-fatal notices. Today it is populated by
+`notetype:field:add`, `notetype:field:remove` and `notetype:template:add` on the
+direct backend, because those change the notetype schema and Anki will demand a
+one-way full sync (upload) on the next sync. The same commands also return
+`"full_sync_required": true` in `data`.
 
 Error:
 

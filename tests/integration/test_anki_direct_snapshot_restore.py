@@ -8,6 +8,7 @@ import pytest
 
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
+from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
 
 
 def _make_store_with_cards_revlog(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
@@ -56,6 +57,8 @@ def _make_store_with_cards_revlog(tmp_path: Path) -> tuple[AnkiDirectReadStore, 
         """,
         (100, 1, 0, 2, 2, 30, 15, 2500, 20, 1, 0, 3, '{"x":1}', 111, 7),
     )
+    conn.executescript(COL_TABLE_SQL)
+    insert_col_row(conn, crt=0)
     conn.commit()
     conn.close()
 

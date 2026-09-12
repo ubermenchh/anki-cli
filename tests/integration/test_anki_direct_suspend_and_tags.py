@@ -8,6 +8,13 @@ import pytest
 
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
+from tests.integration.conftest import (
+    COL_TABLE_SQL,
+    assert_col_modified,
+    assert_col_untouched,
+    col_row,
+    insert_col_row,
+)
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
@@ -17,10 +24,6 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
     conn = sqlite3.connect(str(db_path))
     conn.executescript(
         """
-        CREATE TABLE col (
-            crt INTEGER NOT NULL
-        );
-
         CREATE TABLE notes (
             id INTEGER PRIMARY KEY,
             tags TEXT NOT NULL,
@@ -37,7 +40,8 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
         );
         """
     )
-    conn.execute("INSERT INTO col (crt) VALUES (0)")
+    conn.executescript(COL_TABLE_SQL)
+    insert_col_row(conn, crt=0)
     conn.commit()
     conn.close()
 
@@ -125,6 +129,24 @@ def test_suspend_cards_updates_existing_cards_only(
     assert _card_row(db_path, 2)["queue"] == 2
     assert _card_row(db_path, 2)["usn"] == 0
 
+    # Regression for #18: the collection modtime moves so sync notices the
+    # usn = -1 rows; suspending is not a schema change.
+    assert_col_modified(db_path, schema=False)
+
+
+def test_col_mod_uses_millisecond_epoch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000.5)
+    _insert_card(db_path, card_id=1, card_type=0, queue=0)
+
+    store.suspend_cards([1])
+
+    assert col_row(db_path)["mod"] == 1_700_000_000_500
+
 
 def test_unsuspend_cards_restores_queue_by_type(
     monkeypatch: pytest.MonkeyPatch,
@@ -155,13 +177,26 @@ def test_suspend_and_unsuspend_return_noop_when_no_existing_ids(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    store, _db_path = _make_store(tmp_path)
+    store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
 
     assert store.suspend_cards([999, 1000]) == {"updated": 0, "card_ids": []}
     assert store.unsuspend_cards([999, 1000]) == {"updated": 0, "card_ids": []}
     assert store.suspend_cards([]) == {"updated": 0, "card_ids": []}
     assert store.unsuspend_cards([]) == {"updated": 0, "card_ids": []}
+
+    # A write transaction that changed no rows must not move col.mod, or every
+    # no-op CLI call would look like a pending change to sync.
+    assert_col_untouched(db_path)
+
+
+def test_reads_do_not_touch_col_mod(tmp_path: Path) -> None:
+    store, db_path = _make_store(tmp_path)
+    _insert_note(db_path, note_id=1, tags=" a ")
+
+    store.get_tags()
+
+    assert_col_untouched(db_path)
 
 
 def test_add_tags_merges_case_insensitive_and_updates_existing_notes(

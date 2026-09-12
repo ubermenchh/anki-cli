@@ -69,13 +69,37 @@ class AnkiDirectReadStore:
         conn.execute("PRAGMA journal_mode = WAL")
         try:
             conn.execute("BEGIN IMMEDIATE")
+            changes_before = conn.total_changes
             yield conn
+            if conn.total_changes != changes_before:
+                # Anki's sync handshake compares col.mod with the server; rows
+                # marked usn = -1 are only scanned if that timestamp moved, so a
+                # write that leaves col.mod alone is invisible to the next sync.
+                self._touch_collection_modified(conn)
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
+
+    @staticmethod
+    def _now_ms() -> int:
+        return int(time.time() * 1000)
+
+    def _touch_collection_modified(self, conn: sqlite3.Connection) -> None:
+        conn.execute("UPDATE col SET mod = ?", (self._now_ms(),))
+
+    def _mark_schema_modified(self, conn: sqlite3.Connection) -> None:
+        """Record a schema change (Anki: ``set_schema_modified``).
+
+        A differing ``col.scm`` forces a one-way full sync on the next sync, which
+        Anki requires whenever fields or templates are added, removed or
+        reordered, or the sort field changes.
+        """
+        now_ms = self._now_ms()
+        conn.execute("UPDATE col SET scm = ?, mod = ?", (now_ms, now_ms))
 
     # ---- deck / notetype -------------------------------------------------
 
@@ -404,6 +428,7 @@ class AnkiDirectReadStore:
                 (ntid,),
             ).fetchone()
             next_ord = int(max_ord_row["max_ord"]) + 1
+            now_sec = int(time.time())
             conn.execute(
                 """
                 INSERT INTO fields (ntid, ord, name, config)
@@ -411,8 +436,24 @@ class AnkiDirectReadStore:
                 """,
                 (ntid, next_ord, normalized_field, bytes(NotetypeFieldConfig())),
             )
+            # notes.flds is positional: every existing note needs an empty slot
+            # appended or Anki reports a field-count mismatch.
+            updated_notes = self._append_field_to_notes(
+                conn, ntid=ntid, field_count=next_ord, now_sec=now_sec
+            )
+            conn.execute(
+                "UPDATE notetypes SET mtime_secs = ?, usn = -1 WHERE id = ?",
+                (now_sec, ntid),
+            )
+            self._mark_schema_modified(conn)
 
-        return {"name": normalized_name, "field": normalized_field, "added": True}
+        return {
+            "name": normalized_name,
+            "field": normalized_field,
+            "added": True,
+            "updated_notes": updated_notes,
+            "full_sync_required": True,
+        }
 
     def remove_notetype_field(self, *, name: str, field_name: str) -> dict[str, JSONValue]:
         normalized_name = name.strip()
@@ -486,6 +527,7 @@ class AnkiDirectReadStore:
                 "UPDATE notetypes SET mtime_secs = ?, usn = -1, config = ? WHERE id = ?",
                 (now_sec, bytes(config), ntid),
             )
+            self._mark_schema_modified(conn)
 
             # Field values are stored positionally in notes.flds, so every note of
             # this notetype must drop the removed slot or all later fields shift.
@@ -503,7 +545,43 @@ class AnkiDirectReadStore:
             "field": stored_field_name,
             "removed": True,
             "updated_notes": updated_notes,
+            "full_sync_required": True,
         }
+
+    def _append_field_to_notes(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        ntid: int,
+        field_count: int,
+        now_sec: int,
+    ) -> int:
+        """Append one empty slot to every note's positional field list.
+
+        ``field_count`` is the number of fields *before* the addition; short
+        (legacy) rows are padded to it first so the new slot lands at the right
+        ordinal. Mirrors Anki's ``Note::reorder_fields`` for the append case.
+        """
+        note_rows = conn.execute(
+            "SELECT id, flds FROM notes WHERE mid = ?",
+            (ntid,),
+        ).fetchall()
+        if not note_rows:
+            return 0
+
+        updates: list[tuple[str, int, int]] = []
+        for note_row in note_rows:
+            values = self._split_fields(str(note_row["flds"] or ""))
+            if len(values) < field_count:
+                values.extend([""] * (field_count - len(values)))
+            values.append("")
+            updates.append(("\x1f".join(values), now_sec, int(note_row["id"])))
+
+        conn.executemany(
+            "UPDATE notes SET flds = ?, mod = ?, usn = -1 WHERE id = ?",
+            updates,
+        )
+        return len(updates)
 
     def _remove_field_from_notes(
         self,
@@ -604,8 +682,18 @@ class AnkiDirectReadStore:
                     bytes(NotetypeTemplateConfig(q_format=front, a_format=back)),
                 ),
             )
+            conn.execute(
+                "UPDATE notetypes SET mtime_secs = ?, usn = -1 WHERE id = ?",
+                (now_sec, ntid),
+            )
+            self._mark_schema_modified(conn)
 
-        return {"name": normalized_name, "template": normalized_template, "added": True}
+        return {
+            "name": normalized_name,
+            "template": normalized_template,
+            "added": True,
+            "full_sync_required": True,
+        }
 
     def edit_notetype_template(
         self,
@@ -643,13 +731,19 @@ class AnkiDirectReadStore:
             if back is not None:
                 cfg.a_format = back
 
+            now_sec = int(time.time())
             conn.execute(
                 """
                 UPDATE templates
                 SET mtime_secs = ?, usn = -1, config = ?
                 WHERE ntid = ? AND ord = ?
                 """,
-                (int(time.time()), bytes(cfg), ntid, ord_),
+                (now_sec, bytes(cfg), ntid, ord_),
+            )
+            # Sync ships notetypes as whole objects keyed off notetypes.usn.
+            conn.execute(
+                "UPDATE notetypes SET mtime_secs = ?, usn = -1 WHERE id = ?",
+                (now_sec, ntid),
             )
 
         return {"name": normalized_name, "template": normalized_template, "updated": True}

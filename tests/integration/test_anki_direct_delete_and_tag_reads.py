@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from anki_cli.db.anki_direct import AnkiDirectReadStore
+from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
@@ -32,6 +33,8 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
         );
         """
     )
+    conn.executescript(COL_TABLE_SQL)
+    insert_col_row(conn, crt=0)
     conn.commit()
     conn.close()
 
