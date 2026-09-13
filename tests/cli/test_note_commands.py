@@ -19,6 +19,7 @@ from anki_cli.cli.commands.note import (
     notes_cmd,
 )
 from anki_cli.cli.dispatcher import get_command
+from anki_cli.db.anki_direct import DuplicateNoteError
 
 
 def _base_obj(**overrides: Any) -> dict[str, Any]:
@@ -205,6 +206,53 @@ def test_note_add_success_calls_backend_and_returns_payload(
         "tags": ["a", "b"],
         "allow_duplicate": True,
     }
+
+
+def test_note_add_duplicate_exit_1_with_duplicate_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Backend:
+        def add_note(self, **kwargs: Any) -> int:
+            assert kwargs["allow_duplicate"] is False
+            raise DuplicateNoteError(notetype="Basic", duplicate_ids=[1234])
+
+    _patch_session(monkeypatch, Backend())
+
+    runner = CliRunner()
+    result = runner.invoke(
+        note_add_cmd,
+        ["--deck", "Default", "--notetype", "Basic", "--Front", "hola", "--Back", "hello"],
+        obj=_base_obj(),
+    )
+
+    payload = _error_payload(result)
+    assert result.exit_code == 1
+    assert payload["error"]["code"] == "BACKEND_OPERATION_FAILED"
+    assert "Duplicate note" in payload["error"]["message"]
+    assert "--allow-duplicate" in payload["error"]["message"]
+    assert payload["error"]["details"] == {
+        "deck": "Default",
+        "notetype": "Basic",
+        "duplicate_ids": [1234],
+    }
+
+
+def test_note_add_plain_value_error_exit_1(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Backend:
+        def add_note(self, **kwargs: Any) -> int:
+            raise ValueError("bad input")
+
+    _patch_session(monkeypatch, Backend())
+
+    runner = CliRunner()
+    result = runner.invoke(
+        note_add_cmd,
+        ["--deck", "Default", "--notetype", "Basic", "--Front", "Q"],
+        obj=_base_obj(),
+    )
+
+    payload = _error_payload(result)
+    assert result.exit_code == 1
+    assert payload["error"]["code"] == "BACKEND_OPERATION_FAILED"
+    assert payload["error"]["details"] == {"deck": "Default", "notetype": "Basic"}
 
 
 def test_note_edit_requires_fields_or_tags_exit_2(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.anki_direct import AnkiDirectReadStore, DuplicateNoteError
 from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
 
 
@@ -572,3 +572,151 @@ def test_update_note_tags_can_unlock_a_tags_template(
 
     assert result["generated_cards"] == [1]
     assert _card_ords(db_path, nid) == [0, 1]
+
+
+# --- duplicate detection (#23) -------------------------------------------------
+
+
+def _add_basic(store: AnkiDirectReadStore, front: str, *, allow_duplicate: bool) -> int:
+    return store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Front": front, "Back": "A"},
+        tags=None,
+        allow_duplicate=allow_duplicate,
+    )
+
+
+def test_add_note_rejects_duplicate_first_field_in_same_notetype(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _insert_note(db_path, note_id=500, front="hola", back="hello")
+
+    with pytest.raises(DuplicateNoteError) as excinfo:
+        _add_basic(store, "hola", allow_duplicate=False)
+
+    assert excinfo.value.duplicate_ids == [500]
+    assert excinfo.value.notetype == "Basic"
+    assert "500" in str(excinfo.value)
+    assert "--allow-duplicate" in str(excinfo.value)
+    # Nothing was written: no note, no card.
+    assert _note_ids(db_path) == [500]
+    assert _card_ids(db_path) == []
+
+
+def test_add_note_duplicate_is_a_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _insert_note(db_path, note_id=500, front="hola", back="hello")
+
+    with pytest.raises(ValueError, match="Duplicate note"):
+        _add_basic(store, "hola", allow_duplicate=False)
+
+
+def test_add_note_allow_duplicate_inserts_second_note(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _insert_note(db_path, note_id=500, front="hola", back="hello")
+
+    nid = _add_basic(store, "hola", allow_duplicate=True)
+
+    assert _note_ids(db_path) == [500, nid]
+    assert _note_row(db_path, nid)["csum"] == _note_row(db_path, 500)["csum"]
+
+
+def test_add_note_duplicate_check_is_scoped_to_notetype(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+
+    # Same first field already exists, but under a different notetype (mid 20).
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO notetypes (id, name, config) VALUES (?, ?, ?)", (20, "Cloze-ish", b"")
+    )
+    conn.execute("INSERT INTO fields (ntid, ord, name) VALUES (?, ?, ?)", (20, 0, "Text"))
+    conn.execute(
+        """
+        INSERT INTO notes (id, guid, mid, mod, usn, tags, flds, sfld, csum, flags, data)
+        VALUES (?, ?, ?, 1, -1, '', ?, ?, ?, 0, '')
+        """,
+        (600, "guid-600", 20, "hola", "hola", store._field_checksum("hola")),
+    )
+    conn.commit()
+    conn.close()
+
+    nid = _add_basic(store, "hola", allow_duplicate=False)
+
+    assert _note_row(db_path, nid)["mid"] == 10
+    assert _note_ids(db_path) == [600, nid]
+
+
+def test_add_note_empty_first_field_is_never_a_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _install_templates(db_path, 10, ["{{Front}}{{Back}}"])
+    _insert_note(db_path, note_id=500, front="", back="first")
+
+    nid = store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Front": "  ", "Back": "second"},
+        tags=None,
+        allow_duplicate=False,
+    )
+
+    assert _note_ids(db_path) == [500, nid]
+
+
+def test_add_note_computes_checksum_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, _ = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    calls: list[str] = []
+    real = store._field_checksum
+
+    def counting(first_field: str) -> int:
+        calls.append(first_field)
+        return real(first_field)
+
+    monkeypatch.setattr(store, "_field_checksum", counting)
+
+    _add_basic(store, "Q", allow_duplicate=False)
+
+    assert calls == ["Q"]
+
+
+def test_add_notes_bulk_reports_duplicate_as_none(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _insert_note(db_path, note_id=500, front="hola", back="hello")
+
+    out = store.add_notes(
+        [
+            {"deck": "Default", "notetype": "Basic", "fields": {"Front": "hola", "Back": "x"}},
+            {"deck": "Default", "notetype": "Basic", "fields": {"Front": "adios", "Back": "y"}},
+        ]
+    )
+
+    assert out[0] is None
+    assert isinstance(out[1], int)
+    assert _note_ids(db_path) == [500, out[1]]

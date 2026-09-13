@@ -168,6 +168,23 @@ class UnsupportedCollectionError(RuntimeError):
     """The collection file is real but its schema is older than we can read or write."""
 
 
+class DuplicateNoteError(ValueError):
+    """`add_note` refused because a note of the same notetype already has this first field.
+
+    Mirrors AnkiConnect's `addNote` failure ("cannot create note because it is a
+    duplicate") so both backends reject the same input unless `allow_duplicate` is set.
+    """
+
+    def __init__(self, *, notetype: str, duplicate_ids: list[int]) -> None:
+        self.notetype = notetype
+        self.duplicate_ids = duplicate_ids
+        ids = ", ".join(str(i) for i in duplicate_ids)
+        super().__init__(
+            f"Duplicate note: first field matches existing note(s) {ids} "
+            f"in notetype '{notetype}'. Pass --allow-duplicate to add it anyway."
+        )
+
+
 class AnkiDirectReadStore:
     """Helpers for Anki's collection(.anki21b/.anki2) schema."""
 
@@ -2052,20 +2069,15 @@ class AnkiDirectReadStore:
                     raise LookupError(f"Missing field '{field_name}' for notetype '{notetype}'.")
                 ordered_values.append(str(fields[field_name]))
 
-            csum = self._field_checksum(ordered_values[0] if ordered_values else "")
+            first_field = ordered_values[0] if ordered_values else ""
+            csum = self._field_checksum(first_field)
 
-            dup_rows = conn.execute(
-                "SELECT id FROM notes WHERE csum = ? ORDER BY id DESC LIMIT 5",
-                (csum,),
-            ).fetchall()
-            dup_ids = [int(r["id"]) for r in dup_rows]
-
-            if dup_ids and not allow_duplicate:
-                import sys
-                sys.stderr.write(
-                    "warning: duplicate note detected (csum match). "
-                    "Pass --allow-duplicate to silence/force.\n"
+            if not allow_duplicate:
+                dup_ids = self._find_duplicate_note_ids(
+                    conn, notetype_id=notetype_id, first_field=first_field, csum=csum
                 )
+                if dup_ids:
+                    raise DuplicateNoteError(notetype=notetype, duplicate_ids=dup_ids)
 
             note_id = self._allocate_row_id(conn, "notes")
             now_sec = int(time.time())
@@ -2087,7 +2099,7 @@ class AnkiDirectReadStore:
                     tag_text,
                     flds,
                     sfld,
-                    self._field_checksum(ordered_values[0] if ordered_values else ""),
+                    csum,
                 ),
             )
 
@@ -2941,6 +2953,28 @@ class AnkiDirectReadStore:
     def _field_checksum(self, first_field: str) -> int:
         digest = sha1(first_field.encode("utf-8")).hexdigest()
         return int(digest[:8], 16)
+
+    def _find_duplicate_note_ids(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        notetype_id: int,
+        first_field: str,
+        csum: int,
+    ) -> list[int]:
+        """Ids of existing notes Anki would flag as duplicates of `first_field`.
+
+        Follows rslib's `note_fields_check`: the match is scoped to the notetype
+        (`csum` alone collides across notetypes that share a front), and an empty
+        first field is never a duplicate.
+        """
+        if not first_field.strip():
+            return []
+        rows = conn.execute(
+            "SELECT id FROM notes WHERE csum = ? AND mid = ? ORDER BY id",
+            (csum, notetype_id),
+        ).fetchall()
+        return [int(r["id"]) for r in rows]
 
     def _coerce_tags(self, value: JSONValue) -> list[str]:
         if isinstance(value, list):

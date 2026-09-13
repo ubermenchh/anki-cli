@@ -196,12 +196,18 @@ def note_add_cmd(
             )
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="note:add", obj=obj, error=exc)
-    except (AnkiConnectAPIError, LookupError) as exc:
+    except (AnkiConnectAPIError, LookupError, ValueError) as exc:
+        # ValueError covers DuplicateNoteError from the direct backend; AnkiConnect
+        # reports the same condition as an AnkiConnectAPIError on `addNote`.
+        details: dict[str, JSONValue] = {"deck": deck, "notetype": notetype}
+        duplicate_ids = getattr(exc, "duplicate_ids", None)
+        if isinstance(duplicate_ids, list):
+            details["duplicate_ids"] = [int(i) for i in duplicate_ids]
         formatter.emit_error(
             command="note:add",
             code="BACKEND_OPERATION_FAILED",
             message=str(exc),
-            details={"deck": deck, "notetype": notetype},
+            details=details,
         )
         raise click.exceptions.Exit(1) from exc
 
