@@ -49,6 +49,11 @@ def is_intraday_learn_due(due: int) -> bool:
 # card is needed regardless of where it currently lives.
 RESTORED_DUE_SQL = "CASE WHEN odue > 0 THEN odue ELSE due END"
 
+# rslib Card::remove_from_filtered_deck_before_reschedule: a card that is about
+# to be given a brand-new schedule (answer, forget, set due date) first goes
+# home; the caller then writes queue/due itself.
+LEAVE_FILTERED_DECK_SQL = "did = CASE WHEN odid != 0 THEN odid ELSE did END, odid = 0, odue = 0"
+
 
 def queue_from_type_sql(*, due_expr: str = RESTORED_DUE_SQL) -> str:
     """SQL CASE recomputing ``queue`` from ``type`` (rslib ``restore_queue_from_type``).
@@ -1078,7 +1083,8 @@ class AnkiDirectReadStore:
             row = conn.execute(
                 """
                 SELECT
-                    id, did, ord, type, queue, due, ivl, factor, reps, lapses, left, flags, data
+                    id, did, odid, odue, ord, type, queue, due, ivl, factor, reps, lapses,
+                    left, flags, data
                 FROM cards
                 WHERE id = ?
                 """,
@@ -1091,6 +1097,8 @@ class AnkiDirectReadStore:
         return {
             "id": int(row["id"]),
             "did": int(row["did"]),
+            "odid": int(row["odid"]),
+            "odue": int(row["odue"]),
             "ord": int(row["ord"]),
             "type": int(row["type"]),
             "queue": int(row["queue"]),
@@ -1117,6 +1125,8 @@ class AnkiDirectReadStore:
                 UPDATE cards
                 SET
                     did = ?,
+                    odid = ?,
+                    odue = ?,
                     ord = ?,
                     type = ?,
                     queue = ?,
@@ -1134,6 +1144,10 @@ class AnkiDirectReadStore:
                 """,
                 (
                     int(snapshot.get("did") or 0),
+                    # Older snapshots predate these keys; a card that was not in a
+                    # filtered deck has both at 0.
+                    int(snapshot.get("odid") or 0),
+                    int(snapshot.get("odue") or 0),
                     int(snapshot.get("ord") or 0),
                     int(snapshot.get("type") or 0),
                     int(snapshot.get("queue") or 0),
@@ -1188,7 +1202,10 @@ class AnkiDirectReadStore:
                 _dr,
                 learn_count,
                 relearn_count
-            ) = self._build_scheduler(conn, int(row["did"]))
+            ) = self._build_scheduler(
+                # Options come from the home deck when the card is on loan.
+                conn, int(row["odid"]) if int(row["odid"]) != 0 else int(row["did"])
+            )
 
             base = self._card_row_to_fsrs(
                 row,
@@ -1282,9 +1299,27 @@ class AnkiDirectReadStore:
             return {"moved": 0, "card_ids": []}
         with self._connect_write() as conn:
             did = self._resolve_deck_id(conn, deck)
+            if self._filtered_deck_reschedules(conn, did) is not None:
+                # rslib FilteredDeckError::CanNotMoveCardsInto
+                raise ValueError(f"Cannot move cards into a filtered deck: {deck}")
             placeholders = ", ".join(["?"] * len(ids))
+            # A card leaving a filtered deck first restores its real schedule
+            # (rslib Card::set_deck -> remove_from_filtered_deck_restoring_queue).
             updated = conn.execute(
-                f"UPDATE cards SET did = ?, mod = ?, usn = -1 WHERE id IN ({placeholders})",
+                f"""
+                UPDATE cards
+                SET due = {RESTORED_DUE_SQL},
+                    queue = CASE
+                        WHEN odid = 0 OR queue < 0 THEN queue
+                        ELSE {queue_from_type_sql()}
+                    END,
+                    odid = 0,
+                    odue = 0,
+                    did = ?,
+                    mod = ?,
+                    usn = -1
+                WHERE id IN ({placeholders})
+                """,
                 (did, int(time.time()), *ids),
             ).rowcount
         return {"moved": int(updated), "card_ids": ids, "deck": deck}
@@ -1364,7 +1399,8 @@ class AnkiDirectReadStore:
             updated = conn.execute(
                 f"""
                 UPDATE cards
-                SET type = 2, queue = 2, due = ?, ivl = ?, mod = ?, usn = -1
+                SET type = 2, queue = 2, due = ?, ivl = ?, {LEAVE_FILTERED_DECK_SQL},
+                    mod = ?, usn = -1
                 WHERE id IN ({placeholders})
                 """,
                 (target_due, max(1, days), int(time.time()), *ids),
@@ -1382,10 +1418,10 @@ class AnkiDirectReadStore:
             updated = 0
             for offset, cid in enumerate(ids):
                 changed = conn.execute(
-                    """
+                    f"""
                     UPDATE cards
                     SET type = 0, queue = 0, due = ?, ivl = 0, factor = 0, reps = 0, lapses = 0,
-                        left = 0, odue = 0, odid = 0, data = '{}', mod = ?, usn = -1
+                        left = 0, {LEAVE_FILTERED_DECK_SQL}, data = '{{}}', mod = ?, usn = -1
                     WHERE id = ?
                     """,
                     (next_due + offset, now_sec, cid),
@@ -2234,8 +2270,20 @@ class AnkiDirectReadStore:
             col_row = conn.execute("SELECT crt FROM col LIMIT 1").fetchone()
             col_crt_sec = int(col_row["crt"]) if col_row is not None else int(time.time())
 
+            # A card in a filtered deck keeps its real schedule in odue and its
+            # options come from the home deck. Anki (v3) answers it, sends it
+            # home, then schedules normally; preview decks don't reschedule at
+            # all, which this backend does not emulate.
+            odid = int(row["odid"])
+            home_did = odid if odid != 0 else int(row["did"])
+            if odid != 0 and self._filtered_deck_reschedules(conn, int(row["did"])) is False:
+                raise ValueError(
+                    "Card is in a preview (non-rescheduling) filtered deck; "
+                    "answer it in Anki or empty the deck first."
+                )
+
             scheduler, desired_retention, learn_count, relearn_count = self._build_scheduler(
-                conn, int(row["did"])
+                conn, home_did
             )
             review_dt = datetime.now(UTC)
 
@@ -2322,7 +2370,7 @@ class AnkiDirectReadStore:
             data_json = json.dumps(data_obj, separators=(",", ":"))
 
             conn.execute(
-                """
+                f"""
                 UPDATE cards
                 SET
                     mod = ?,
@@ -2334,7 +2382,8 @@ class AnkiDirectReadStore:
                     reps = ?,
                     lapses = ?,
                     left = ?,
-                    data = ?
+                    data = ?,
+                    {LEAVE_FILTERED_DECK_SQL}
                 WHERE id = ?
                 """,
                 (
@@ -2352,7 +2401,7 @@ class AnkiDirectReadStore:
             )
 
             revlog_id = self._allocate_epoch_ms_id(conn, "revlog")
-            old_due = int(row["due"])
+            old_due = self._scheduling_due(row)
             old_type = int(row["type"])
             old_queue = int(row["queue"])
             old_ivl = int(row["ivl"])
@@ -2433,6 +2482,25 @@ class AnkiDirectReadStore:
         return [self._revlog_row_to_item(row) for row in rows]
 
     # ---- low-level helpers ------------------------------------------------
+
+    @staticmethod
+    def _scheduling_due(row: sqlite3.Row) -> int:
+        """The card's real due: ``odue`` while parked in a filtered deck, else ``due``."""
+        keys = row.keys()
+        if "odid" in keys and "odue" in keys and int(row["odid"]) != 0 and int(row["odue"]) > 0:
+            return int(row["odue"])
+        return int(row["due"])
+
+    def _filtered_deck_reschedules(self, conn: sqlite3.Connection, did: int) -> bool | None:
+        """``None`` if ``did`` is not a filtered deck, else its ``reschedule`` flag."""
+        row = conn.execute("SELECT kind FROM decks WHERE id = ?", (did,)).fetchone()
+        if row is None:
+            return None
+        kind = self._decode_deck_kind(bytes(row["kind"] or b""), did=did)
+        kind_name, kind_msg = betterproto.which_one_of(kind, "kind")
+        if kind_name != "filtered" or kind_msg is None:
+            return None
+        return bool(kind_msg.reschedule)
 
     def _col_crt_day(self, conn: sqlite3.Connection) -> int:
         row = conn.execute("SELECT crt FROM col LIMIT 1").fetchone()
@@ -2870,7 +2938,7 @@ class AnkiDirectReadStore:
 
         card_type = int(row["type"])
         queue = int(row["queue"])
-        due_raw = int(row["due"])
+        due_raw = self._scheduling_due(row)
         if card_type == 2:
             crt_day = int(col_crt_sec // 86400)
             due_dt = datetime.fromtimestamp((crt_day + due_raw) * 86400, tz=UTC)

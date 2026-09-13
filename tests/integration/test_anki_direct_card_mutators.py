@@ -8,7 +8,11 @@ import pytest
 
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.proto.anki.decks import DeckFiltered, DeckKindContainer, DeckNormal
 from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
+
+_NORMAL_KIND = bytes(DeckKindContainer(normal=DeckNormal(config_id=1)))
+_FILTERED_KIND = bytes(DeckKindContainer(filtered=DeckFiltered(reschedule=True)))
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
@@ -16,11 +20,11 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
+    conn.executescript("""
         CREATE TABLE decks (
             id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL
+            name TEXT NOT NULL,
+            kind BLOB NOT NULL DEFAULT X''
         );
 
         CREATE TABLE cards (
@@ -41,18 +45,18 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
             usn INTEGER NOT NULL,
             flags INTEGER NOT NULL
         );
-        """
-    )
+        """)
     conn.executescript(COL_TABLE_SQL)
     insert_col_row(conn, crt=0)
     conn.executemany(
-        "INSERT INTO decks (id, name) VALUES (?, ?)",
+        "INSERT INTO decks (id, name, kind) VALUES (?, ?, ?)",
         [
-            (1, "Default"),
-            (2, "Target"),
-            (10, "Lang"),
-            (11, "Lang::Child"),
-            (12, "Other"),
+            (1, "Default", _NORMAL_KIND),
+            (2, "Target", _NORMAL_KIND),
+            (10, "Lang", _NORMAL_KIND),
+            (11, "Lang::Child", _NORMAL_KIND),
+            (12, "Other", _NORMAL_KIND),
+            (555, "Cram", _FILTERED_KIND),
         ],
     )
     conn.commit()
@@ -214,8 +218,8 @@ def test_bury_then_unbury_all_restores_queue_by_type(
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
     monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
 
-    _insert_card(db_path, card_id=1, card_type=0, queue=0)    # new
-    _insert_card(db_path, card_id=2, card_type=2, queue=2)    # review
+    _insert_card(db_path, card_id=1, card_type=0, queue=0)  # new
+    _insert_card(db_path, card_id=2, card_type=2, queue=2)  # review
     # Buried relearn with a day-index due -> day-learn queue (3) on unbury.
     _insert_card(db_path, card_id=3, card_type=3, queue=-2, due=20_050)
     # Buried learn with an epoch due -> intraday learn queue (1) on unbury.
@@ -410,3 +414,81 @@ def test_card_mutator_noop_cases_return_empty_results(tmp_path: Path) -> None:
     assert store.bury_cards(card_ids=[]) == {"buried": 0, "card_ids": []}
     assert store.reschedule_cards(card_ids=[], days=2) == {"rescheduled": 0, "card_ids": []}
     assert store.reset_cards(card_ids=[]) == {"reset": 0, "card_ids": []}
+
+
+# --- filtered-deck awareness (#20) --------------------------------------------
+
+
+def test_reset_cards_sends_a_filtered_deck_card_home(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Pre-fix, reset zeroed odid/odue but left did on the filtered deck: stranded."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _insert_card(db_path, card_id=1, did=555, card_type=2, queue=2, due=-5, odid=10, odue=19_700)
+    _insert_card(db_path, card_id=2, did=12, card_type=2, queue=2, due=19_900)
+
+    store.reset_cards(card_ids=[1, 2])
+
+    home = _card_row(db_path, 1)
+    assert (home["did"], home["odid"], home["odue"]) == (10, 0, 0)
+    assert (home["type"], home["queue"]) == (0, 0)
+    plain = _card_row(db_path, 2)
+    assert plain["did"] == 12  # a card not on loan keeps its deck
+
+
+def test_reschedule_cards_sends_a_filtered_deck_card_home(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
+    _insert_card(db_path, card_id=1, did=555, card_type=2, queue=2, due=-5, odid=10, odue=19_700)
+
+    store.reschedule_cards(card_ids=[1], days=3)
+
+    row = _card_row(db_path, 1)
+    assert (row["did"], row["odid"], row["odue"]) == (10, 0, 0)
+    assert (row["type"], row["queue"], row["due"]) == (2, 2, 1_000_000 // 86400 + 3)
+
+
+def test_move_cards_out_of_filtered_deck_restores_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    # Review card on loan: due is a filtered-deck position, odue the real due.
+    _insert_card(db_path, card_id=1, did=555, card_type=2, queue=2, due=-5, odid=10, odue=19_700)
+    # Intraday learn card on loan, suspended while there: queue must stay -1.
+    _insert_card(
+        db_path, card_id=2, did=555, card_type=1, queue=-1, due=-6, odid=10, odue=1_700_000_300
+    )
+    # Not on loan: only did changes.
+    _insert_card(db_path, card_id=3, did=10, card_type=2, queue=2, due=19_800)
+
+    store.move_cards(card_ids=[1, 2, 3], deck="Target")
+
+    review = _card_row(db_path, 1)
+    assert (review["did"], review["due"], review["queue"], review["odid"]) == (2, 19_700, 2, 0)
+    suspended = _card_row(db_path, 2)
+    assert (suspended["did"], suspended["due"], suspended["queue"]) == (2, 1_700_000_300, -1)
+    plain = _card_row(db_path, 3)
+    assert (plain["did"], plain["due"], plain["queue"]) == (2, 19_800, 2)
+
+
+def test_move_cards_into_a_filtered_deck_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """rslib FilteredDeckError::CanNotMoveCardsInto."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _insert_card(db_path, card_id=1, did=10)
+
+    with pytest.raises(ValueError, match="filtered deck"):
+        store.move_cards(card_ids=[1], deck="Cram")
+
+    assert _card_row(db_path, 1)["did"] == 10

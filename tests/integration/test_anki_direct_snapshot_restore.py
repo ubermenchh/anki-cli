@@ -32,6 +32,8 @@ def _make_store_with_cards_revlog(tmp_path: Path) -> tuple[AnkiDirectReadStore, 
             left INTEGER NOT NULL,
             flags INTEGER NOT NULL,
             data TEXT NOT NULL,
+            odid INTEGER NOT NULL DEFAULT 0,
+            odue INTEGER NOT NULL DEFAULT 0,
             mod INTEGER NOT NULL DEFAULT 0,
             usn INTEGER NOT NULL DEFAULT 0
         );
@@ -100,6 +102,8 @@ def test_snapshot_card_state_returns_expected_fields(tmp_path: Path) -> None:
     assert snap == {
         "id": 100,
         "did": 1,
+        "odid": 0,
+        "odue": 0,
         "ord": 0,
         "type": 2,
         "queue": 2,
