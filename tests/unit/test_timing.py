@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -176,7 +178,7 @@ def test_issue_21_reproduction_est_rollover() -> None:
     assert timing.next_day_at == crt + 86_400  # 04:00 EST the next day
 
 
-def test_day_start_epoch_and_day_index_round_trip() -> None:
+def test_day_start_epoch_anchors_on_rollover() -> None:
     tz = MDT
     crt = _ts(tz, 2019, 1, 1, 2, 0, 0)
     now = _ts(tz, 2019, 1, 10, 12, 0, 0)  # day 9, rollover passed
@@ -185,15 +187,27 @@ def test_day_start_epoch_and_day_index_round_trip() -> None:
     assert timing.day_start_epoch(9) == _ts(tz, 2019, 1, 10, 4)
     assert timing.day_start_epoch(10) == timing.next_day_at
     assert timing.day_start_epoch(0) == _ts(tz, 2019, 1, 1, 4)
-    for idx in (0, 5, 9, 10, 40):
-        assert timing.day_index_for_epoch(timing.day_start_epoch(idx)) == idx
-        assert timing.day_index_for_epoch(timing.day_start_epoch(idx) + 86_399) == idx
-    assert timing.day_index_for_epoch(now) == 9
+    # consecutive day starts are exactly one day apart
+    assert timing.day_start_epoch(11) - timing.day_start_epoch(10) == 86_400
 
 
-def test_local_minutes_west_matches_datetime() -> None:
-    now = 1_700_000_000
-    expected = -int(
-        (datetime.fromtimestamp(now).astimezone().utcoffset() or timedelta()).total_seconds() // 60
-    )
-    assert t.local_minutes_west_for_stamp(now) == expected
+@pytest.mark.skipif(sys.platform == "win32", reason="time.tzset is POSIX-only")
+@pytest.mark.parametrize(
+    ("tz", "stamp", "expected_west"),
+    [
+        ("UTC", 1_700_000_000, 0),
+        ("Australia/Brisbane", 1_700_000_000, -600),  # UTC+10, no DST
+        ("America/Denver", 1_533_535_200, 6 * 60),  # Aug 2018 -> MDT
+        ("America/Denver", 1_577_415_600, 7 * 60),  # Dec 2019 -> MST
+    ],
+)
+def test_local_minutes_west_is_dst_aware(
+    monkeypatch: pytest.MonkeyPatch, tz: str, stamp: int, expected_west: int
+) -> None:
+    monkeypatch.setenv("TZ", tz)
+    time.tzset()
+    try:
+        assert t.local_minutes_west_for_stamp(stamp) == expected_west
+    finally:
+        monkeypatch.undo()
+        time.tzset()

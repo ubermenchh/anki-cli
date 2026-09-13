@@ -212,20 +212,20 @@ def test_format_due_short_handles_day_learn_like_review(monkeypatch: pytest.Monk
     """Day-learn cards (#19) carry a day index + epoch, not an intraday epoch."""
     now = 1_700_000_000
     monkeypatch.setattr(browse_mod.time, "time", lambda: now)
-    tomorrow = now + 86_400 + 60
 
-    day_learn = {
-        "queue": 3,
-        "due_info": {"kind": "learn_day_index", "day_index": 5, "epoch_secs": tomorrow},
-    }
-    review = {
-        "queue": 2,
-        "due_info": {"kind": "review_day_index", "day_index": 5, "epoch_secs": tomorrow},
-    }
+    def card(kind: str, queue: int, **due_info: int) -> dict:
+        return {"queue": queue, "due_info": {"kind": kind, "day_index": 5, **due_info}}
+
+    # Preferred: the backend's relative day count.
+    assert browse_mod._format_due_short(card("learn_day_index", 3, days_from_today=1)) == "tomorrow"
+    assert (
+        browse_mod._format_due_short(card("review_day_index", 2, days_from_today=1)) == "tomorrow"
+    )
+    assert browse_mod._format_due_short(card("review_day_index", 2, days_from_today=0)) == "today"
+    assert browse_mod._format_due_short(card("review_day_index", 2, days_from_today=-3)) == "today"
+    assert browse_mod._format_due_short(card("review_day_index", 2, days_from_today=4)) == "4d"
+
     intraday = {"queue": 1, "due_info": {"kind": "learn_epoch_secs", "epoch_secs": now + 600}}
-
-    assert browse_mod._format_due_short(day_learn) == "tomorrow"
-    assert browse_mod._format_due_short(review) == "tomorrow"
     assert browse_mod._format_due_short(intraday) == "10m"
 
 
@@ -295,3 +295,24 @@ def test_preview_actions_for_card_show_detail_and_unsuspend() -> None:
     assert "Detail" in actions
     assert "Study" not in actions
     assert "Edit" not in actions
+
+
+def test_format_due_short_epoch_fallback_rounds_up_to_the_due_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#21: epoch_secs is the *start* of the due scheduling day. A rollover 21 h
+    away is tomorrow, and flooring (epoch - now) // 86400 wrongly said today."""
+    now = 1_700_000_000
+    monkeypatch.setattr(browse_mod.time, "time", lambda: now)
+
+    def review(epoch: int) -> dict:
+        return {
+            "queue": 2,
+            "due_info": {"kind": "review_day_index", "day_index": 5, "epoch_secs": epoch},
+        }
+
+    assert browse_mod._format_due_short(review(now + 21 * 3600)) == "tomorrow"
+    assert browse_mod._format_due_short(review(now + 86_400)) == "tomorrow"
+    assert browse_mod._format_due_short(review(now + 86_400 + 60)) == "2d"
+    assert browse_mod._format_due_short(review(now - 3600)) == "today"  # started already
+    assert browse_mod._format_due_short(review(now - 5 * 86_400)) == "today"  # overdue

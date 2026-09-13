@@ -113,6 +113,19 @@ def _relative_eta(epoch_secs: int) -> str:
     return f"{days}d"
 
 
+def _days_from_today(due_info: Mapping[str, Any]) -> int | None:
+    """Days until a day-index due. Prefers the backend's relative count; the
+    fallback treats epoch_secs as the *start* of the due day, so it rounds up
+    rather than flooring (a rollover 21 h away is tomorrow, not today)."""
+    rel = due_info.get("days_from_today")
+    if isinstance(rel, int):
+        return rel
+    epoch = due_info.get("epoch_secs")
+    if isinstance(epoch, int):
+        return max(0, -((int(time.time()) - epoch) // 86400))
+    return None
+
+
 def _format_due_info_short(due_info: Any) -> str:
     if isinstance(due_info, Mapping):
         kind = str(due_info.get("kind") or "")
@@ -124,11 +137,9 @@ def _format_due_info_short(due_info: Any) -> str:
                 return _relative_eta(epoch)
             return "learn"
         if kind in ("review_day_index", "learn_day_index"):
-            epoch = due_info.get("epoch_secs")
-            if isinstance(epoch, int):
-                now = int(time.time())
-                days = max(0, (epoch - now) // 86400)
-                if days == 0:
+            days = _days_from_today(due_info)
+            if days is not None:
+                if days <= 0:
                     return "today"
                 if days == 1:
                     return "tomorrow"

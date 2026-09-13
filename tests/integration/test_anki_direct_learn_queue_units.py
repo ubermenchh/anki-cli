@@ -132,6 +132,7 @@ def test_decode_due_distinguishes_intraday_and_day_learn(tmp_path: Path) -> None
         "raw": 130,
         "day_index": 130,
         "epoch_secs": _day_start(130),
+        "days_from_today": 30,
     }
     # A suspended relearning card keeps its day-index due; the unit is decided
     # by the value, not the (negative) queue.

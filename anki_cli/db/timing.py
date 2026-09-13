@@ -48,10 +48,6 @@ class SchedTiming:
         """
         return self.next_day_at + (day_index - self.days_elapsed - 1) * SECONDS_PER_DAY
 
-    def day_index_for_epoch(self, epoch: int) -> int:
-        """Scheduling day containing ``epoch``, relative to collection creation."""
-        return self.days_elapsed + 1 + (epoch - self.next_day_at) // SECONDS_PER_DAY
-
 
 def fixed_offset_from_minutes_west(minutes_west: int) -> timezone:
     """rslib ``fixed_offset_from_minutes``: Anki stores offsets as minutes *west* of UTC."""
@@ -67,7 +63,10 @@ def local_minutes_west_for_stamp(epoch: int) -> int:
 
 
 def _rollover_datetime(moment: datetime, rollover_hour: int) -> datetime:
-    return moment.replace(hour=rollover_hour % 24, minute=0, second=0, microsecond=0)
+    # rslib clamps the configured hour with .min(23) when reading it; mirror that
+    # here so an out-of-range value never wraps to a different hour.
+    hour = max(0, min(23, int(rollover_hour)))
+    return moment.replace(hour=hour, minute=0, second=0, microsecond=0)
 
 
 def _days_elapsed(start: datetime, end: datetime, rollover_passed: bool) -> int:
@@ -78,7 +77,8 @@ def _days_elapsed(start: datetime, end: datetime, rollover_passed: bool) -> int:
 
 
 def sched_timing_today_v1(crt: int, now: int) -> SchedTiming:
-    days_elapsed = (now - crt) // SECONDS_PER_DAY
+    # rslib integer division truncates toward zero; only matters if now < crt.
+    days_elapsed = int((now - crt) / SECONDS_PER_DAY)
     return SchedTiming(
         now=now,
         days_elapsed=max(0, days_elapsed),

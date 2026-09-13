@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
 
 
@@ -13,8 +14,7 @@ def _make_store(tmp_path: Path, *, col_crt: int = 0) -> tuple[AnkiDirectReadStor
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
+    conn.executescript("""
         CREATE TABLE col (
             crt INTEGER NOT NULL
         );
@@ -75,8 +75,7 @@ def _make_store(tmp_path: Path, *, col_crt: int = 0) -> tuple[AnkiDirectReadStor
             time INTEGER NOT NULL,
             type INTEGER NOT NULL
         );
-        """
-    )
+        """)
     conn.execute("INSERT INTO col (crt) VALUES (?)", (col_crt,))
     conn.commit()
     conn.close()
@@ -249,8 +248,12 @@ def test_get_note_missing_raises_lookup_error(tmp_path: Path) -> None:
         store.get_note(999)
 
 
-def test_get_card_review_payload_decodes_due_left_and_data(tmp_path: Path) -> None:
+def test_get_card_review_payload_decodes_due_left_and_data(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     store, db_path = _make_store(tmp_path, col_crt=864000)  # day index 10
+    # v1 timing (no schedVer): today is day (now - crt) // 86400 = 20.
+    monkeypatch.setattr(direct_mod.time, "time", lambda: 864000 + 20 * 86400 + 5)
 
     _insert_deck(db_path, did=1, name="Default")
     _insert_notetype(db_path, ntid=10, name="Basic")
@@ -316,6 +319,7 @@ def test_get_card_review_payload_decodes_due_left_and_data(tmp_path: Path) -> No
             "raw": 5,
             "day_index": 5,
             "epoch_secs": (10 + 5) * 86400,
+            "days_from_today": 5 - 20,
         },
         "left_info": {
             "raw": 2003,
@@ -393,7 +397,7 @@ def test_get_revlog_returns_descending_order_and_decoded_fields(tmp_path: Path) 
         ease=3,
         ivl=-60,
         last_ivl=10,
-        factor=500,   # fsrs_difficulty
+        factor=500,  # fsrs_difficulty
         duration_ms=111,
         review_type=4,  # manual
     )

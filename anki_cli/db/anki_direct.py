@@ -1046,9 +1046,9 @@ class AnkiDirectReadStore:
 
     def get_due_counts(self, deck: str | None = None) -> dict[str, int]:
         now_sec = int(time.time())
-        today_days = self._today_due_index(now_sec)
 
         with self._connect() as conn:
+            today_days = self._timing(conn, now_sec).days_elapsed
             did_filter, params = self._deck_filter(conn, deck)
 
             new_count = int(
@@ -1083,14 +1083,15 @@ class AnkiDirectReadStore:
 
     def get_next_due_card(self, deck: str | None = None) -> dict[str, JSONValue]:
         now_sec = int(time.time())
-        today_days = self._today_due_index(now_sec)
 
         with self._connect() as conn:
+            timing = self._timing(conn, now_sec)
+            today_days = timing.days_elapsed
             did_filter, params = self._deck_filter(conn, deck)
 
             # 1) learning/relearning due. Intraday (queue 1) holds an epoch,
             #    day-learn (queue 3) a day index; order both by absolute time.
-            day0_epoch = self._timing(conn, now_sec).day_start_epoch(0)
+            day0_epoch = timing.day_start_epoch(0)
             row = conn.execute(
                 f"""
                 SELECT id, due
@@ -1461,7 +1462,7 @@ class AnkiDirectReadStore:
             return {"rescheduled": 0, "card_ids": []}
 
         with self._connect_write() as conn:
-            today = self._today_due_index(int(time.time()))
+            today = self._timing(conn, int(time.time())).days_elapsed
             target_due = today + days
             placeholders = ", ".join(["?"] * len(ids))
             updated = conn.execute(
@@ -2578,7 +2579,9 @@ class AnkiDirectReadStore:
         """Value of a key in Anki's ``config`` table (JSON blob), or None if absent."""
         try:
             row = conn.execute("SELECT val FROM config WHERE key = ?", (key,)).fetchone()
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
             return None  # stripped-down fixture without a config table
         if row is None:
             return None
@@ -3294,6 +3297,7 @@ class AnkiDirectReadStore:
             }
             if timing is not None:
                 out_learn["epoch_secs"] = timing.day_start_epoch(due_raw)
+                out_learn["days_from_today"] = due_raw - timing.days_elapsed
             return out_learn
 
         if card_type == 2:
@@ -3304,6 +3308,9 @@ class AnkiDirectReadStore:
             }
             if timing is not None:
                 out["epoch_secs"] = timing.day_start_epoch(due_raw)
+                # Relative day count for display; epoch_secs is the *start* of the
+                # due scheduling day, so flooring (epoch - now) would be off by one.
+                out["days_from_today"] = due_raw - timing.days_elapsed
             return out
 
         return {"kind": "raw", "raw": due_raw, "queue": queue, "type": card_type}
