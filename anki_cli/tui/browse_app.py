@@ -4,7 +4,6 @@ import contextlib
 import html as _html
 import re
 import threading
-import time
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
@@ -18,6 +17,7 @@ from textual.widgets import Button, DataTable, Input, Static
 
 from anki_cli import __version__
 
+from ._utils import due_day_label, relative_eta, to_int
 from .colors import (
     BLUE,
     BORDER,
@@ -56,22 +56,13 @@ _QUEUE_COLORS: dict[str, str] = {
     "Buried": DIM,
 }
 
-_COLUMNS = ("ID", "Deck", "Type", "Question", "Due", "Queue", "Interval", "Reps", "Lapses")
-
 _BROWSE_COLUMNS = ("Deck", "Type", "Question", "Due", "Ivl")
-
-
-def _to_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
 
 
 def _queue_label(queue: Any) -> str:
     if queue is None:
         return ""
-    return QUEUE_LABELS.get(_to_int(queue), str(queue))
+    return QUEUE_LABELS.get(to_int(queue), str(queue))
 
 
 def _queue_color(queue: Any) -> str:
@@ -89,33 +80,6 @@ def _truncate(text: str, length: int = 80) -> str:
     if len(text) <= length:
         return text
     return text[:length - 1] + "\u2026"
-
-
-def _format_card_row(card: Mapping[str, Any]) -> tuple[Text | str, ...]:
-    card_id = Text(str(card.get("cardId", "")), style=DIM)
-    deck = Text(str(card.get("deckName", "")), style=CYAN)
-    notetype = Text(str(card.get("notetype_name", "")), style=DIM)
-
-    fields = card.get("fields")
-    if isinstance(fields, (list, tuple)) and fields:
-        question = Text(_truncate(_strip_html_basic(str(fields[0]))), style=TEXT)
-    else:
-        question = Text("", style=TEXT)
-
-    due = Text(str(card.get("due_info", "")), style=DIM)
-
-    queue_int = card.get("queue")
-    queue_label = QUEUE_LABELS.get(int(queue_int), str(queue_int)) if queue_int is not None else ""
-    queue_color = _QUEUE_COLORS.get(queue_label, DIM)
-    queue = Text(queue_label, style=queue_color)
-
-    interval = Text(str(card.get("interval", "")), style=DIM)
-    reps = Text(str(card.get("reps", "")), style=DIM)
-    lapses_val = card.get("lapses", "")
-    lapses_int = int(lapses_val) if isinstance(lapses_val, int) else 0
-    lapses = Text(str(lapses_val), style=RED if lapses_int > 3 else DIM)
-
-    return (card_id, deck, notetype, question, due, queue, interval, reps, lapses)
 
 
 def _format_card_detail(card: Mapping[str, Any]) -> Text:
@@ -167,36 +131,8 @@ def _format_card_detail(card: Mapping[str, Any]) -> Text:
 
     return t
 
-def _relative_eta(epoch_secs: int) -> str:
-    now = int(time.time())
-    delta = max(0, int(epoch_secs) - now)
-    if delta < 60:
-        return "<1m"
-    minutes = delta // 60
-    if minutes < 60:
-        return f"{minutes}m"
-    hours = minutes // 60
-    if hours < 24:
-        return f"{hours}h"
-    days = (hours + 23) // 24
-    return f"{days}d"
-
-
-def _days_from_today(due_info: Mapping[str, Any]) -> int | None:
-    """Days until a day-index due. Prefers the backend's relative count; the
-    fallback treats epoch_secs as the *start* of the due day, so it rounds up
-    rather than flooring (a rollover 21 h away is tomorrow, not today)."""
-    rel = due_info.get("days_from_today")
-    if isinstance(rel, int):
-        return rel
-    epoch = due_info.get("epoch_secs")
-    if isinstance(epoch, int):
-        return max(0, -((int(time.time()) - epoch) // 86400))
-    return None
-
-
 def _format_due_short(card: Mapping[str, Any]) -> str:
-    queue = _to_int(card.get("queue"), 0)
+    queue = to_int(card.get("queue"), 0)
     due_info = card.get("due_info")
 
     if queue == 0:
@@ -209,18 +145,10 @@ def _format_due_short(card: Mapping[str, Any]) -> str:
     if isinstance(due_info, Mapping):
         kind = str(due_info.get("kind") or "")
         if kind == "learn_epoch_secs":
-            epoch = _to_int(due_info.get("epoch_secs"), 0)
-            return _relative_eta(epoch)
+            epoch = to_int(due_info.get("epoch_secs"), 0)
+            return relative_eta(epoch)
         if kind in ("review_day_index", "learn_day_index"):
-            days = _days_from_today(due_info)
-            if days is not None:
-                if days <= 0:
-                    return "today"
-                if days == 1:
-                    return "tomorrow"
-                return f"{days}d"
-            day_index = due_info.get("day_index")
-            return f"d{day_index}" if day_index is not None else "review"
+            return due_day_label(due_info)
         if kind == "new_position":
             return "new"
 
@@ -231,7 +159,7 @@ def _format_due_short(card: Mapping[str, Any]) -> str:
 
 
 def _format_interval_short(card: Mapping[str, Any]) -> str:
-    ivl = _to_int(card.get("interval"), 0)
+    ivl = to_int(card.get("interval"), 0)
     if ivl <= 0:
         return "-"
     return f"{ivl}d"
@@ -657,12 +585,12 @@ class BrowseApp(App[None]):
             self._set_status("no card selected", self._count_label())
             return
 
-        card_id = _to_int(card.get("cardId"), 0)
+        card_id = to_int(card.get("cardId"), 0)
         if card_id <= 0:
             self._set_status("selected row has no card id", self._count_label())
             return
 
-        queue = _to_int(card.get("queue"), 0)
+        queue = to_int(card.get("queue"), 0)
         try:
             if queue == -1:
                 self._backend.unsuspend_cards([card_id])
@@ -705,9 +633,9 @@ class BrowseApp(App[None]):
 
         deleted_notes = 0
         if isinstance(result, Mapping):
-            deleted_notes = _to_int(result.get("deleted_notes"), 0)
+            deleted_notes = to_int(result.get("deleted_notes"), 0)
             if deleted_notes == 0:
-                deleted_notes = _to_int(result.get("deleted"), 0)
+                deleted_notes = to_int(result.get("deleted"), 0)
 
         if deleted_notes > 0:
             self._set_status(f"deleted note {note_id}", self._count_label())
@@ -742,7 +670,7 @@ class BrowseApp(App[None]):
     def _selected_row_index(self) -> int:
         with contextlib.suppress(Exception):
             table = self.query_one("#table", DataTable)
-            return _to_int(getattr(table, "cursor_row", -1), -1)
+            return to_int(getattr(table, "cursor_row", -1), -1)
         return -1
 
     def _selected_card(self) -> dict[str, Any] | None:
@@ -778,7 +706,7 @@ class BrowseApp(App[None]):
 
     def _matches_filter(self, card: Mapping[str, Any], filter_key: str | None = None) -> bool:
         key = filter_key or self._active_filter
-        queue = _to_int(card.get("queue"), 0)
+        queue = to_int(card.get("queue"), 0)
 
         if key == "all":
             return True
@@ -791,9 +719,6 @@ class BrowseApp(App[None]):
         if key == "suspended":
             return queue == -1
         return True
-
-    def _count_for_filter(self, filter_key: str) -> int:
-        return sum(1 for card in self._cards if self._matches_filter(card, filter_key))
 
     def _count_label(self) -> str:
         return f"{len(self._visible_cards)}/{len(self._cards)} cards"
@@ -831,7 +756,7 @@ class BrowseApp(App[None]):
     def _sync_preview_cursor(self, force: bool = False) -> None:
         with contextlib.suppress(Exception):
             table = self.query_one("#table", DataTable)
-            row = _to_int(getattr(table, "cursor_row", -1), -1)
+            row = to_int(getattr(table, "cursor_row", -1), -1)
             if force or row != self._last_cursor_row:
                 self._last_cursor_row = row
                 self._delete_arm_note_id = None
@@ -874,9 +799,9 @@ class BrowseApp(App[None]):
         body.append(back or "(empty)", style=TEXT)
         self.query_one("#preview-body", Static).update(body)
 
-        reps = _to_int(card.get("reps"), 0)
-        lapses = _to_int(card.get("lapses"), 0)
-        factor = _to_int(card.get("factor"), 0)
+        reps = to_int(card.get("reps"), 0)
+        lapses = to_int(card.get("lapses"), 0)
+        factor = to_int(card.get("factor"), 0)
         ivl_text = _format_interval_short(card)
 
         tags_raw = card.get("tags")
@@ -900,7 +825,7 @@ class BrowseApp(App[None]):
         meta.append(tags, style=CYAN)
         self.query_one("#preview-meta", Static).update(meta)
 
-        suspend_label = "Unsuspend" if _to_int(card.get("queue"), 0) == -1 else "Suspend"
+        suspend_label = "Unsuspend" if to_int(card.get("queue"), 0) == -1 else "Suspend"
         actions = Text()
         action_items = [("d", "Delete"), ("s", suspend_label), ("Enter", "Detail")]
         for key, label in action_items:
@@ -937,7 +862,7 @@ class BrowseApp(App[None]):
             table.add_row(*_format_browser_row(card))
 
         if self._visible_cards:
-            current_row = _to_int(getattr(table, "cursor_row", -1), -1)
+            current_row = to_int(getattr(table, "cursor_row", -1), -1)
             if reset_cursor or current_row < 0 or current_row >= len(self._visible_cards):
                 with contextlib.suppress(Exception):
                     table.move_cursor(row=0, column=0)

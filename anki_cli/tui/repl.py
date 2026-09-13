@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shlex
 import subprocess
 from collections.abc import Mapping
@@ -87,10 +86,6 @@ _ALIASES: dict[str, str] = {
     "ru": "review:undo",
     "v": "version",
 }
-
-_TAG_RE = re.compile(r"<[^>]+>")
-_BR_RE = re.compile(r"(?i)<br\\s*/?>")
-
 
 def _strip_html(value: str) -> str:
     return markdownify(value).strip()
@@ -306,15 +301,6 @@ def _fetch_due_counts(
     except Exception:
         return {}
 
-
-def _due_counts_inline(counts: dict[str, int]) -> str:
-    if not counts:
-        return ""
-    return (
-        f"new={counts.get('new', 0)} "
-        f"learn={counts.get('learn', 0)} "
-        f"review={counts.get('review', 0)}"
-    )
 
 def _render_review_progress(reviewed: int, total: int, deck: str | None) -> Table:
     bar = ProgressBar(

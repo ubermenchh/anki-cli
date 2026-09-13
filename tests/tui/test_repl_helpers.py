@@ -42,13 +42,6 @@ def test_history_path_falls_back_to_home(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert path.parent.exists()
 
 
-def test_due_counts_inline_formats_values() -> None:
-    assert repl_mod._due_counts_inline({}) == ""
-    assert repl_mod._due_counts_inline(
-        {"new": 2, "learn": 3, "review": 4}
-    ) == "new=2 learn=3 review=4"
-
-
 def test_fetch_due_counts_success_trims_deck(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, Any] = {}
 

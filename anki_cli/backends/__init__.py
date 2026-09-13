@@ -7,7 +7,6 @@ from anki_cli.backends.ankiconnect import (
 )
 from anki_cli.backends.factory import (
     BackendFactoryError,
-    BackendNotImplementedError,
     backend_session_from_context,
     create_backend_from_context,
 )
@@ -21,7 +20,6 @@ __all__ = [
     "AnkiConnectProtocolError",
     "AnkiConnectUnavailableError",
     "BackendFactoryError",
-    "BackendNotImplementedError",
     "backend_session_from_context",
     "create_backend_from_context",
 ]

@@ -14,6 +14,8 @@ anki status          # check backend and collection health
 anki --format json status  # structured output for parsing
 ```
 
+`status` always exits 0: check `data.ok` / `data.error`, not the exit code.
+
 ### Backend Selection
 
 | Flag | Behavior |
@@ -80,6 +82,7 @@ Error:
 | 0 | Success |
 | 1 | Backend operation failed |
 | 2 | Invalid input, confirmation required, or unsupported operation |
+| 3 | No Anki backend found (auto mode could not reach AnkiConnect or find a collection) |
 | 4 | Entity not found |
 | 7 | Backend unavailable |
 
@@ -266,6 +269,13 @@ anki config:set --key "display.default_output" --value "json"
 Location: `~/.config/anki-cli/config.toml`
 
 ```toml
+[collection]
+# anki_profile = "User 1"   # Anki profile directory name; selects
+                            # <Anki2>/<name>/collection.anki2. Unmatched names
+                            # fail with exit 3. --col / ANKI_CLI_COLLECTION /
+                            # collection.path take precedence over it.
+# path = "/abs/collection.anki2"  # explicit collection path override
+
 [backend]
 prefer = "auto"
 ankiconnect_url = "http://localhost:8765"
@@ -274,7 +284,6 @@ allow_non_localhost = false
 [display]
 default_output = "table"
 color = true
-day_boundary_hour = 4
 ```
 
 For remote AnkiConnect (e.g. via Tailscale or LAN):
@@ -322,7 +331,7 @@ echo '[{"Front":"Q1","Back":"A1"},{"Front":"Q2","Back":"A2"}]' | anki note:bulk 
 
 ```bash
 anki --format json status
-# verify "ok": true before proceeding
+# verify data.ok == true before proceeding (the command exits 0 either way)
 ```
 
 ## Safety

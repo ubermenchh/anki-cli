@@ -9,15 +9,11 @@ from anki_cli.backends.ankiconnect import AnkiConnectBackend, AnkiConnectError
 from anki_cli.backends.direct import DirectBackend
 from anki_cli.backends.protocol import AnkiBackend
 from anki_cli.db.anki_direct import UnsupportedCollectionError
-from anki_cli.models.config import AppConfig
+from anki_cli.models.config import DEFAULT_ANKICONNECT_URL, AppConfig
 
 
 class BackendFactoryError(RuntimeError):
     """Base backend factory error."""
-
-
-class BackendNotImplementedError(BackendFactoryError):
-    """Raised when backend exists in design but is not implemented yet."""
 
 
 def create_backend_from_context(obj: dict[str, Any]) -> AnkiBackend:
@@ -25,7 +21,7 @@ def create_backend_from_context(obj: dict[str, Any]) -> AnkiBackend:
     collection_path = _coerce_path(obj.get("collection_path"))
     app_config = obj.get("app_config")
 
-    ankiconnect_url = "http://localhost:8765"
+    ankiconnect_url = DEFAULT_ANKICONNECT_URL
     allow_non_localhost = False
     if isinstance(app_config, AppConfig):
         ankiconnect_url = app_config.backend.ankiconnect_url
@@ -50,10 +46,13 @@ def create_backend_from_context(obj: dict[str, Any]) -> AnkiBackend:
         except (FileNotFoundError, UnsupportedCollectionError) as exc:
             raise BackendFactoryError(str(exc)) from exc
 
-    if backend_name == "standalone":
-        raise BackendNotImplementedError(
-            f"Backend '{backend_name}' is detected but not implemented yet."
-        )
+    if backend_name in {"", "none"}:
+        # Reached when detection failed and the caller degraded to a
+        # backend-less context (e.g. the REPL on a host with no Anki) —
+        # surface the recorded detection failure, not a cryptic name error.
+        reason = str(obj.get("backend_reason") or "").strip().rstrip(".")
+        detail = f": {reason}" if reason and reason != "not required" else ""
+        raise BackendFactoryError(f"No Anki backend available{detail}.")
 
     raise BackendFactoryError(f"Unknown backend '{backend_name}'.")
 

@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from hashlib import sha1
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import betterproto
 from fsrs import Card as FSRSCard
@@ -34,11 +34,7 @@ from anki_cli.db.timing import (
     local_minutes_west_for_stamp,
     sched_timing_today,
 )
-
-if TYPE_CHECKING:
-    from anki_cli.backends.protocol import JSONValue
-else:
-    JSONValue = Any
+from anki_cli.models.output import JSONValue
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
 from anki_cli.proto.anki.decks import DeckCommon, DeckKindContainer
 from anki_cli.proto.anki.notetypes import (

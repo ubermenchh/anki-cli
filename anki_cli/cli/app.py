@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import get_args
 
 import click
 from click.core import ParameterSource
@@ -11,6 +12,7 @@ from anki_cli.cli.dispatcher import get_command, list_commands
 from anki_cli.cli.formatter import formatter_from_ctx
 from anki_cli.cli.params import option_arity, preprocess_argv
 from anki_cli.config_runtime import ConfigError, resolve_runtime_config
+from anki_cli.models.config import BackendPreference, OutputFormat
 
 
 def _print_version(ctx: click.Context, param: click.Option, value: bool) -> None:
@@ -22,6 +24,14 @@ def _print_version(ctx: click.Context, param: click.Option, value: bool) -> None
 
 def _is_set_on_cli(ctx: click.Context, param_name: str) -> bool:
     return ctx.get_parameter_source(param_name) is ParameterSource.COMMANDLINE
+
+
+# Commands that never need a backend — they skip detection entirely so they
+# still run (and exit 0) on hosts with no Anki install. `status` probes for
+# itself inside the command so it can report failure as data. The REPL
+# (invoked_subcommand=None) is NOT here: it must detect up front, degrading
+# to a warning + backend="none" when detection fails instead of exiting.
+_BACKENDLESS = {"version", "status", "config", "config:path", "config:set"}
 
 
 class NamespaceGroup(click.Group):
@@ -52,7 +62,7 @@ class NamespaceGroup(click.Group):
 @click.option(
     "--format",
     "output_format",
-    type=click.Choice(["table", "json", "md", "csv", "plain"], case_sensitive=False),
+    type=click.Choice(list(get_args(OutputFormat)), case_sensitive=False),
     default="table",
     show_default=True,
     help="Output format.",
@@ -60,12 +70,10 @@ class NamespaceGroup(click.Group):
 @click.option("--col", "collection_path", type=click.Path(path_type=Path), default=None)
 @click.option(
     "--backend",
-    type=click.Choice(["auto", "ankiconnect", "direct", "standalone"], case_sensitive=False),
+    type=click.Choice(list(get_args(BackendPreference)), case_sensitive=False),
     default="auto",
     show_default=True,
 )
-@click.option("--quiet", is_flag=True, default=False)
-@click.option("--verbose", is_flag=True, default=False)
 @click.option("--no-color", is_flag=True, default=False)
 @click.option("--yes", is_flag=True, default=False)
 @click.option("--copy", is_flag=True, default=False)
@@ -84,8 +92,6 @@ def main(
     output_format: str,
     collection_path: Path | None,
     backend: str,
-    quiet: bool,
-    verbose: bool,
     no_color: bool,
     yes: bool,
     copy: bool,
@@ -96,8 +102,6 @@ def main(
             "format": output_format.lower(),
             "collection_path": collection_path,
             "backend": "none",
-            "quiet": quiet,
-            "verbose": verbose,
             "no_color": no_color,
             "yes": yes,
             "copy": copy,
@@ -132,32 +136,60 @@ def main(
             "config_path": runtime.config_path,
             "app_config": runtime.app,
             "collection_override": runtime.collection_override,
+            "warnings": runtime.warnings,
         }
     )
 
-    try:
-        detection = detect_backend(
-            forced_backend=runtime.backend,
-            col_override=runtime.collection_override,
-            ankiconnect_url=runtime.app.backend.ankiconnect_url,
+    if ctx.invoked_subcommand in _BACKENDLESS:
+        ctx.obj.update(
+            {
+                "collection_path": runtime.collection_override,
+                "backend": "none",
+                "backend_reason": "not required",
+            }
         )
-    except DetectionError as exc:
-        formatter = formatter_from_ctx(ctx)
-        formatter.emit_error(
-            command="bootstrap",
-            code="BACKEND_UNAVAILABLE",
-            message=str(exc),
-            details={"forced_backend": runtime.backend},
-        )
-        raise click.exceptions.Exit(exc.exit_code) from exc
-
-    ctx.obj.update(
-        {
-            "collection_path": detection.collection_path,
-            "backend": detection.backend,
-            "backend_reason": detection.reason,
-        }
-    )
+    else:
+        try:
+            detection = detect_backend(
+                forced_backend=runtime.backend,
+                col_override=runtime.collection_override,
+                ankiconnect_url=runtime.app.backend.ankiconnect_url,
+                anki_profile=runtime.app.collection.anki_profile,
+                allow_non_localhost=runtime.app.backend.allow_non_localhost,
+            )
+        except DetectionError as exc:
+            if ctx.invoked_subcommand is None:
+                # Bare `anki` still opens the REPL on a host with no Anki —
+                # the warning explains why, and backend commands surface
+                # the failure via the backend factory. Degrade, don't exit.
+                click.echo(
+                    f"warning: {exc} (backend commands unavailable)",
+                    err=True,
+                )
+                ctx.obj.update(
+                    {
+                        "collection_path": runtime.collection_override,
+                        "backend": "none",
+                        "backend_reason": str(exc),
+                    }
+                )
+            else:
+                formatter = formatter_from_ctx(ctx)
+                formatter.emit_error(
+                    command="bootstrap",
+                    code="BACKEND_UNAVAILABLE",
+                    message=str(exc),
+                    details={"forced_backend": runtime.backend},
+                )
+                raise click.exceptions.Exit(exc.exit_code) from exc
+        else:
+            ctx.obj.update(
+                {
+                    "collection_path": detection.collection_path,
+                    "backend": detection.backend,
+                    "backend_reason": detection.reason,
+                }
+            )
 
     if ctx.invoked_subcommand is None:
         try:

@@ -7,7 +7,6 @@ import click
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError
 from anki_cli.backends.factory import (
     BackendFactoryError,
-    BackendNotImplementedError,
     backend_session_from_context,
 )
 from anki_cli.cli.dispatcher import register_command
@@ -67,7 +66,7 @@ def search_cmd(ctx: click.Context, query: str) -> None:
             cards: list[dict[str, Any]] = []
             for cid in card_ids:
                 cards.append(backend.get_card(cid))
-    except (BackendNotImplementedError, BackendFactoryError) as exc:
+    except BackendFactoryError as exc:
         _emit_backend_unavailable(ctx=ctx, command="search", obj=obj, error=exc)
     except (SearchParseError, AnkiConnectAPIError) as exc:
         _emit_invalid_query(ctx=ctx, command="search", query=query, error=exc)

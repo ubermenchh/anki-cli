@@ -32,12 +32,16 @@ class OutputFormatter:
         collection_path: str | None,
         no_color: bool,
         copy_output: bool,
+        warnings: Sequence[str] = (),
     ) -> None:
         self.output_format = output_format.lower()
         self.backend = backend
         self.collection_path = collection_path
         self.no_color = no_color
         self.copy_output = copy_output
+        # Notices collected during bootstrap/config load; folded into every
+        # response's meta.warnings so stderr stays clean for error envelopes.
+        self.bootstrap_warnings = list(warnings)
 
     def emit_success(
         self,
@@ -92,18 +96,21 @@ class OutputFormatter:
         if payload.error.details:
             for key, value in payload.error.details.items():
                 click.echo(f"- {key}: {self._stringify(value)}", err=True)
+        for warning in payload.meta.warnings:
+            click.echo(f"warning: {warning}", err=True)
 
     def _build_meta(self, command: str, *, warnings: Sequence[str] | None = None) -> Meta:
         timestamp = datetime.now(tz=UTC).isoformat(timespec="seconds").replace(
             "+00:00",
             "Z",
         )
+        merged = [*self.bootstrap_warnings, *(warnings or [])]
         return Meta(
             command=command,
             backend=self.backend,
             collection=self.collection_path,
             timestamp=timestamp,
-            warnings=list(warnings or []),
+            warnings=list(dict.fromkeys(merged)),
         )
 
     def _normalize_data(self, data: JSONValue | BaseModel) -> JSONValue:
@@ -317,4 +324,5 @@ def formatter_from_ctx(ctx: click.Context) -> OutputFormatter:
         collection_path=collection_path,
         no_color=bool(obj.get("no_color", False)),
         copy_output=bool(obj.get("copy", False)),
+        warnings=obj.get("warnings") or [],
     )

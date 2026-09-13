@@ -8,7 +8,6 @@ import pytest
 import anki_cli.backends.factory as factory_mod
 from anki_cli.backends.factory import (
     BackendFactoryError,
-    BackendNotImplementedError,
     backend_session_from_context,
     create_backend_from_context,
 )
@@ -18,11 +17,6 @@ from anki_cli.models.config import AppConfig
 def test_create_backend_unknown_backend_raises() -> None:
     with pytest.raises(BackendFactoryError, match="Unknown backend"):
         create_backend_from_context({"backend": "nope"})
-
-
-def test_create_backend_standalone_not_implemented() -> None:
-    with pytest.raises(BackendNotImplementedError, match="not implemented"):
-        create_backend_from_context({"backend": "standalone"})
 
 
 def test_create_backend_direct_requires_collection_path() -> None:

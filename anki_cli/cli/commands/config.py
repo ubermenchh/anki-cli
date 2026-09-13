@@ -52,8 +52,6 @@ def config_path_cmd(ctx: click.Context) -> None:
 
     col_path = obj.get("collection_path")
     config_path = obj.get("config_path") or Path("~/.config/anki-cli/config.toml").expanduser()
-    backup_path = Path("~/.local/share/anki-cli/backups").expanduser()
-    standalone_path = Path("~/.local/share/anki-cli/collection.db").expanduser()
     anki_profiles = Path("~/.local/share/Anki2").expanduser()
 
     formatter = formatter_from_ctx(ctx)
@@ -62,8 +60,6 @@ def config_path_cmd(ctx: click.Context) -> None:
         data={
             "collection": str(col_path) if col_path is not None else "(auto)",
             "config": str(config_path),
-            "backups": str(backup_path),
-            "standalone_default": str(standalone_path),
             "anki_profiles": str(anki_profiles),
         },
     )
@@ -104,6 +100,7 @@ def config_set_cmd(ctx: click.Context, key: str, value: str) -> None:
             "old_value": old_value,
             "new_value": new_value,
         },
+        warnings=loaded.warnings,
     )
 
 
