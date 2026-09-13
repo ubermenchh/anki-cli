@@ -9,7 +9,7 @@ from anki_cli import __version__
 from anki_cli.backends.detect import DetectionError, detect_backend
 from anki_cli.cli.dispatcher import get_command, list_commands
 from anki_cli.cli.formatter import formatter_from_ctx
-from anki_cli.cli.params import preprocess_argv
+from anki_cli.cli.params import option_arity, preprocess_argv
 from anki_cli.config_runtime import ConfigError, resolve_runtime_config
 
 
@@ -28,7 +28,13 @@ class NamespaceGroup(click.Group):
     """Click group with dynamic command discovery and key=value preprocessing."""
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
-        transformed = preprocess_argv(args)
+        transformed = preprocess_argv(
+            args,
+            group_options=option_arity(self),
+            resolve_command_options=lambda name: (
+                option_arity(cmd) if (cmd := get_command(name)) is not None else None
+            ),
+        )
         return super().parse_args(ctx, transformed)
 
     def list_commands(self, ctx: click.Context) -> list[str]:

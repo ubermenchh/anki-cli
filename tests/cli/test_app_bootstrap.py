@@ -315,3 +315,39 @@ def test_no_subcommand_import_error_falls_back_to_help(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "Usage:" in result.output
     assert "--backend" in result.output
+
+
+def test_option_values_containing_equals_reach_the_subcommand_intact(monkeypatch) -> None:
+    """Regression for #25: `--query "prop:lapses=0"` used to be rewritten to
+    `--query --prop:lapses 0` by the key=value sugar. key=value sugar itself
+    must keep working, including an '=' inside the value."""
+    seen: list[str] = []
+
+    @click.command("probe")
+    @click.option("--query", required=True)
+    @click.option("--flag", is_flag=True)
+    def probe_cmd(query: str, flag: bool) -> None:
+        seen.append(query)
+        click.echo("probe-ran")
+
+    monkeypatch.setattr(app_mod, "list_commands", lambda: ["probe"])
+    monkeypatch.setattr(app_mod, "get_command", lambda name: probe_cmd if name == "probe" else None)
+    monkeypatch.setattr(app_mod, "resolve_runtime_config", lambda **kwargs: _runtime())
+    monkeypatch.setattr(
+        app_mod,
+        "detect_backend",
+        lambda **kwargs: DetectionResult(backend="direct", collection_path=None, reason="forced"),
+    )
+    runner = CliRunner()
+
+    for argv in (
+        ["probe", "--query", "prop:lapses=0"],
+        ["probe", "query=prop:lapses=0"],
+        ["probe", "--flag", "query=prop:lapses=0"],
+        ["--format", "json", "probe", "--query", "prop:lapses=0"],
+    ):
+        result = runner.invoke(app_mod.main, argv)
+        assert result.exit_code == 0, (argv, result.output)
+        assert "probe-ran" in result.output
+
+    assert seen == ["prop:lapses=0"] * 4

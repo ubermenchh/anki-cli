@@ -27,7 +27,7 @@ from rich.text import Text
 
 from anki_cli import __version__
 from anki_cli.cli.dispatcher import get_command, list_commands
-from anki_cli.cli.params import preprocess_argv
+from anki_cli.cli.params import option_arity, preprocess_argv
 
 from .colors import (
     BLUE,
@@ -188,7 +188,11 @@ def _invoke_command(ctx_obj: dict[str, Any], raw_args: list[str]) -> None:
     if not raw_args:
         return
 
-    args = preprocess_argv(raw_args)
+    def _options_for(name: str):
+        cmd = get_command(_ALIASES.get(name, name))
+        return option_arity(cmd) if cmd is not None else None
+
+    args = preprocess_argv(raw_args, resolve_command_options=_options_for)
     cmd_name = _ALIASES.get(args[0], args[0])
     cmd_args = args[1:]
 
