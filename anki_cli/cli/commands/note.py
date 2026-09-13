@@ -197,16 +197,20 @@ def note_add_cmd(
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="note:add", obj=obj, error=exc)
     except (AnkiConnectAPIError, LookupError, ValueError) as exc:
-        # ValueError covers DuplicateNoteError from the direct backend; AnkiConnect
-        # reports the same condition as an AnkiConnectAPIError on `addNote`.
+        # ValueError covers the direct backend's DuplicateNoteError / EmptyNoteError;
+        # AnkiConnect reports the same conditions as an AnkiConnectAPIError on
+        # `addNote`. The store states the fact; the remedy flag is CLI surface, so
+        # it is appended here.
         details: dict[str, JSONValue] = {"deck": deck, "notetype": notetype}
+        message = str(exc)
         duplicate_ids = getattr(exc, "duplicate_ids", None)
         if isinstance(duplicate_ids, list):
             details["duplicate_ids"] = [int(i) for i in duplicate_ids]
+            message = f"{message} Pass --allow-duplicate to add it anyway."
         formatter.emit_error(
             command="note:add",
             code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
+            message=message,
             details=details,
         )
         raise click.exceptions.Exit(1) from exc
@@ -372,7 +376,11 @@ def note_bulk_cmd(
             results = backend.add_notes(notes_payload)
     except (BackendNotImplementedError, BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="note:bulk", obj=obj, error=exc)
-    except AnkiConnectAPIError as exc:
+    except (AnkiConnectAPIError, LookupError, ValueError, RuntimeError) as exc:
+        # Per-item refusals (duplicate/empty/missing deck) come back as null ids;
+        # anything that would fail every item the same way (collection locked,
+        # corrupt notetype config) propagates from add_notes and fails the whole
+        # command rather than reporting N spurious per-item failures.
         formatter.emit_error(
             command="note:bulk",
             code="BACKEND_OPERATION_FAILED",

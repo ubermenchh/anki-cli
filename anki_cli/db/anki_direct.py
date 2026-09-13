@@ -168,11 +168,21 @@ class UnsupportedCollectionError(RuntimeError):
     """The collection file is real but its schema is older than we can read or write."""
 
 
-class DuplicateNoteError(ValueError):
-    """`add_note` refused because a note of the same notetype already has this first field.
+class NoteRejectedError(ValueError):
+    """``add_note`` refused the note before writing anything.
 
-    Mirrors AnkiConnect's `addNote` failure ("cannot create note because it is a
-    duplicate") so both backends reject the same input unless `allow_duplicate` is set.
+    Base for the per-note refusals that mirror AnkiConnect's ``addNote`` checks
+    (rslib ``note_fields_check``); ``add_notes`` treats these as per-item failures
+    and reports ``None`` for the item, while every other error propagates.
+    """
+
+
+class DuplicateNoteError(NoteRejectedError):
+    """A note of the same notetype already has this first field.
+
+    Mirrors AnkiConnect's "cannot create note because it is a duplicate"; lifted by
+    ``allow_duplicate``. The message states the fact only — the CLI layer appends
+    the ``--allow-duplicate`` remedy, since this module has no CLI surface.
     """
 
     def __init__(self, *, notetype: str, duplicate_ids: list[int]) -> None:
@@ -181,7 +191,22 @@ class DuplicateNoteError(ValueError):
         ids = ", ".join(str(i) for i in duplicate_ids)
         super().__init__(
             f"Duplicate note: first field matches existing note(s) {ids} "
-            f"in notetype '{notetype}'. Pass --allow-duplicate to add it anyway."
+            f"in notetype '{notetype}'."
+        )
+
+
+class EmptyNoteError(NoteRejectedError):
+    """The first field is empty once markup is ignored.
+
+    Mirrors AnkiConnect's "cannot create note because it is empty" (rslib
+    ``NoteFieldsState::Empty``). Not lifted by ``allow_duplicate``.
+    """
+
+    def __init__(self, *, notetype: str, field_name: str) -> None:
+        self.notetype = notetype
+        self.field_name = field_name
+        super().__init__(
+            f"Empty note: first field '{field_name}' of notetype '{notetype}' is empty."
         )
 
 
@@ -2070,12 +2095,18 @@ class AnkiDirectReadStore:
                 ordered_values.append(str(fields[field_name]))
 
             first_field = ordered_values[0] if ordered_values else ""
+            # rslib note_fields_check: Empty is checked before Duplicate and is
+            # not lifted by allow_duplicate. ``field_is_empty`` is the same
+            # predicate card generation uses, so "<br>" and "   " agree.
+            # TODO(#23): run this on the HTML-stripped text once #50 lands.
+            if field_is_empty(first_field):
+                raise EmptyNoteError(
+                    notetype=notetype, field_name=field_names[0] if field_names else ""
+                )
             csum = self._field_checksum(first_field)
 
             if not allow_duplicate:
-                dup_ids = self._find_duplicate_note_ids(
-                    conn, notetype_id=notetype_id, first_field=first_field, csum=csum
-                )
+                dup_ids = self._find_duplicate_note_ids(conn, notetype_id=notetype_id, csum=csum)
                 if dup_ids:
                     raise DuplicateNoteError(notetype=notetype, duplicate_ids=dup_ids)
 
@@ -2199,6 +2230,14 @@ class AnkiDirectReadStore:
         return missing
 
     def add_notes(self, notes: list[dict[str, JSONValue]]) -> list[int | None]:
+        """AnkiConnect ``addNotes`` shape: one id per item, ``None`` for a refused one.
+
+        Only *per-item* problems become ``None`` — a duplicate or empty note
+        (``NoteRejectedError``) or a deck/notetype/field that does not exist
+        (``LookupError``). Anything else (collection locked, corrupt notetype
+        config, ...) would fail every item identically, so it propagates and the
+        whole call fails instead of reporting N spurious per-item failures.
+        """
         output: list[int | None] = []
         for item in notes:
             deck = str(item.get("deck") or item.get("deckName") or "").strip()
@@ -2218,7 +2257,7 @@ class AnkiDirectReadStore:
                     tags=self._coerce_tags(raw_tags),
                     allow_duplicate=False,
                 )
-            except Exception:
+            except (NoteRejectedError, LookupError):
                 output.append(None)
             else:
                 output.append(note_id)
@@ -2959,17 +2998,17 @@ class AnkiDirectReadStore:
         conn: sqlite3.Connection,
         *,
         notetype_id: int,
-        first_field: str,
         csum: int,
     ) -> list[int]:
-        """Ids of existing notes Anki would flag as duplicates of `first_field`.
+        """Ids of existing notes Anki would flag as duplicates, ascending.
 
-        Follows rslib's `note_fields_check`: the match is scoped to the notetype
-        (`csum` alone collides across notetypes that share a front), and an empty
-        first field is never a duplicate.
+        Follows rslib's ``is_duplicate``: the match is scoped to the notetype
+        (``csum`` alone collides across notetypes that share a front). The caller
+        has already rejected an empty first field. rslib additionally confirms a
+        csum hit by comparing the stripped first-field text; with a 32-bit csum
+        scoped per notetype the collision risk is negligible, so this relies on
+        the csum match (TODO(#23): add the confirm step once #50's stripper lands).
         """
-        if not first_field.strip():
-            return []
         rows = conn.execute(
             "SELECT id FROM notes WHERE csum = ? AND mid = ? ORDER BY id",
             (csum, notetype_id),

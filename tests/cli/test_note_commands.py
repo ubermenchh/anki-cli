@@ -19,7 +19,7 @@ from anki_cli.cli.commands.note import (
     notes_cmd,
 )
 from anki_cli.cli.dispatcher import get_command
-from anki_cli.db.anki_direct import DuplicateNoteError
+from anki_cli.db.anki_direct import DuplicateNoteError, EmptyNoteError
 
 
 def _base_obj(**overrides: Any) -> dict[str, Any]:
@@ -233,6 +233,29 @@ def test_note_add_duplicate_exit_1_with_duplicate_ids(monkeypatch: pytest.Monkey
         "notetype": "Basic",
         "duplicate_ids": [1234],
     }
+
+
+def test_note_add_empty_first_field_exit_1(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Backend:
+        def add_note(self, **kwargs: Any) -> int:
+            raise EmptyNoteError(notetype="Basic", field_name="Front")
+
+    _patch_session(monkeypatch, Backend())
+
+    runner = CliRunner()
+    result = runner.invoke(
+        note_add_cmd,
+        ["--deck", "Default", "--notetype", "Basic", "--Front", "<br>", "--Back", "x"],
+        obj=_base_obj(),
+    )
+
+    payload = _error_payload(result)
+    assert result.exit_code == 1
+    assert payload["error"]["code"] == "BACKEND_OPERATION_FAILED"
+    assert "Empty note" in payload["error"]["message"]
+    # The remedy is for duplicates only; an empty note has no flag to lift it.
+    assert "--allow-duplicate" not in payload["error"]["message"]
+    assert payload["error"]["details"] == {"deck": "Default", "notetype": "Basic"}
 
 
 def test_note_add_plain_value_error_exit_1(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -502,3 +525,30 @@ def test_note_commands_are_registered() -> None:
     assert get_command("note:delete") is not None
     assert get_command("note:bulk") is not None
     assert get_command("note:fields") is not None
+
+
+def test_note_bulk_collection_level_error_fails_whole_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When add_notes propagates (collection locked, corrupt config), note:bulk
+    must emit one BACKEND_OPERATION_FAILED, not N null ids with exit 0."""
+
+    class Backend:
+        def add_notes(self, notes: list[dict[str, Any]]) -> list[int | None]:
+            raise RuntimeError("Anki Desktop appears to be running; direct write refused")
+
+    _patch_session(monkeypatch, Backend())
+
+    runner = CliRunner()
+    result = runner.invoke(
+        note_bulk_cmd,
+        ["--deck", "Default", "--notetype", "Basic"],
+        input=json.dumps([{"fields": {"Front": "Q1"}}, {"fields": {"Front": "Q2"}}]),
+        obj=_base_obj(),
+    )
+
+    payload = _error_payload(result)
+    assert result.exit_code == 1
+    assert payload["error"]["code"] == "BACKEND_OPERATION_FAILED"
+    assert "Anki Desktop" in payload["error"]["message"]
+    assert payload["error"]["details"] == {"deck": "Default", "notetype": "Basic"}

@@ -7,8 +7,13 @@ from typing import Any
 
 import pytest
 
-from anki_cli.db.anki_direct import AnkiDirectReadStore, DuplicateNoteError
-from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
+from anki_cli.db.anki_direct import (
+    AnkiDirectReadStore,
+    DuplicateNoteError,
+    EmptyNoteError,
+    NoteRejectedError,
+)
+from tests.integration.conftest import COL_TABLE_SQL, assert_col_untouched, insert_col_row
 
 
 def _checksum(first_field: str) -> int:
@@ -449,15 +454,19 @@ def test_add_note_with_nothing_renderable_still_gets_the_first_card(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """rslib ensure_not_empty: a brand-new note always gets template 0."""
+    """rslib ensure_not_empty: a brand-new note always gets template 0.
+
+    An empty first field is refused outright (``EmptyNoteError``), so "nothing
+    renderable" is reached with a filled first field that no template uses.
+    """
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    _install_templates(db_path, 10, ["{{Front}}", "{{Back}}"])
+    _install_templates(db_path, 10, ["{{Back}}", "{{#Back}}x{{/Back}}"])
 
     nid = store.add_note(
         deck="Default",
         notetype="Basic",
-        fields={"Front": "", "Back": ""},
+        fields={"Front": "Q", "Back": ""},
         tags=[],
         allow_duplicate=True,
     )
@@ -574,7 +583,11 @@ def test_update_note_tags_can_unlock_a_tags_template(
     assert _card_ords(db_path, nid) == [0, 1]
 
 
-# --- duplicate detection (#23) -------------------------------------------------
+# --- duplicate / empty rejection (#23) ------------------------------------------
+#
+# Duplicate seeds go through the real ``add_note`` (``allow_duplicate=True``) rather
+# than ``_insert_note`` so the seed's csum is whatever the implementation computes;
+# the tests then hold regardless of how the fixture helper populates ``csum``.
 
 
 def _add_basic(store: AnkiDirectReadStore, front: str, *, allow_duplicate: bool) -> int:
@@ -593,28 +606,53 @@ def test_add_note_rejects_duplicate_first_field_in_same_notetype(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    _insert_note(db_path, note_id=500, front="hola", back="hello")
+    first = _add_basic(store, "hola", allow_duplicate=True)
+    cards_before = _card_ids(db_path)
+    assert len(cards_before) == 1  # a success writes a card, so the assertion below has teeth
 
     with pytest.raises(DuplicateNoteError) as excinfo:
         _add_basic(store, "hola", allow_duplicate=False)
 
-    assert excinfo.value.duplicate_ids == [500]
+    assert excinfo.value.duplicate_ids == [first]
     assert excinfo.value.notetype == "Basic"
-    assert "500" in str(excinfo.value)
-    assert "--allow-duplicate" in str(excinfo.value)
-    # Nothing was written: no note, no card.
-    assert _note_ids(db_path) == [500]
-    assert _card_ids(db_path) == []
+    assert str(first) in str(excinfo.value)
+    # The store states the fact; the CLI appends the --allow-duplicate remedy.
+    assert "--allow-duplicate" not in str(excinfo.value)
+    # Nothing persisted: no note, no card.
+    assert _note_ids(db_path) == [first]
+    assert _card_ids(db_path) == cards_before
 
 
-def test_add_note_duplicate_is_a_value_error(
+def test_add_note_duplicate_refusal_leaves_col_untouched(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """The refusal happens before any write, so ``col.mod`` must not move (#47)."""
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    # Seed via SQL so the seed itself does not bump col.mod.
     _insert_note(db_path, note_id=500, front="hola", back="hello")
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE notes SET csum = ? WHERE id = 500", (store._field_checksum("hola"),))
+    conn.commit()
+    conn.close()
 
+    with pytest.raises(DuplicateNoteError):
+        _add_basic(store, "hola", allow_duplicate=False)
+
+    assert_col_untouched(db_path)
+
+
+def test_add_note_duplicate_is_a_value_error_and_a_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, _ = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _add_basic(store, "hola", allow_duplicate=True)
+
+    with pytest.raises(NoteRejectedError):
+        _add_basic(store, "hola", allow_duplicate=False)
     with pytest.raises(ValueError, match="Duplicate note"):
         _add_basic(store, "hola", allow_duplicate=False)
 
@@ -625,12 +663,29 @@ def test_add_note_allow_duplicate_inserts_second_note(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    _insert_note(db_path, note_id=500, front="hola", back="hello")
+    first = _add_basic(store, "hola", allow_duplicate=True)
 
-    nid = _add_basic(store, "hola", allow_duplicate=True)
+    second = _add_basic(store, "hola", allow_duplicate=True)
 
-    assert _note_ids(db_path) == [500, nid]
-    assert _note_row(db_path, nid)["csum"] == _note_row(db_path, 500)["csum"]
+    assert _note_ids(db_path) == [first, second]
+    assert _note_row(db_path, second)["csum"] == _note_row(db_path, first)["csum"]
+
+
+def test_add_note_reports_every_duplicate_id_ascending(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """All matches, oldest first — pins the absence of a LIMIT and the sort order."""
+    store, _ = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    a = _add_basic(store, "hola", allow_duplicate=True)
+    b = _add_basic(store, "hola", allow_duplicate=True)
+
+    with pytest.raises(DuplicateNoteError) as excinfo:
+        _add_basic(store, "hola", allow_duplicate=False)
+
+    assert excinfo.value.duplicate_ids == [a, b]
+    assert str(a) in str(excinfo.value) and str(b) in str(excinfo.value)
 
 
 def test_add_note_duplicate_check_is_scoped_to_notetype(
@@ -662,30 +717,71 @@ def test_add_note_duplicate_check_is_scoped_to_notetype(
     assert _note_ids(db_path) == [600, nid]
 
 
-def test_add_note_empty_first_field_is_never_a_duplicate(
+@pytest.mark.parametrize(
+    "front",
+    ["", "   ", "<br>", "<div></div>", "<br/> \n <div><br></div>"],
+    ids=["empty", "whitespace", "br", "empty-div", "markup-soup"],
+)
+def test_add_note_rejects_empty_first_field(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    front: str,
 ) -> None:
+    """AnkiConnect: "cannot create note because it is empty" (rslib Empty state).
+
+    Uses the same ``field_is_empty`` predicate as card generation, so ``<br>``
+    is empty here too. Not lifted by ``allow_duplicate``.
+    """
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
     _install_templates(db_path, 10, ["{{Front}}{{Back}}"])
-    _insert_note(db_path, note_id=500, front="", back="first")
 
-    nid = store.add_note(
-        deck="Default",
-        notetype="Basic",
-        fields={"Front": "  ", "Back": "second"},
-        tags=None,
-        allow_duplicate=False,
-    )
+    for allow in (False, True):
+        with pytest.raises(EmptyNoteError) as excinfo:
+            store.add_note(
+                deck="Default",
+                notetype="Basic",
+                fields={"Front": front, "Back": "second"},
+                tags=None,
+                allow_duplicate=allow,
+            )
+        assert excinfo.value.field_name == "Front"
+        assert excinfo.value.notetype == "Basic"
+        assert isinstance(excinfo.value, NoteRejectedError)
 
-    assert _note_ids(db_path) == [500, nid]
+    assert _note_ids(db_path) == []
+    assert _card_ids(db_path) == []
+    assert_col_untouched(db_path)
+
+
+def test_add_note_empty_check_runs_before_duplicate_check(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """rslib note_fields_check orders Empty before Duplicate; an empty front is
+    reported as empty even if an identical empty-front row already exists."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _insert_note(db_path, note_id=500, front="   ", back="legacy")
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE notes SET csum = ? WHERE id = 500", (store._field_checksum("   "),))
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(EmptyNoteError):
+        _add_basic(store, "   ", allow_duplicate=False)
 
 
 def test_add_note_computes_checksum_once(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """Perf tripwire only: the dup lookup and the INSERT share one hash.
+
+    The behavioural contract (stored csum == lookup csum) is pinned by
+    ``test_add_note_allow_duplicate_inserts_second_note``; this test is safe to
+    delete if ``_field_checksum`` is ever inlined.
+    """
     store, _ = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
     calls: list[str] = []
@@ -702,21 +798,50 @@ def test_add_note_computes_checksum_once(
     assert calls == ["Q"]
 
 
-def test_add_notes_bulk_reports_duplicate_as_none(
+def test_add_notes_bulk_reports_per_item_refusals_as_none(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """Duplicate, empty and missing-deck items come back as ``None`` (AnkiConnect
+    ``addNotes`` shape); the good item still lands."""
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    _insert_note(db_path, note_id=500, front="hola", back="hello")
+    first = _add_basic(store, "hola", allow_duplicate=True)
 
     out = store.add_notes(
         [
             {"deck": "Default", "notetype": "Basic", "fields": {"Front": "hola", "Back": "x"}},
+            {"deck": "Default", "notetype": "Basic", "fields": {"Front": "<br>", "Back": "x"}},
+            {"deck": "Nope", "notetype": "Basic", "fields": {"Front": "adios", "Back": "y"}},
             {"deck": "Default", "notetype": "Basic", "fields": {"Front": "adios", "Back": "y"}},
         ]
     )
 
-    assert out[0] is None
-    assert isinstance(out[1], int)
-    assert _note_ids(db_path) == [500, out[1]]
+    assert out[:3] == [None, None, None]
+    assert isinstance(out[3], int)
+    assert _note_ids(db_path) == [first, out[3]]
+
+
+def test_add_notes_bulk_propagates_collection_level_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failure that would hit every item the same way (here: the write guard
+    refusing because Anki is open) must fail the whole call, not surface as N
+    ``None`` entries that read like N duplicates."""
+    store, db_path = _make_store(tmp_path)
+
+    def _anki_is_open() -> None:
+        raise RuntimeError("Anki Desktop appears to be running")
+
+    monkeypatch.setattr(store, "_ensure_write_safe", _anki_is_open)
+
+    with pytest.raises(RuntimeError, match="Anki Desktop"):
+        store.add_notes(
+            [
+                {"deck": "Default", "notetype": "Basic", "fields": {"Front": "a", "Back": "x"}},
+                {"deck": "Default", "notetype": "Basic", "fields": {"Front": "b", "Back": "y"}},
+            ]
+        )
+
+    assert _note_ids(db_path) == []
