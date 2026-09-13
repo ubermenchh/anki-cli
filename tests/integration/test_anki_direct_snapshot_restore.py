@@ -338,7 +338,7 @@ def _fake_answer_internals(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectRea
     monkeypatch.setattr(
         store,
         "_card_row_to_fsrs",
-        lambda row, *, timing, now_dt: SimpleNamespace(
+        lambda row, *, timing, now_dt, **_steps: SimpleNamespace(
             state=direct_mod.State.Learning,
             step=0,
             stability=None,

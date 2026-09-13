@@ -28,6 +28,18 @@ def _make_store(tmp_path: Path, *, col_crt: int = 0) -> tuple[AnkiDirectReadStor
             kind BLOB NOT NULL
         );
 
+        CREATE TABLE revlog (
+            id INTEGER PRIMARY KEY,
+            cid INTEGER NOT NULL,
+            usn INTEGER NOT NULL,
+            ease INTEGER NOT NULL,
+            ivl INTEGER NOT NULL,
+            lastIvl INTEGER NOT NULL,
+            factor INTEGER NOT NULL,
+            time INTEGER NOT NULL,
+            type INTEGER NOT NULL
+        );
+
         CREATE TABLE cards (
             id INTEGER PRIMARY KEY,
             nid INTEGER NOT NULL,
@@ -138,7 +150,7 @@ def test_preview_ratings_returns_four_ease_options_with_decoded_due_info(
     monkeypatch.setattr(
         store,
         "_card_row_to_fsrs",
-        lambda row, *, timing, now_dt: SimpleNamespace(
+        lambda row, *, timing, now_dt, **_steps: SimpleNamespace(
             state=direct_mod.State.Review,
             step=None,
             stability=None,
@@ -232,7 +244,7 @@ def test_preview_ratings_sets_relearning_step_zero_when_missing(
     monkeypatch.setattr(
         store,
         "_card_row_to_fsrs",
-        lambda row, *, timing, now_dt: SimpleNamespace(
+        lambda row, *, timing, now_dt, **_steps: SimpleNamespace(
             state=direct_mod.State.Relearning,
             step=None,
             stability=2.0,
@@ -284,7 +296,7 @@ def test_preview_ratings_falls_back_when_seed_unavailable(
     monkeypatch.setattr(
         store,
         "_card_row_to_fsrs",
-        lambda row, *, timing, now_dt: SimpleNamespace(
+        lambda row, *, timing, now_dt, **_steps: SimpleNamespace(
             state=direct_mod.State.Review,
             step=0,
             stability=None,

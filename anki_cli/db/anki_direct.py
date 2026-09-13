@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import random
 import sqlite3
 import time
 from collections.abc import Iterator, Mapping, Sequence
@@ -80,6 +82,50 @@ def queue_from_type_sql(*, due_expr: str = RESTORED_DUE_SQL) -> str:
                             CASE WHEN ({due_expr}) > {LEARN_DUE_EPOCH_THRESHOLD} THEN 1 ELSE 3 END
                         ELSE 2
                     END"""
+
+
+# py-fsrs 6 wants exactly 21 weights. Anki may still carry FSRS-4.5 (17) or
+# FSRS-5 (19) weights from an older optimizer run; fsrs-rs upgrades those with
+# fixed transforms (model_v6::check_and_fill_parameters_fsrs6), mirrored here.
+FSRS6_PARAM_COUNT = 21
+FSRS5_DEFAULT_DECAY = 0.5
+FSRS6_DEFAULT_PARAMETERS: tuple[float, ...] = (
+    0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001, 1.8722, 0.1666, 0.796,
+    1.4835, 0.0614, 0.2629, 1.6483, 0.6014, 1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
+)
+
+# Anki's revlog.type (RevlogReviewKind).
+REVLOG_KIND_LEARNING = 0
+REVLOG_KIND_REVIEW = 1
+REVLOG_KIND_RELEARNING = 2
+REVLOG_KIND_FILTERED = 3  # also used for a review answered before it was due
+
+
+def upgrade_fsrs_parameters(values: list[float]) -> tuple[list[float], str]:
+    """Return 21 FSRS-6 weights plus a label describing where they came from.
+
+    Port of fsrs-rs ``check_and_fill_parameters_fsrs6``: 17 (FSRS-4.5) and 19
+    (FSRS-5) weight sets are transformed the way Anki transforms them before
+    scheduling; anything else falls back to the FSRS-6 defaults.
+    """
+    n = len(values)
+    if n == FSRS6_PARAM_COUNT:
+        return list(values), "fsrs6"
+    if n == 19:
+        return [*values, 0.0, FSRS5_DEFAULT_DECAY], "fsrs5-upgraded"
+    if n == 17:
+        w = list(values)
+        w[4] = w[5] * 2.0 + w[4]
+        w[5] = math.log(w[5] * 3.0 + 1.0) / 3.0
+        w[6] += 0.5
+        return [*w, 0.0, 0.0, 0.0, FSRS5_DEFAULT_DECAY], "fsrs4.5-upgraded"
+    return list(FSRS6_DEFAULT_PARAMETERS), "default"
+
+
+def fsrs_fuzz_seed(card_id: int, reps: int) -> int:
+    """rslib ``get_fuzz_seed_for_id_and_reps``: the same card at the same rep
+    count always fuzzes the same way, so a preview matches the later answer."""
+    return (int(card_id) + int(reps)) & 0xFFFFFFFFFFFFFFFF
 
 
 # Lowest collection schema this module understands: separate decks / notetypes /
@@ -1272,7 +1318,7 @@ class AnkiDirectReadStore:
                     "answer it in Anki or empty the deck first."
                 )
             # Options come from the home deck when the card is on loan.
-            scheduler, _dr, learn_count, relearn_count = self._build_scheduler(
+            scheduler, _dr, learn_count, relearn_count, params_source = self._build_scheduler_ex(
                 conn, odid if odid != 0 else int(row["did"])
             )
 
@@ -1280,7 +1326,10 @@ class AnkiDirectReadStore:
                 row,
                 timing=timing,
                 now_dt=review_dt,
+                learn_step_count=learn_count,
+                relearn_step_count=relearn_count,
             )
+            base.last_review = self._last_review_time(conn, int(row["id"]))
 
             needs_seed = base.state in (State.Review, State.Relearning) and (
                 base.stability is None or base.difficulty is None or base.last_review is None
@@ -1319,10 +1368,14 @@ class AnkiDirectReadStore:
 
             out: list[dict[str, JSONValue]] = []
             for ease in (1, 2, 3, 4):
-                next_card, _review_log = scheduler.review_card(
+                # Same seed answer_card will use, so the preview matches the write.
+                next_card = self._review_with_fuzz_seed(
+                    scheduler,
                     base,
                     Rating(ease),
                     review_datetime=review_dt,
+                    card_id=int(row["id"]),
+                    reps=int(row["reps"]),
                 )
 
                 (
@@ -1344,6 +1397,7 @@ class AnkiDirectReadStore:
                 out.append(
                     {
                         "ease": ease,
+                        "fsrs_params": params_source,
                         "type": new_type,
                         "queue": new_queue,
                         "due": new_due,
@@ -2351,11 +2405,22 @@ class AnkiDirectReadStore:
                     "answer it in Anki or empty the deck first."
                 )
 
-            scheduler, desired_retention, learn_count, relearn_count = self._build_scheduler(
-                conn, home_did
-            )
+            (
+                scheduler,
+                desired_retention,
+                learn_count,
+                relearn_count,
+                params_source,
+            ) = self._build_scheduler_ex(conn, home_did)
 
-            fsrs_card = self._card_row_to_fsrs(row, timing=timing, now_dt=review_dt)
+            fsrs_card = self._card_row_to_fsrs(
+                row,
+                timing=timing,
+                now_dt=review_dt,
+                learn_step_count=learn_count,
+                relearn_step_count=relearn_count,
+            )
+            fsrs_card.last_review = self._last_review_time(conn, int(row["id"]))
 
             needs_seed = fsrs_card.state in (State.Review, State.Relearning) and (
                 fsrs_card.stability is None
@@ -2399,10 +2464,13 @@ class AnkiDirectReadStore:
             if fsrs_card.state == State.Relearning and fsrs_card.step is None:
                 fsrs_card.step = 0
 
-            next_card, _review_log = scheduler.review_card(
+            next_card = self._review_with_fuzz_seed(
+                scheduler,
                 fsrs_card,
                 Rating(ease),
                 review_datetime=review_dt,
+                card_id=int(row["id"]),
+                reps=int(row["reps"]),
             )
 
             (
@@ -2432,7 +2500,7 @@ class AnkiDirectReadStore:
             data_obj.setdefault(
                 "pos", max(0, self._scheduling_due(row)) if int(row["type"]) == 0 else 0
             )
-            data_obj["lrt"] = now_sec
+            data_obj.pop("lrt", None)  # not an Anki CardData key; Anki would drop it
             data_obj["dr"] = round(desired_retention, 2)
             if next_card.stability is not None:
                 data_obj["s"] = round(float(next_card.stability), 4)
@@ -2500,12 +2568,17 @@ class AnkiDirectReadStore:
             else:
                 logged_factor = max(100, min(1100, round(float(next_card.difficulty) * 100)))
 
-            if old_type == 2 and ease == 1:
-                review_type = 2
+            # rslib RevlogReviewKind comes from the card's state *before* the
+            # answer: new/learning -> Learning, relearning -> Relearning, review ->
+            # Review, or Filtered when a review is answered ahead of its due day.
+            if old_type == 3:
+                review_type = REVLOG_KIND_RELEARNING
             elif old_type == 2:
-                review_type = 1
+                review_type = (
+                    REVLOG_KIND_FILTERED if old_due > today_days else REVLOG_KIND_REVIEW
+                )
             else:
-                review_type = 0
+                review_type = REVLOG_KIND_LEARNING
 
             conn.execute(
                 """
@@ -2528,6 +2601,7 @@ class AnkiDirectReadStore:
             "card_id": card_id,
             "ease": ease,
             "answered": True,
+            "fsrs_params": params_source,
             "queue": new_queue,
             "type": new_type,
             "due": new_due,
@@ -2916,11 +2990,34 @@ class AnkiDirectReadStore:
                 "card_ids": existing_ids,
             }
 
-    def _build_scheduler(
+    def _build_scheduler_ex(
         self,
         conn: sqlite3.Connection,
         deck_id: int,
-    ) -> tuple[Scheduler, float, int, int]:
+    ) -> tuple[Scheduler, float, int, int, str]:
+        """``_build_scheduler`` plus a label for which FSRS weights were used."""
+        scheduler, retention, learn_n, relearn_n = self._build_scheduler(conn, deck_id)
+        return scheduler, retention, learn_n, relearn_n, self._fsrs_params_source(conn, deck_id)
+
+    def _fsrs_params_source(self, conn: sqlite3.Connection, deck_id: int) -> str:
+        """Informational label for the result payload; never fails a review."""
+        try:
+            cfg, _retention = self._deck_config_for_deck(conn, deck_id)
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc):
+                return "unknown"
+            raise
+        params, source = self._pick_fsrs_parameters(cfg)
+        try:
+            Scheduler(parameters=params)
+        except ValueError:
+            return "default"
+        return source
+
+    def _deck_config_for_deck(
+        self, conn: sqlite3.Connection, deck_id: int
+    ) -> tuple[DeckConfigConfig, float | None]:
+        """The deck's options preset and its per-deck desired-retention override."""
         deck_row = conn.execute("SELECT kind FROM decks WHERE id = ?", (deck_id,)).fetchone()
         config_id = 1
         deck_retention: float | None = None
@@ -2944,8 +3041,15 @@ class AnkiDirectReadStore:
             if cfg_row is not None
             else DeckConfigConfig()
         )
+        return cfg, deck_retention
 
-        params = self._pick_fsrs_parameters(cfg)
+    def _build_scheduler(
+        self,
+        conn: sqlite3.Connection,
+        deck_id: int,
+    ) -> tuple[Scheduler, float, int, int]:
+        cfg, deck_retention = self._deck_config_for_deck(conn, deck_id)
+        params, _params_source = self._pick_fsrs_parameters(cfg)
         desired_retention = (
             deck_retention
             if deck_retention is not None
@@ -2961,43 +3065,71 @@ class AnkiDirectReadStore:
         )
         max_interval = int(cfg.maximum_review_interval or 36500)
 
-        scheduler = Scheduler(
-            parameters=params,
-            desired_retention=desired_retention,
-            learning_steps=learning_steps,
-            relearning_steps=relearning_steps,
-            maximum_interval=max_interval,
-        )
+        try:
+            scheduler = Scheduler(
+                parameters=params,
+                desired_retention=desired_retention,
+                learning_steps=learning_steps,
+                relearning_steps=relearning_steps,
+                maximum_interval=max_interval,
+            )
+        except ValueError:
+            # Upgraded legacy weights can land just outside py-fsrs's bounds.
+            scheduler = Scheduler(
+                parameters=list(FSRS6_DEFAULT_PARAMETERS),
+                desired_retention=desired_retention,
+                learning_steps=learning_steps,
+                relearning_steps=relearning_steps,
+                maximum_interval=max_interval,
+            )
         return scheduler, desired_retention, len(learning_steps), len(relearning_steps)
 
-    def _pick_fsrs_parameters(self, cfg: DeckConfigConfig) -> list[float]:
+    def _pick_fsrs_parameters(self, cfg: DeckConfigConfig) -> tuple[list[float], str]:
+        """Newest non-empty weight set on the deck config, upgraded to FSRS-6."""
         for candidate in (cfg.fsrs_params_6, cfg.fsrs_params_5, cfg.fsrs_params_4):
             values = [float(item) for item in candidate]
-            if len(values) >= 19:
-                return values
-        return [
-            0.212,
-            1.2931,
-            2.3065,
-            8.2956,
-            6.4133,
-            0.8334,
-            3.0194,
-            0.001,
-            1.8722,
-            0.1666,
-            0.796,
-            1.4835,
-            0.0614,
-            0.2629,
-            1.6483,
-            0.6014,
-            1.8729,
-            0.5425,
-            0.0912,
-            0.0658,
-            0.1542,
-        ]
+            if values:
+                return upgrade_fsrs_parameters(values)
+        return list(FSRS6_DEFAULT_PARAMETERS), "default"
+
+    @staticmethod
+    def _review_with_fuzz_seed(
+        scheduler: Scheduler,
+        card: FSRSCard,
+        rating: Rating,
+        *,
+        review_datetime: datetime,
+        card_id: int,
+        reps: int,
+    ) -> FSRSCard:
+        """py-fsrs draws its interval fuzz from the module-level ``random``;
+        seed it per card + rep count like rslib so preview and answer agree."""
+        state = random.getstate()
+        try:
+            random.seed(fsrs_fuzz_seed(card_id, reps))
+            next_card, _log = scheduler.review_card(card, rating, review_datetime=review_datetime)
+        finally:
+            random.setstate(state)
+        return next_card
+
+    @staticmethod
+    def _last_review_time(conn: sqlite3.Connection, card_id: int) -> datetime | None:
+        """Most recent real review of the card, from the revlog (Anki's source of
+        truth); manual reschedules (type 4/5) don't count."""
+        row = conn.execute(
+            """
+            SELECT id FROM revlog
+            WHERE cid = ? AND ease IN (1, 2, 3, 4) AND type IN (0, 1, 2, 3)
+            ORDER BY id DESC LIMIT 1
+            """,
+            (card_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return datetime.fromtimestamp(int(row["id"]) / 1000.0, tz=UTC)
+        except (OSError, OverflowError, ValueError):
+            return None
 
     def _to_timedeltas(
         self,
@@ -3022,6 +3154,8 @@ class AnkiDirectReadStore:
         *,
         timing: SchedTiming,
         now_dt: datetime,
+        learn_step_count: int = 0,
+        relearn_step_count: int = 0,
     ) -> FSRSCard:
         raw_data = self._parse_card_data(str(row["data"] or ""))
         data: dict[str, JSONValue] = (
@@ -3032,14 +3166,9 @@ class AnkiDirectReadStore:
 
         stability = self._coerce_float_value(data.get("s"))
         difficulty = self._coerce_float_value(data.get("d"))
-
+        # last_review is filled in by the caller from the revlog; Anki's CardData
+        # has no such key, so anything we might cache there would be dropped.
         last_review: datetime | None = None
-        lrt_value = self._coerce_int_value(data.get("lrt"))
-        if lrt_value is not None:
-            try:
-                last_review = datetime.fromtimestamp(lrt_value, tz=UTC)
-            except (TypeError, ValueError, OSError):
-                last_review = None
 
         card_type = int(row["type"])
         queue = int(row["queue"])
@@ -3059,8 +3188,16 @@ class AnkiDirectReadStore:
             due_dt = now_dt
             state = State.Learning
 
+        # Anki packs left = today_remaining * 1000 + remaining_steps; the FSRS
+        # step index is how many of the deck's steps are already behind us.
         left_raw = int(row["left"])
-        step = 0 if left_raw > 0 else None
+        step: int | None
+        if left_raw > 0 and state in (State.Learning, State.Relearning):
+            remaining = left_raw % 1000
+            total = relearn_step_count if state == State.Relearning else learn_step_count
+            step = max(0, total - remaining) if total > 0 else 0
+        else:
+            step = None
 
         return FSRSCard(
             card_id=int(row["id"]),

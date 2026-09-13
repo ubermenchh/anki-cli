@@ -173,7 +173,7 @@ def test_answer_card_updates_card_and_writes_revlog_non_lapse(
     monkeypatch.setattr(
         store,
         "_card_row_to_fsrs",
-        lambda row, *, timing, now_dt: SimpleNamespace(
+        lambda row, *, timing, now_dt, **_steps: SimpleNamespace(
             state=direct_mod.State.Learning,
             step=0,
             stability=None,
@@ -193,6 +193,7 @@ def test_answer_card_updates_card_and_writes_revlog_non_lapse(
         "card_id": 100,
         "ease": 3,
         "answered": True,
+        "fsrs_params": "unknown",  # fixture has no deck_config table
         "queue": 2,
         "type": 2,
         "due": 33,
@@ -216,7 +217,7 @@ def test_answer_card_updates_card_and_writes_revlog_non_lapse(
     assert data["dr"] == 0.9
     assert data["s"] == 3.2
     assert data["d"] == 6.7
-    assert data["lrt"] == row["mod"]
+    assert "lrt" not in data  # not an Anki CardData key; Anki would drop it
 
     revlog = _revlog_rows(db_path)
     assert revlog == [
@@ -265,7 +266,7 @@ def test_answer_card_lapse_increments_lapses_and_sets_relearn_type(
     monkeypatch.setattr(
         store,
         "_card_row_to_fsrs",
-        lambda row, *, timing, now_dt: SimpleNamespace(
+        lambda row, *, timing, now_dt, **_steps: SimpleNamespace(
             state=direct_mod.State.Learning,
             step=0,
             stability=None,
@@ -302,7 +303,10 @@ def test_answer_card_lapse_increments_lapses_and_sets_relearn_type(
             "lastIvl": 10,
             "factor": 550,
             "time": 0,
-            "type": 2,  # relearn
+            # rslib RevlogReviewKind is the card's state *before* the answer: a
+            # review card answered Again is still logged as Review (1), and the
+            # relearning kind (2) is only used once the card is in relearning.
+            "type": 1,
         }
     ]
 
