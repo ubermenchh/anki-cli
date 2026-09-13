@@ -21,8 +21,7 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
+    conn.executescript("""
         CREATE TABLE decks (
             id INTEGER PRIMARY KEY,
             name TEXT NOT NULL
@@ -42,7 +41,8 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
 
         CREATE TABLE templates (
             ntid INTEGER NOT NULL,
-            ord INTEGER NOT NULL
+            ord INTEGER NOT NULL,
+            config BLOB NOT NULL DEFAULT X''
         );
 
         CREATE TABLE notes (
@@ -86,8 +86,7 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
             usn INTEGER NOT NULL,
             PRIMARY KEY (oid, type)
         );
-        """
-    )
+        """)
     conn.executescript(COL_TABLE_SQL)
     insert_col_row(conn, crt=0)
     conn.executemany(
@@ -366,3 +365,136 @@ def test_delete_notes_empty_or_non_positive_input_returns_noop(
         "deleted_cards": 0,
         "missing_note_ids": [],
     }
+
+
+# --- card generation honours the templates (#22 item 7) ---------------------------
+
+
+def _install_templates(db_path: Path, ntid: int, fronts: list[str]) -> None:
+    from anki_cli.proto.anki.notetypes import NotetypeTemplateConfig
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("DELETE FROM templates WHERE ntid = ?", (ntid,))
+    for ord_, front in enumerate(fronts):
+        conn.execute(
+            "INSERT INTO templates (ntid, ord, config) VALUES (?, ?, ?)",
+            (ntid, ord_, bytes(NotetypeTemplateConfig(q_format=front, a_format="{{FrontSide}}"))),
+        )
+    conn.commit()
+    conn.close()
+
+
+def _card_ords(db_path: Path, note_id: int) -> list[int]:
+    return sorted(int(c["ord"]) for c in _cards_for_note(db_path, note_id))
+
+
+def test_add_note_basic_and_reversed_with_empty_back_makes_one_card(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Regression for #22 (7): 'Basic (and reversed card)' with an empty Back must
+    not generate the reverse card; pre-fix every template produced a card."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _install_templates(db_path, 10, ["{{Front}}", "{{Back}}"])
+
+    one = store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Front": "Q", "Back": ""},
+        tags=[],
+        allow_duplicate=True,
+    )
+    both = store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Front": "Q2", "Back": "A"},
+        tags=[],
+        allow_duplicate=True,
+    )
+
+    assert _card_ords(db_path, one) == [0]
+    assert _card_ords(db_path, both) == [0, 1]
+
+
+def test_add_note_whitespace_or_br_only_field_counts_as_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _install_templates(db_path, 10, ["{{Front}}", "{{Back}}"])
+
+    nid = store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Front": "Q", "Back": " <br>\n<div></div>"},
+        tags=[],
+        allow_duplicate=True,
+    )
+    img = store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Front": "Q3", "Back": '<img src="x.png">'},
+        tags=[],
+        allow_duplicate=True,
+    )
+
+    assert _card_ords(db_path, nid) == [0]
+    assert _card_ords(db_path, img) == [0, 1]  # media is content
+
+
+def test_add_note_with_nothing_renderable_still_gets_the_first_card(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """rslib ensure_not_empty: a brand-new note always gets template 0."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _install_templates(db_path, 10, ["{{Front}}", "{{Back}}"])
+
+    nid = store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Front": "", "Back": ""},
+        tags=[],
+        allow_duplicate=True,
+    )
+
+    assert _card_ords(db_path, nid) == [0]
+
+
+def test_add_note_conditional_front_and_special_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _install_templates(
+        db_path,
+        10,
+        [
+            "{{Front}}",
+            "{{#Back}}{{Front}}{{/Back}}",  # only when Back is filled
+            "{{Tags}}",  # special field: only when the note has tags
+            "{{Deck}}",  # special field: always available
+        ],
+    )
+
+    no_tags = store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Front": "Q", "Back": ""},
+        tags=[],
+        allow_duplicate=True,
+    )
+    tagged = store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Front": "Q2", "Back": "A"},
+        tags=["t"],
+        allow_duplicate=True,
+    )
+
+    assert _card_ords(db_path, no_tags) == [0, 3]
+    assert _card_ords(db_path, tagged) == [0, 1, 2, 3]

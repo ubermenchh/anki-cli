@@ -218,10 +218,12 @@ def test_create_notetype_normal_persists_schema_and_requirements(
     assert cfg.kind == NotetypeConfigKind.KIND_NORMAL
     assert int(cfg.sort_field_idx) == 0
     assert cfg.css == ".card { color: red; }"
+    # Requirements are derived from the template like Anki does: a front of
+    # {{Front}} renders when Front alone is non-empty -> ANY [0].
     assert len(cfg.reqs) == 1
     assert int(cfg.reqs[0].card_ord) == 0
-    assert cfg.reqs[0].kind == NotetypeConfigCardRequirementKind.KIND_ALL
-    assert [int(x) for x in cfg.reqs[0].field_ords] == [0, 1]
+    assert cfg.reqs[0].kind == NotetypeConfigCardRequirementKind.KIND_ANY
+    assert [int(x) for x in cfg.reqs[0].field_ords] == [0]
 
     fields = _fields_for_ntid(db_path, ntid)
     assert [(int(row["ord"]), str(row["name"])) for row in fields] == [(0, "Front"), (1, "Back")]
@@ -238,7 +240,7 @@ def test_create_notetype_normal_persists_schema_and_requirements(
     assert tcfg.a_format == "{{Back}}"
 
 
-def test_create_notetype_cloze_sets_kind_and_requirement_kind_none(
+def test_create_notetype_cloze_sets_kind_and_any_requirement(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -257,8 +259,11 @@ def test_create_notetype_cloze_sets_kind_and_requirement_kind_none(
     nt_row = _notetype_row_by_id(db_path, int(cast(int | str, result["id"])))
     cfg = NotetypeConfig().parse(bytes(nt_row["config"]))
     assert cfg.kind == NotetypeConfigKind.KIND_CLOZE
+    # Stock Anki's Cloze notetype stores req [[0, "any", [0]]]: {{cloze:Text}}
+    # strips to key "Text" (ord 0).
     assert len(cfg.reqs) == 1
-    assert cfg.reqs[0].kind == NotetypeConfigCardRequirementKind.KIND_NONE
+    assert cfg.reqs[0].kind == NotetypeConfigCardRequirementKind.KIND_ANY
+    assert [int(x) for x in cfg.reqs[0].field_ords] == [0]
 
 
 @pytest.mark.parametrize(
@@ -612,11 +617,12 @@ def test_remove_notetype_field_shifts_sort_idx_and_requirement_ords(
     after = NotetypeConfig().parse(bytes(_notetype_row_by_id(db_path, ntid)["config"]))
     # Sort field "C" moved from ord 2 to ord 1.
     assert int(after.sort_field_idx) == 1
-    # Card 1 still requires "A" (ord 0); Card 2 required "B", which is gone;
-    # Card 3's "C"/"D" moved from ords 2/3 to 1/2.
-    assert [list(req.field_ords) for req in after.reqs] == [[0], [], [0, 1, 2]]
+    # reqs are recomputed from the templates (as Anki does on save), not
+    # renumbered: Card 1's front {{A}} -> ANY [0]; Card 2's front {{B}} now
+    # references a field that no longer exists -> NONE.
+    assert [list(req.field_ords) for req in after.reqs] == [[0], []]
+    assert after.reqs[0].kind == NotetypeConfigCardRequirementKind.KIND_ANY
     assert after.reqs[1].kind == NotetypeConfigCardRequirementKind.KIND_NONE
-    assert after.reqs[2].kind == NotetypeConfigCardRequirementKind.KIND_ALL
 
     note = _note_row(db_path, 100)
     assert note["flds"] == "a\x1fc\x1fd"

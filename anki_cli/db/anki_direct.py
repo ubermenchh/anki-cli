@@ -18,6 +18,13 @@ from fsrs import Rating, ReviewLog, Scheduler, State
 from fsrs.scheduler import LOWER_BOUNDS_PARAMETERS, UPPER_BOUNDS_PARAMETERS
 
 from anki_cli.core.search import compile_card_query, compile_note_query
+from anki_cli.core.template import (
+    SPECIAL_FIELDS,
+    field_is_empty,
+    parse_template,
+    template_renders_with_fields,
+    template_requirements,
+)
 from anki_cli.db.timing import (
     DEFAULT_ROLLOVER_HOUR,
     SchedTiming,
@@ -494,19 +501,6 @@ class AnkiDirectReadStore:
 
             ntid = self._allocate_row_id(conn, "notetypes")
             now_sec = int(time.time())
-            req_kind = (
-                NotetypeConfigCardRequirementKind.KIND_ALL
-                if normalized_kind == "normal"
-                else NotetypeConfigCardRequirementKind.KIND_NONE
-            )
-            reqs = [
-                NotetypeConfigCardRequirement(
-                    card_ord=ord_,
-                    kind=req_kind,
-                    field_ords=list(range(len(field_names))),
-                )
-                for ord_, _ in enumerate(cleaned_templates)
-            ]
             config = NotetypeConfig(
                 kind=(
                     NotetypeConfigKind.KIND_CLOZE
@@ -515,7 +509,6 @@ class AnkiDirectReadStore:
                 ),
                 sort_field_idx=0,
                 css=css,
-                reqs=reqs,
             )
             conn.execute(
                 """
@@ -553,6 +546,7 @@ class AnkiDirectReadStore:
                         ),
                     ),
                 )
+            self._recompute_reqs(conn, ntid)
 
         return {
             "id": ntid,
@@ -612,6 +606,7 @@ class AnkiDirectReadStore:
                 "UPDATE notetypes SET mtime_secs = ?, usn = -1 WHERE id = ?",
                 (now_sec, ntid),
             )
+            self._recompute_reqs(conn, ntid)
             self._mark_schema_modified(conn)
 
         return {
@@ -679,21 +674,13 @@ class AnkiDirectReadStore:
             sort_idx = max(0, min(sort_idx, new_field_count - 1))
             config.sort_field_idx = sort_idx
 
-            for req in config.reqs:
-                remaining = [
-                    ord_ - 1 if ord_ > removed_ord else ord_
-                    for ord_ in req.field_ords
-                    if ord_ != removed_ord
-                ]
-                if remaining != list(req.field_ords):
-                    req.field_ords = remaining
-                    if not remaining:
-                        req.kind = NotetypeConfigCardRequirementKind.KIND_NONE
-
             conn.execute(
                 "UPDATE notetypes SET mtime_secs = ?, usn = -1, config = ? WHERE id = ?",
                 (now_sec, bytes(config), ntid),
             )
+            # Anki recomputes the legacy reqs cache from the templates on save
+            # rather than renumbering the old entries.
+            self._recompute_reqs(conn, ntid)
             self._mark_schema_modified(conn)
 
             # Field values are stored positionally in notes.flds, so every note of
@@ -854,6 +841,7 @@ class AnkiDirectReadStore:
                 "UPDATE notetypes SET mtime_secs = ?, usn = -1 WHERE id = ?",
                 (now_sec, ntid),
             )
+            self._recompute_reqs(conn, ntid)
             self._mark_schema_modified(conn)
 
         return {
@@ -913,6 +901,8 @@ class AnkiDirectReadStore:
                 "UPDATE notetypes SET mtime_secs = ?, usn = -1 WHERE id = ?",
                 (now_sec, ntid),
             )
+            if front is not None:
+                self._recompute_reqs(conn, ntid)
 
         return {"name": normalized_name, "template": normalized_template, "updated": True}
 
@@ -2093,6 +2083,8 @@ class AnkiDirectReadStore:
                 notetype_id,
                 ordered_values,
                 is_cloze,
+                field_names=field_names,
+                has_tags=bool(tags),
             )
             next_due = self._next_new_due(conn)
             for offset, ord_value in enumerate(template_ords):
@@ -2937,7 +2929,18 @@ class AnkiDirectReadStore:
         mid: int,
         field_values: list[str],
         is_cloze: bool,
+        *,
+        field_names: list[str] | None = None,
+        has_tags: bool = False,
     ) -> list[int]:
+        """Which cards a new note gets (rslib ``CardGenContext::new_cards_required``).
+
+        Normal notetypes: a template yields a card only if its front renders
+        non-empty given the note's non-empty fields (plus Anki's special fields).
+        If nothing would render, the first template is used anyway, as Anki does
+        for new notes (``ensure_not_empty``). The legacy ``reqs`` cache is not
+        consulted for this, matching modern Anki.
+        """
         if is_cloze:
             import re
 
@@ -2945,14 +2948,64 @@ class AnkiDirectReadStore:
             matches = {int(m.group(1)) for m in re.finditer(r"\{\{c(\d+)::", text)}
             if not matches:
                 return [0]
-            return sorted({max(0, idx - 1) for idx in matches})
+            return sorted({min(499, max(0, idx - 1)) for idx in matches})
 
         rows = conn.execute(
-            "SELECT ord FROM templates WHERE ntid = ? ORDER BY ord",
+            "SELECT ord, config FROM templates WHERE ntid = ? ORDER BY ord",
             (mid,),
         ).fetchall()
-        ords = [int(row["ord"]) for row in rows]
-        return ords if ords else [0]
+        if not rows:
+            return [0]
+
+        names = field_names if field_names is not None else self._field_schema_for_mid(conn, mid)[0]
+        nonempty = {
+            name
+            for name, value in zip(names, field_values, strict=False)
+            if not field_is_empty(value)
+        }
+        for special in SPECIAL_FIELDS:
+            if special in names or special == "FrontSide":
+                continue
+            if special == "Tags" and not has_tags:
+                continue
+            nonempty.add(special)
+
+        ords: list[int] = []
+        for row in rows:
+            ord_ = int(row["ord"])
+            cfg = self._decode_template_config(bytes(row["config"] or b""), ntid=mid, ord_=ord_)
+            if template_renders_with_fields(parse_template(cfg.q_format), nonempty):
+                ords.append(ord_)
+        return ords if ords else [int(rows[0]["ord"])]
+
+    def _recompute_reqs(self, conn: sqlite3.Connection, ntid: int) -> None:
+        """Rewrite the legacy ``reqs`` cache from the templates (rslib
+        ``Notetype::updated_requirements``). Modern Anki recomputes this on every
+        notetype save; older clients read it to decide which cards to make."""
+        nt_row = conn.execute("SELECT config FROM notetypes WHERE id = ?", (ntid,)).fetchone()
+        if nt_row is None:
+            return
+        config = self._decode_notetype_config(bytes(nt_row["config"] or b""), ntid=ntid)
+        field_names, _ = self._field_schema_for_mid(conn, ntid)
+        rows = conn.execute(
+            "SELECT ord, config FROM templates WHERE ntid = ? ORDER BY ord", (ntid,)
+        ).fetchall()
+
+        kinds = {
+            "any": NotetypeConfigCardRequirementKind.KIND_ANY,
+            "all": NotetypeConfigCardRequirementKind.KIND_ALL,
+            "none": NotetypeConfigCardRequirementKind.KIND_NONE,
+        }
+        reqs: list[NotetypeConfigCardRequirement] = []
+        for row in rows:
+            ord_ = int(row["ord"])
+            tcfg = self._decode_template_config(bytes(row["config"] or b""), ntid=ntid, ord_=ord_)
+            kind, ords = template_requirements(parse_template(tcfg.q_format), field_names)
+            reqs.append(
+                NotetypeConfigCardRequirement(card_ord=ord_, kind=kinds[kind], field_ords=ords)
+            )
+        config.reqs = reqs
+        conn.execute("UPDATE notetypes SET config = ? WHERE id = ?", (bytes(config), ntid))
 
     def _next_new_due(self, conn: sqlite3.Connection) -> int:
         row = conn.execute(
