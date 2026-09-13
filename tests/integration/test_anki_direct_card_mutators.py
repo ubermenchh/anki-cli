@@ -479,6 +479,21 @@ def test_move_cards_out_of_filtered_deck_restores_schedule(
     assert (plain["did"], plain["due"], plain["queue"]) == (2, 19_800, 2)
 
 
+def test_move_cards_ignores_a_stray_odue_on_a_card_not_on_loan(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """rslib remove_from_filtered_deck_restoring_queue returns early when odid == 0."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _insert_card(db_path, card_id=1, did=10, card_type=2, queue=2, due=19_800, odid=0, odue=19_700)
+
+    store.move_cards(card_ids=[1], deck="Target")
+
+    row = _card_row(db_path, 1)
+    assert (row["did"], row["due"], row["queue"]) == (2, 19_800, 2)
+
+
 def test_move_cards_into_a_filtered_deck_is_refused(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

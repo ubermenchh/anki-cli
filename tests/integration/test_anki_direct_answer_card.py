@@ -486,3 +486,28 @@ def test_undo_restores_filtered_deck_membership(
 
     row = _card_row(db_path, 100)
     assert (row["did"], row["odid"], row["odue"], row["due"]) == (555, 1, 30, -7)
+
+
+def test_answer_card_new_card_on_loan_records_original_position(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """data.pos must be the new-queue position (odue), not the filtered-deck slot."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    monkeypatch.setattr(store, "_allocate_epoch_ms_id", lambda conn, table: 9020)
+    _insert_deck(db_path, did=1, name="Home", filtered=False)
+    _insert_deck(db_path, did=555, name="Cram", filtered=True)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "UPDATE cards SET type = 0, queue = 0, did = 555, odid = 1, odue = 12, due = -99999 "
+        "WHERE id = 100"
+    )
+    conn.commit()
+    conn.close()
+    _fake_scheduler(monkeypatch, store, {})
+
+    store.answer_card(100, ease=3)
+
+    data = json.loads(_card_row(db_path, 100)["data"])
+    assert data["pos"] == 12

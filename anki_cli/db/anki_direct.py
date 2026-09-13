@@ -49,6 +49,11 @@ def is_intraday_learn_due(due: int) -> bool:
 # card is needed regardless of where it currently lives.
 RESTORED_DUE_SQL = "CASE WHEN odue > 0 THEN odue ELSE due END"
 
+# Same, but only for a card that is actually on loan (rslib
+# remove_from_filtered_deck_restoring_queue returns early when odid == 0, so a
+# stray odue on a home-deck card must not rewrite its due).
+RESTORED_DUE_IF_ON_LOAN_SQL = "CASE WHEN odid != 0 AND odue > 0 THEN odue ELSE due END"
+
 # rslib Card::remove_from_filtered_deck_before_reschedule: a card that is about
 # to be given a brand-new schedule (answer, forget, set due date) first goes
 # home; the caller then writes queue/due itself.
@@ -1197,14 +1202,15 @@ class AnkiDirectReadStore:
             col_row = conn.execute("SELECT crt FROM col LIMIT 1").fetchone()
             col_crt_sec = int(col_row["crt"]) if col_row is not None else int(time.time())
 
-            (
-                scheduler,
-                _dr,
-                learn_count,
-                relearn_count
-            ) = self._build_scheduler(
-                # Options come from the home deck when the card is on loan.
-                conn, int(row["odid"]) if int(row["odid"]) != 0 else int(row["did"])
+            odid = int(row["odid"])
+            if odid != 0 and self._filtered_deck_reschedules(conn, int(row["did"])) is False:
+                raise ValueError(
+                    "Card is in a preview (non-rescheduling) filtered deck; "
+                    "answer it in Anki or empty the deck first."
+                )
+            # Options come from the home deck when the card is on loan.
+            scheduler, _dr, learn_count, relearn_count = self._build_scheduler(
+                conn, odid if odid != 0 else int(row["did"])
             )
 
             base = self._card_row_to_fsrs(
@@ -1308,7 +1314,7 @@ class AnkiDirectReadStore:
             updated = conn.execute(
                 f"""
                 UPDATE cards
-                SET due = {RESTORED_DUE_SQL},
+                SET due = {RESTORED_DUE_IF_ON_LOAN_SQL},
                     queue = CASE
                         WHEN odid = 0 OR queue < 0 THEN queue
                         ELSE {queue_from_type_sql()}
@@ -2359,7 +2365,11 @@ class AnkiDirectReadStore:
             lapses = int(row["lapses"]) + (1 if ease == 1 else 0)
             raw_data = self._parse_card_data(str(row["data"] or ""))
             data_obj = dict(raw_data) if isinstance(raw_data, dict) else {}
-            data_obj.setdefault("pos", int(row["due"]) if int(row["type"]) == 0 else 0)
+            # rslib stores the original new-queue position when a card leaves New;
+            # for a card on loan that is odue, not the filtered-deck slot.
+            data_obj.setdefault(
+                "pos", max(0, self._scheduling_due(row)) if int(row["type"]) == 0 else 0
+            )
             data_obj["lrt"] = now_sec
             data_obj["dr"] = round(desired_retention, 2)
             if next_card.stability is not None:
