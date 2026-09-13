@@ -465,7 +465,12 @@ class AnkiConnectBackend(AnkiBackend):
         result = self._invoke("addNote", note=payload)
         return self._as_int(result, "addNote result")
 
-    def add_notes(self, notes: list[dict[str, JSONValue]]) -> list[int | None]:
+    def add_notes(
+        self,
+        notes: list[dict[str, JSONValue]],
+        *,
+        allow_duplicate: bool = False,
+    ) -> list[int | None]:
         anki_notes: list[dict[str, JSONValue]] = []
 
         for item in notes:
@@ -484,14 +489,16 @@ class AnkiConnectBackend(AnkiBackend):
             fields: dict[str, str] = {str(k): str(v) for k, v in fields_raw.items()}
             tags = self._normalize_tags(self._coerce_tag_input(tags_raw))
 
-            anki_notes.append(
-                {
-                    "deckName": deck,
-                    "modelName": notetype,
-                    "fields": fields,
-                    "tags": tags,
-                }
-            )
+            anki_note: dict[str, JSONValue] = {
+                "deckName": deck,
+                "modelName": notetype,
+                "fields": fields,
+                "tags": tags,
+            }
+            if allow_duplicate:
+                # addNotes has no top-level option; AnkiConnect reads it per note.
+                anki_note["options"] = {"allowDuplicate": True}
+            anki_notes.append(anki_note)
 
         result = self._invoke("addNotes", notes=anki_notes)
         if not isinstance(result, list):

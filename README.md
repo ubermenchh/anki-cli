@@ -151,6 +151,7 @@ anki card:revlog --id 123 --limit 20
 anki notes --query "deck:Default"
 anki note --id 123
 anki note:add --deck "Default" --notetype "Basic" --Front "Q" --Back "A"
+anki note:add --deck "Default" --notetype "Basic" --Front "Q" --Back "A2" --allow-duplicate
 anki note:edit --id 123 --Front "Updated Q" --Back "Updated A"
 anki note:fields --id 123
 anki note:delete --id 123 --yes
@@ -159,6 +160,10 @@ anki tag:add --query "deck:Default" --tag "important"
 anki tag:remove --id 123 --tag "important"
 anki tag:rename --from "old" --to "new"
 ```
+
+Like Anki's own Add dialog, `note:add` refuses a note whose first field already exists in
+the same notetype (exit 1) or is empty. `--allow-duplicate` lifts the duplicate check; it
+also works on `note:bulk`, where refused items otherwise come back as `null` ids.
 
 ### Decks and notetypes
 

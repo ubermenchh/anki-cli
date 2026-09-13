@@ -239,7 +239,22 @@ def test_init_sets_name_and_resolved_collection_path(
                 "allow_duplicate": True,
             },
         ),
-        ("add_notes", "add_notes", ([{"deck": "Default"}],), {}, ([{"deck": "Default"}],), {}),
+        (
+            "add_notes",
+            "add_notes",
+            ([{"deck": "Default"}],),
+            {},
+            ([{"deck": "Default"}],),
+            {"allow_duplicate": False},
+        ),
+        (
+            "add_notes",
+            "add_notes",
+            ([{"deck": "Default"}],),
+            {"allow_duplicate": True},
+            ([{"deck": "Default"}],),
+            {"allow_duplicate": True},
+        ),
         (
             "update_note",
             "update_note",

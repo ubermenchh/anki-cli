@@ -185,10 +185,17 @@ class DuplicateNoteError(NoteRejectedError):
     the ``--allow-duplicate`` remedy, since this module has no CLI surface.
     """
 
+    # ``duplicate_ids`` always carries the full list; the message stays one readable
+    # line even after a large ``--allow-duplicate`` import.
+    MAX_IDS_IN_MESSAGE = 10
+
     def __init__(self, *, notetype: str, duplicate_ids: list[int]) -> None:
         self.notetype = notetype
         self.duplicate_ids = duplicate_ids
-        ids = ", ".join(str(i) for i in duplicate_ids)
+        shown = duplicate_ids[: self.MAX_IDS_IN_MESSAGE]
+        ids = ", ".join(str(i) for i in shown)
+        if len(duplicate_ids) > len(shown):
+            ids += f" and {len(duplicate_ids) - len(shown)} more"
         super().__init__(
             f"Duplicate note: first field matches existing note(s) {ids} "
             f"in notetype '{notetype}'."
@@ -2229,7 +2236,12 @@ class AnkiDirectReadStore:
         )
         return missing
 
-    def add_notes(self, notes: list[dict[str, JSONValue]]) -> list[int | None]:
+    def add_notes(
+        self,
+        notes: list[dict[str, JSONValue]],
+        *,
+        allow_duplicate: bool = False,
+    ) -> list[int | None]:
         """AnkiConnect ``addNotes`` shape: one id per item, ``None`` for a refused one.
 
         Only *per-item* problems become ``None`` — a duplicate or empty note
@@ -2237,6 +2249,9 @@ class AnkiDirectReadStore:
         (``LookupError``). Anything else (collection locked, corrupt notetype
         config, ...) would fail every item identically, so it propagates and the
         whole call fails instead of reporting N spurious per-item failures.
+
+        Each item is its own transaction, so without ``allow_duplicate`` the second
+        of two identical items in one batch is refused as a duplicate of the first.
         """
         output: list[int | None] = []
         for item in notes:
@@ -2255,7 +2270,7 @@ class AnkiDirectReadStore:
                     notetype=notetype,
                     fields={str(k): str(v) for k, v in raw_fields.items()},
                     tags=self._coerce_tags(raw_tags),
-                    allow_duplicate=False,
+                    allow_duplicate=allow_duplicate,
                 )
             except (NoteRejectedError, LookupError):
                 output.append(None)

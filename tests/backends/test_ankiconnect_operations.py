@@ -101,6 +101,33 @@ def test_add_notes_builds_payload_and_coerces_result(
     ]
 
 
+def test_add_notes_allow_duplicate_sets_per_note_option(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """addNotes has no top-level option; AnkiConnect reads allowDuplicate per note."""
+    captured: dict[str, Any] = {}
+
+    def fake_invoke(action: str, **params: Any) -> Any:
+        captured["params"] = params
+        return [1, 2]
+
+    monkeypatch.setattr(backend, "_invoke", fake_invoke)
+
+    backend.add_notes(
+        [
+            {"deck": "D", "notetype": "N", "fields": {"Front": "Q"}},
+            {"deck": "D", "notetype": "N", "fields": {"Front": "Q"}},
+        ],
+        allow_duplicate=True,
+    )
+
+    assert [n["options"] for n in captured["params"]["notes"]] == [
+        {"allowDuplicate": True},
+        {"allowDuplicate": True},
+    ]
+
+
 def test_add_notes_requires_deck_and_notetype(backend: AnkiConnectBackend) -> None:
     with pytest.raises(AnkiConnectProtocolError, match="deck/deckName"):
         backend.add_notes([{"notetype": "Basic", "fields": {"Front": "Q"}}])

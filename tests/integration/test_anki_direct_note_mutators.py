@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from anki_cli.backends.protocol import JSONValue
 from anki_cli.db.anki_direct import (
     AnkiDirectReadStore,
     DuplicateNoteError,
@@ -845,3 +846,89 @@ def test_add_notes_bulk_propagates_collection_level_errors(
         )
 
     assert _note_ids(db_path) == []
+
+
+def test_add_notes_bulk_second_identical_item_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Each item commits on its own, so a repeat *within* the batch is a duplicate of
+    the item before it — the shape a re-run import file produces."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    item: dict[str, JSONValue] = {
+        "deck": "Default",
+        "notetype": "Basic",
+        "fields": {"Front": "hola", "Back": "x"},
+    }
+
+    out = store.add_notes([item, dict(item)])
+
+    assert isinstance(out[0], int)
+    assert out[1] is None
+    assert _note_ids(db_path) == [out[0]]
+
+
+def test_add_notes_bulk_allow_duplicate_inserts_repeats(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    first = _add_basic(store, "hola", allow_duplicate=True)
+    item: dict[str, JSONValue] = {
+        "deck": "Default",
+        "notetype": "Basic",
+        "fields": {"Front": "hola", "Back": "x"},
+    }
+
+    out = store.add_notes([item, dict(item)], allow_duplicate=True)
+
+    assert all(isinstance(i, int) for i in out)
+    assert _note_ids(db_path) == [first, *out]
+
+
+def test_add_notes_bulk_allow_duplicate_does_not_lift_empty_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+
+    out = store.add_notes(
+        [{"deck": "Default", "notetype": "Basic", "fields": {"Front": "<br>", "Back": "x"}}],
+        allow_duplicate=True,
+    )
+
+    assert out == [None]
+    assert _note_ids(db_path) == []
+
+
+def test_add_note_missing_field_is_reported_before_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Field validation runs before the duplicate lookup, so a malformed request
+    gets the actionable error even when its first field would also collide."""
+    store, _ = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _add_basic(store, "hola", allow_duplicate=True)
+
+    with pytest.raises(LookupError, match="Missing field 'Back'"):
+        store.add_note(
+            deck="Default",
+            notetype="Basic",
+            fields={"Front": "hola"},
+            tags=None,
+            allow_duplicate=False,
+        )
+
+
+def test_duplicate_note_error_message_truncates_long_id_lists() -> None:
+    ids = list(range(1, 16))
+    err = DuplicateNoteError(notetype="Basic", duplicate_ids=ids)
+
+    assert err.duplicate_ids == ids  # full list always available to callers
+    msg = str(err)
+    assert "1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 5 more" in msg
+    assert "11" not in msg.split(" and ")[0]

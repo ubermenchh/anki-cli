@@ -410,8 +410,11 @@ def test_note_bulk_success(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
     class Backend:
-        def add_notes(self, notes: list[dict[str, Any]]) -> list[int | None]:
+        def add_notes(
+            self, notes: list[dict[str, Any]], *, allow_duplicate: bool = False
+        ) -> list[int | None]:
             captured["notes"] = notes
+            captured["allow_duplicate"] = allow_duplicate
             return [1001, None, 1003]
 
     _patch_session(monkeypatch, Backend())
@@ -461,6 +464,7 @@ def test_note_bulk_success(monkeypatch: pytest.MonkeyPatch) -> None:
             "tags": [],
         },
     ]
+    assert captured["allow_duplicate"] is False
 
 
 def test_note_fields_success_parses_selected_fields(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -527,6 +531,30 @@ def test_note_commands_are_registered() -> None:
     assert get_command("note:fields") is not None
 
 
+def test_note_bulk_allow_duplicate_flag_reaches_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class Backend:
+        def add_notes(
+            self, notes: list[dict[str, Any]], *, allow_duplicate: bool = False
+        ) -> list[int | None]:
+            captured["allow_duplicate"] = allow_duplicate
+            return [1]
+
+    _patch_session(monkeypatch, Backend())
+
+    runner = CliRunner()
+    result = runner.invoke(
+        note_bulk_cmd,
+        ["--deck", "Default", "--notetype", "Basic", "--allow-duplicate"],
+        input=json.dumps([{"fields": {"Front": "Q"}}]),
+        obj=_base_obj(),
+    )
+
+    _success_payload(result)
+    assert captured["allow_duplicate"] is True
+
+
 def test_note_bulk_collection_level_error_fails_whole_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -534,7 +562,9 @@ def test_note_bulk_collection_level_error_fails_whole_command(
     must emit one BACKEND_OPERATION_FAILED, not N null ids with exit 0."""
 
     class Backend:
-        def add_notes(self, notes: list[dict[str, Any]]) -> list[int | None]:
+        def add_notes(
+            self, notes: list[dict[str, Any]], *, allow_duplicate: bool = False
+        ) -> list[int | None]:
             raise RuntimeError("Anki Desktop appears to be running; direct write refused")
 
     _patch_session(monkeypatch, Backend())

@@ -182,8 +182,13 @@ class DirectBackend(AnkiBackend):
             allow_duplicate=allow_duplicate,
         )
 
-    def add_notes(self, notes: list[dict[str, JSONValue]]) -> list[int | None]:
-        return self._store.add_notes(notes)
+    def add_notes(
+        self,
+        notes: list[dict[str, JSONValue]],
+        *,
+        allow_duplicate: bool = False,
+    ) -> list[int | None]:
+        return self._store.add_notes(notes, allow_duplicate=allow_duplicate)
 
     def update_note(
         self,

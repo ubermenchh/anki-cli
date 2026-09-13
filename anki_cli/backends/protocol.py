@@ -68,7 +68,12 @@ class AnkiBackend(Protocol):
         tags: list[str] | None = None,
         allow_duplicate: bool = False,
     ) -> int: ...
-    def add_notes(self, notes: list[dict[str, JSONValue]]) -> list[int | None]: ...
+    def add_notes(
+        self,
+        notes: list[dict[str, JSONValue]],
+        *,
+        allow_duplicate: bool = False,
+    ) -> list[int | None]: ...
     def update_note(
         self,
         note_id: int,
