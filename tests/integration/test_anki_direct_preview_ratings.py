@@ -138,7 +138,7 @@ def test_preview_ratings_returns_four_ease_options_with_decoded_due_info(
     monkeypatch.setattr(
         store,
         "_card_row_to_fsrs",
-        lambda row, *, col_crt_sec, now_dt: SimpleNamespace(
+        lambda row, *, timing, now_dt: SimpleNamespace(
             state=direct_mod.State.Review,
             step=None,
             stability=None,
@@ -229,7 +229,7 @@ def test_preview_ratings_sets_relearning_step_zero_when_missing(
     monkeypatch.setattr(
         store,
         "_card_row_to_fsrs",
-        lambda row, *, col_crt_sec, now_dt: SimpleNamespace(
+        lambda row, *, timing, now_dt: SimpleNamespace(
             state=direct_mod.State.Relearning,
             step=None,
             stability=2.0,
@@ -281,7 +281,7 @@ def test_preview_ratings_falls_back_when_seed_unavailable(
     monkeypatch.setattr(
         store,
         "_card_row_to_fsrs",
-        lambda row, *, col_crt_sec, now_dt: SimpleNamespace(
+        lambda row, *, timing, now_dt: SimpleNamespace(
             state=direct_mod.State.Review,
             step=0,
             stability=None,

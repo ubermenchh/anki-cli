@@ -15,6 +15,12 @@ from fsrs import Card as FSRSCard
 from fsrs import Rating, ReviewLog, Scheduler, State
 
 from anki_cli.core.search import compile_card_query, compile_note_query
+from anki_cli.db.timing import (
+    DEFAULT_ROLLOVER_HOUR,
+    SchedTiming,
+    local_minutes_west_for_stamp,
+    sched_timing_today,
+)
 
 if TYPE_CHECKING:
     from anki_cli.backends.protocol import JSONValue
@@ -984,7 +990,6 @@ class AnkiDirectReadStore:
                     c.id, c.nid, c.did, c.ord, c.mod, c.usn, c.type, c.queue, c.due,
                     c.ivl, c.factor, c.reps, c.lapses, c.left, c.odue, c.odid,
                     c.flags, c.data,
-                    (SELECT crt FROM col LIMIT 1) AS col_crt,
                     n.mid AS note_mid,
                     nt.name AS notetype_name,
                     n.flds AS note_fields, n.tags AS note_tags,
@@ -998,6 +1003,8 @@ class AnkiDirectReadStore:
                 (card_id,),
             ).fetchone()
 
+            timing = self._timing(conn, int(time.time())) if row is not None else None
+
         if row is None:
             raise LookupError(f"Card not found: {card_id}")
 
@@ -1006,8 +1013,6 @@ class AnkiDirectReadStore:
         due_raw = int(row["due"])
         left_raw = int(row["left"])
         data_raw = str(row["data"] or "")
-        col_crt_raw = row["col_crt"]
-        col_crt_sec = int(col_crt_raw) if col_crt_raw is not None else None
 
         return {
             "cardId": int(row["id"]),
@@ -1033,7 +1038,7 @@ class AnkiDirectReadStore:
                 card_type=card_type,
                 queue=queue,
                 due_raw=due_raw,
-                col_crt_sec=col_crt_sec,
+                timing=timing,
             ),
             "left_info": self._decode_left(left_raw),
             "data_parsed": self._parse_card_data(data_raw),
@@ -1085,16 +1090,16 @@ class AnkiDirectReadStore:
 
             # 1) learning/relearning due. Intraday (queue 1) holds an epoch,
             #    day-learn (queue 3) a day index; order both by absolute time.
-            crt_day = self._col_crt_day(conn)
+            day0_epoch = self._timing(conn, now_sec).day_start_epoch(0)
             row = conn.execute(
                 f"""
                 SELECT id, due
                 FROM cards
                 WHERE ((queue = 1 AND due <= ?) OR (queue = 3 AND due <= ?)) {did_filter}
-                ORDER BY CASE WHEN queue = 1 THEN due ELSE (? + due) * 86400 END ASC, id ASC
+                ORDER BY CASE WHEN queue = 1 THEN due ELSE ? + due * 86400 END ASC, id ASC
                 LIMIT 1
                 """,
-                (now_sec, today_days, *params, crt_day),
+                (now_sec, today_days, *params, day0_epoch),
             ).fetchone()
             if row is not None:
                 return {"card_id": int(row["id"]), "kind": "learn_due"}
@@ -1257,8 +1262,7 @@ class AnkiDirectReadStore:
             if row is None:
                 raise LookupError(f"Card not found: {card_id}")
 
-            col_row = conn.execute("SELECT crt FROM col LIMIT 1").fetchone()
-            col_crt_sec = int(col_row["crt"]) if col_row is not None else int(time.time())
+            timing = self._timing(conn, int(review_dt.timestamp()))
 
             odid = int(row["odid"])
             if odid != 0 and self._filtered_deck_reschedules(conn, int(row["did"])) is False:
@@ -1273,7 +1277,7 @@ class AnkiDirectReadStore:
 
             base = self._card_row_to_fsrs(
                 row,
-                col_crt_sec=col_crt_sec,
+                timing=timing,
                 now_dt=review_dt,
             )
 
@@ -1330,7 +1334,7 @@ class AnkiDirectReadStore:
                 ) = self._map_fsrs_result_to_anki(
                     current_row=row,
                     next_card=next_card,
-                    col_crt_sec=col_crt_sec,
+                    timing=timing,
                     learn_step_count=learn_count,
                     relearn_step_count=relearn_count,
                     now_dt=review_dt,
@@ -1349,7 +1353,7 @@ class AnkiDirectReadStore:
                             card_type=new_type,
                             queue=new_queue,
                             due_raw=new_due,
-                            col_crt_sec=col_crt_sec,
+                            timing=timing,
                         ),
                         "state": str(next_card.state),
                     }
@@ -2331,8 +2335,8 @@ class AnkiDirectReadStore:
             if row is None:
                 raise LookupError(f"Card not found: {card_id}")
 
-            col_row = conn.execute("SELECT crt FROM col LIMIT 1").fetchone()
-            col_crt_sec = int(col_row["crt"]) if col_row is not None else int(time.time())
+            review_dt = datetime.now(UTC)
+            timing = self._timing(conn, int(review_dt.timestamp()))
 
             # A card in a filtered deck keeps its real schedule in odue and its
             # options come from the home deck. Anki (v3) answers it, sends it
@@ -2349,9 +2353,8 @@ class AnkiDirectReadStore:
             scheduler, desired_retention, learn_count, relearn_count = self._build_scheduler(
                 conn, home_did
             )
-            review_dt = datetime.now(UTC)
 
-            fsrs_card = self._card_row_to_fsrs(row, col_crt_sec=col_crt_sec, now_dt=review_dt)
+            fsrs_card = self._card_row_to_fsrs(row, timing=timing, now_dt=review_dt)
 
             needs_seed = fsrs_card.state in (State.Review, State.Relearning) and (
                 fsrs_card.stability is None
@@ -2411,14 +2414,14 @@ class AnkiDirectReadStore:
             ) = self._map_fsrs_result_to_anki(
                 current_row=row,
                 next_card=next_card,
-                col_crt_sec=col_crt_sec,
+                timing=timing,
                 learn_step_count=learn_count,
                 relearn_step_count=relearn_count,
                 now_dt=review_dt,
             )
 
             now_sec = int(review_dt.timestamp())
-            today_days = max(0, int(now_sec // 86400) - int(col_crt_sec // 86400))
+            today_days = timing.days_elapsed
             reps = int(row["reps"]) + 1
             lapses = int(row["lapses"]) + (1 if ease == 1 else 0)
             raw_data = self._parse_card_data(str(row["data"] or ""))
@@ -2571,20 +2574,51 @@ class AnkiDirectReadStore:
             return None
         return bool(kind_msg.reschedule)
 
-    def _col_crt_day(self, conn: sqlite3.Connection) -> int:
+    def _read_config_json(self, conn: sqlite3.Connection, key: str) -> JSONValue:
+        """Value of a key in Anki's ``config`` table (JSON blob), or None if absent."""
+        try:
+            row = conn.execute("SELECT val FROM config WHERE key = ?", (key,)).fetchone()
+        except sqlite3.OperationalError:
+            return None  # stripped-down fixture without a config table
+        if row is None:
+            return None
+        raw = row["val"]
+        text = raw.decode("utf-8") if isinstance(raw, bytes | bytearray) else str(raw)
+        try:
+            return cast(JSONValue, json.loads(text))
+        except json.JSONDecodeError:
+            return None
+
+    def _timing(self, conn: sqlite3.Connection, now_sec: int) -> SchedTiming:
+        """Anki's "today" for this collection (rslib ``timing_for_timestamp``).
+
+        Reads ``crt`` plus the ``schedVer`` / ``rollover`` / ``creationOffset``
+        config keys and dispatches exactly like rslib: no ``schedVer`` -> v1
+        (plain 86400-second days), no ``creationOffset`` -> v2 legacy cutoff,
+        both -> v2 new timezone handling. The current UTC offset is the local
+        machine's, as Anki desktop uses.
+        """
         row = conn.execute("SELECT crt FROM col LIMIT 1").fetchone()
-        crt = int(row["crt"]) if row is not None else int(time.time())
-        return int(crt // 86400)
+        crt = int(row["crt"]) if row is not None else now_sec
+
+        sched_ver = self._coerce_int_value(self._read_config_json(conn, "schedVer"))
+        rollover: int | None = None
+        if sched_ver is not None and sched_ver >= 2:
+            configured = self._coerce_int_value(self._read_config_json(conn, "rollover"))
+            rollover = configured if configured is not None else DEFAULT_ROLLOVER_HOUR
+        creation_west = self._coerce_int_value(self._read_config_json(conn, "creationOffset"))
+
+        return sched_timing_today(
+            crt=crt,
+            now=now_sec,
+            creation_minutes_west=creation_west,
+            current_minutes_west=local_minutes_west_for_stamp(now_sec),
+            rollover_hour=rollover,
+        )
 
     def _today_due_index(self, now_sec: int) -> int:
         with self._connect() as conn:
-            row = conn.execute("SELECT crt FROM col LIMIT 1").fetchone()
-
-        if row is None:
-            return int(now_sec // 86400)
-
-        crt_sec = int(row["crt"])
-        return max(0, int(now_sec // 86400) - int(crt_sec // 86400))
+            return self._timing(conn, now_sec).days_elapsed
 
     def _deck_filter(
         self,
@@ -2621,17 +2655,17 @@ class AnkiDirectReadStore:
             if deck_row is None:
                 return None
             did = int(deck_row["id"])
-            crt_day = self._col_crt_day(conn)
+            timing = self._timing(conn, int(time.time()))
             # Only queue 1 stores an epoch; queues 2 and 3 store a day index.
             row = conn.execute(
                 """
                 SELECT queue, due
                 FROM cards
                 WHERE did = ? AND queue IN (1, 2, 3)
-                ORDER BY CASE WHEN queue = 1 THEN due ELSE (? + due) * 86400 END, id
+                ORDER BY CASE WHEN queue = 1 THEN due ELSE ? + due * 86400 END, id
                 LIMIT 1
                 """,
-                (did, crt_day),
+                (did, timing.day_start_epoch(0)),
             ).fetchone()
             if row is None:
                 return None
@@ -2640,8 +2674,7 @@ class AnkiDirectReadStore:
         due = int(row["due"])
         if queue == 1:
             return {"queue": queue, "epoch_secs": due}
-        due_epoch = (crt_day + due) * 86400
-        return {"queue": queue, "day_index": due, "epoch_secs": int(due_epoch)}
+        return {"queue": queue, "day_index": due, "epoch_secs": timing.day_start_epoch(due)}
 
     def _coerce_int_value(self, value: JSONValue) -> int | None:
         if isinstance(value, bool):
@@ -2984,7 +3017,7 @@ class AnkiDirectReadStore:
         self,
         row: sqlite3.Row,
         *,
-        col_crt_sec: int,
+        timing: SchedTiming,
         now_dt: datetime,
     ) -> FSRSCard:
         raw_data = self._parse_card_data(str(row["data"] or ""))
@@ -3009,16 +3042,14 @@ class AnkiDirectReadStore:
         queue = int(row["queue"])
         due_raw = self._scheduling_due(row)
         if card_type == 2:
-            crt_day = int(col_crt_sec // 86400)
-            due_dt = datetime.fromtimestamp((crt_day + due_raw) * 86400, tz=UTC)
+            due_dt = datetime.fromtimestamp(timing.day_start_epoch(due_raw), tz=UTC)
             state = State.Review
         elif queue in (1, 3) or card_type in (1, 3):
             if is_intraday_learn_due(due_raw):
                 due_dt = datetime.fromtimestamp(due_raw, tz=UTC)
             else:
-                # Day-learn: due is a day index relative to col.crt.
-                crt_day = int(col_crt_sec // 86400)
-                due_dt = datetime.fromtimestamp((crt_day + due_raw) * 86400, tz=UTC)
+                # Day-learn: due is a scheduling-day index.
+                due_dt = datetime.fromtimestamp(timing.day_start_epoch(due_raw), tz=UTC)
             # Relearning is a property of type (3), not of the day-learn queue.
             state = State.Relearning if card_type == 3 else State.Learning
         else:
@@ -3043,7 +3074,7 @@ class AnkiDirectReadStore:
         *,
         current_row: sqlite3.Row,
         next_card: FSRSCard,
-        col_crt_sec: int,
+        timing: SchedTiming,
         learn_step_count: int,
         relearn_step_count: int,
         now_dt: datetime,
@@ -3056,12 +3087,12 @@ class AnkiDirectReadStore:
         next_due_dt = next_card.due if next_card.due is not None else now_dt
         next_due_epoch = int(next_due_dt.timestamp())
         now_epoch = int(now_dt.timestamp())
-        crt_day = int(col_crt_sec // 86400)
-        today_days = max(0, int(now_epoch // 86400) - crt_day)
+        today_days = timing.days_elapsed
 
         if next_card.state == State.Review:
-            due_days = max(0, int(next_due_epoch // 86400) - crt_day)
+            # rslib: interval in whole days from today, due = today + interval.
             ivl_days = max(1, round((next_due_dt - now_dt).total_seconds() / 86400.0))
+            due_days = today_days + ivl_days
             return (2, 2, due_days, ivl_days, 0, next_due_epoch)
 
         # Anki keeps learning steps shorter than a day in the intraday queue
@@ -3247,7 +3278,7 @@ class AnkiDirectReadStore:
         card_type: int,
         queue: int,
         due_raw: int,
-        col_crt_sec: int | None,
+        timing: SchedTiming | None,
     ) -> dict[str, JSONValue]:
         if card_type == 0:
             return {"kind": "new_position", "raw": due_raw, "position": due_raw}
@@ -3261,8 +3292,8 @@ class AnkiDirectReadStore:
                 "raw": due_raw,
                 "day_index": due_raw,
             }
-            if col_crt_sec is not None:
-                out_learn["epoch_secs"] = int((int(col_crt_sec // 86400) + due_raw) * 86400)
+            if timing is not None:
+                out_learn["epoch_secs"] = timing.day_start_epoch(due_raw)
             return out_learn
 
         if card_type == 2:
@@ -3271,9 +3302,8 @@ class AnkiDirectReadStore:
                 "raw": due_raw,
                 "day_index": due_raw,
             }
-            if col_crt_sec is not None:
-                crt_day = int(col_crt_sec // 86400)
-                out["epoch_secs"] = int((crt_day + due_raw) * 86400)
+            if timing is not None:
+                out["epoch_secs"] = timing.day_start_epoch(due_raw)
             return out
 
         return {"kind": "raw", "raw": due_raw, "queue": queue, "type": card_type}

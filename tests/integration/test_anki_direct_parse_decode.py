@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.timing import sched_timing_today_v1
 
 
 def _make_store(tmp_path: Path) -> AnkiDirectReadStore:
@@ -62,32 +63,33 @@ def test_decode_left_non_negative_and_negative(tmp_path: Path) -> None:
 def test_decode_due_new_learning_review_and_fallback(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
 
-    assert store._decode_due(card_type=0, queue=0, due_raw=42, col_crt_sec=None) == {
+    assert store._decode_due(card_type=0, queue=0, due_raw=42, timing=None) == {
         "kind": "new_position",
         "raw": 42,
         "position": 42,
     }
 
-    assert store._decode_due(card_type=1, queue=1, due_raw=1_700_000_000, col_crt_sec=None) == {
+    assert store._decode_due(card_type=1, queue=1, due_raw=1_700_000_000, timing=None) == {
         "kind": "learn_epoch_secs",
         "raw": 1_700_000_000,
         "epoch_secs": 1_700_000_000,
     }
 
-    assert store._decode_due(card_type=3, queue=3, due_raw=1_700_000_100, col_crt_sec=None) == {
+    assert store._decode_due(card_type=3, queue=3, due_raw=1_700_000_100, timing=None) == {
         "kind": "learn_epoch_secs",
         "raw": 1_700_000_100,
         "epoch_secs": 1_700_000_100,
     }
 
-    # col crt day index: 864000 -> day 10
-    out = store._decode_due(card_type=2, queue=2, due_raw=5, col_crt_sec=864000)
+    # v1 timing: scheduling days start at crt; day 5 begins at crt + 5 days.
+    timing = sched_timing_today_v1(864000, 864000)
+    out = store._decode_due(card_type=2, queue=2, due_raw=5, timing=timing)
     assert out["kind"] == "review_day_index"
     assert out["raw"] == 5
     assert out["day_index"] == 5
-    assert out["epoch_secs"] == (10 + 5) * 86400
+    assert out["epoch_secs"] == 864000 + 5 * 86400
 
-    assert store._decode_due(card_type=99, queue=7, due_raw=123, col_crt_sec=None) == {
+    assert store._decode_due(card_type=99, queue=7, due_raw=123, timing=None) == {
         "kind": "raw",
         "raw": 123,
         "queue": 7,
@@ -142,8 +144,7 @@ def test_revlog_row_to_item_maps_all_fields(tmp_path: Path) -> None:
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE revlog (
             id INTEGER PRIMARY KEY,
             cid INTEGER,
@@ -155,8 +156,7 @@ def test_revlog_row_to_item_maps_all_fields(tmp_path: Path) -> None:
             time INTEGER,
             type INTEGER
         )
-        """
-    )
+        """)
     conn.execute(
         """
         INSERT INTO revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type)

@@ -21,10 +21,19 @@ from anki_cli.db.anki_direct import (
     is_intraday_learn_due,
     queue_from_type_sql,
 )
+from anki_cli.db.timing import SchedTiming, sched_timing_today_v1
 from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
 
 CRT = 1_700_000_000  # 2023-11-14T22:13:20Z
-CRT_DAY = CRT // 86400
+
+
+def _timing_at(now_epoch: int) -> SchedTiming:
+    """v1 timing (no schedVer in these fixtures): days start at crt, not midnight."""
+    return sched_timing_today_v1(CRT, now_epoch)
+
+
+def _day_start(idx: int) -> int:
+    return CRT + idx * 86400
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
@@ -112,20 +121,21 @@ def test_queue_from_type_sql_matches_rslib_restore_queue_from_type(tmp_path: Pat
 def test_decode_due_distinguishes_intraday_and_day_learn(tmp_path: Path) -> None:
     store, _ = _make_store(tmp_path)
 
-    assert store._decode_due(card_type=1, queue=1, due_raw=1_700_000_600, col_crt_sec=CRT) == {
+    timing = _timing_at(CRT + 100 * 86400)
+    assert store._decode_due(card_type=1, queue=1, due_raw=1_700_000_600, timing=timing) == {
         "kind": "learn_epoch_secs",
         "raw": 1_700_000_600,
         "epoch_secs": 1_700_000_600,
     }
-    assert store._decode_due(card_type=1, queue=3, due_raw=CRT_DAY + 30, col_crt_sec=CRT) == {
+    assert store._decode_due(card_type=1, queue=3, due_raw=130, timing=timing) == {
         "kind": "learn_day_index",
-        "raw": CRT_DAY + 30,
-        "day_index": CRT_DAY + 30,
-        "epoch_secs": (CRT_DAY + CRT_DAY + 30) * 86400,
+        "raw": 130,
+        "day_index": 130,
+        "epoch_secs": _day_start(130),
     }
     # A suspended relearning card keeps its day-index due; the unit is decided
     # by the value, not the (negative) queue.
-    out = store._decode_due(card_type=3, queue=-1, due_raw=12, col_crt_sec=None)
+    out = store._decode_due(card_type=3, queue=-1, due_raw=12, timing=None)
     assert out == {"kind": "learn_day_index", "raw": 12, "day_index": 12}
 
 
@@ -138,9 +148,10 @@ def test_card_row_to_fsrs_day_learn_uses_day_index(tmp_path: Path) -> None:
     _insert_card(db_path, card_id=1, type_=1, queue=3, due=30)
     row = _card_row(db_path, 1)
 
-    card = store._card_row_to_fsrs(row, col_crt_sec=CRT, now_dt=datetime.now(UTC))
+    now = datetime.fromtimestamp(CRT + 100 * 86400, tz=UTC)
+    card = store._card_row_to_fsrs(row, timing=_timing_at(int(now.timestamp())), now_dt=now)
 
-    assert card.due == datetime.fromtimestamp((CRT_DAY + 30) * 86400, tz=UTC)
+    assert card.due == datetime.fromtimestamp(_day_start(30), tz=UTC)
     assert card.due.year >= 2023, "a day index must not be read as a 1970 epoch"
     # Day-learn is a queue, not relearning; relearning is type 3.
     assert card.state == State.Learning
@@ -151,7 +162,8 @@ def test_card_row_to_fsrs_relearning_is_a_property_of_type(tmp_path: Path) -> No
     _insert_card(db_path, card_id=1, type_=3, queue=1, due=1_700_000_600)
     row = _card_row(db_path, 1)
 
-    card = store._card_row_to_fsrs(row, col_crt_sec=CRT, now_dt=datetime.now(UTC))
+    now = datetime.fromtimestamp(CRT + 100 * 86400, tz=UTC)
+    card = store._card_row_to_fsrs(row, timing=_timing_at(int(now.timestamp())), now_dt=now)
 
     assert card.due == datetime.fromtimestamp(1_700_000_600, tz=UTC)
     assert card.state == State.Relearning
@@ -167,7 +179,7 @@ def test_map_fsrs_result_short_step_stays_intraday(tmp_path: Path) -> None:
     type_, queue, due, _ivl, _left, next_due_epoch = store._map_fsrs_result_to_anki(
         current_row=row,
         next_card=next_card,
-        col_crt_sec=CRT,
+        timing=_timing_at(int(now.timestamp())),
         learn_step_count=3,
         relearn_step_count=1,
         now_dt=now,
@@ -190,7 +202,7 @@ def test_map_fsrs_result_long_step_moves_to_day_learn(tmp_path: Path) -> None:
     type_, queue, due, _ivl, _left, next_due_epoch = store._map_fsrs_result_to_anki(
         current_row=row,
         next_card=next_card,
-        col_crt_sec=CRT,
+        timing=_timing_at(int(now.timestamp())),
         learn_step_count=3,
         relearn_step_count=2,
         now_dt=now,
@@ -217,15 +229,16 @@ def test_map_fsrs_result_day_learn_rounds_step_like_anki(
     store, db_path = _make_store(tmp_path)
     _insert_card(db_path, card_id=1, type_=1, queue=1, due=0)
     row = _card_row(db_path, 1)
-    # 01:00 UTC so that flooring the absolute epoch would disagree with rounding.
-    now = datetime.fromtimestamp(CRT_DAY * 86400 + 100 * 86400 + 3600, tz=UTC)
+    # One hour into scheduling day 100, so flooring an absolute epoch into days
+    # would disagree with rounding the step length.
+    now = datetime.fromtimestamp(_day_start(100) + 3600, tz=UTC)
     next_due = datetime.fromtimestamp(now.timestamp() + step_hours * 3600, tz=UTC)
     next_card = FSRSCard(card_id=1, state=State.Learning, step=1, due=next_due)
 
     _type, queue, due, _ivl, _left, _epoch = store._map_fsrs_result_to_anki(
         current_row=row,
         next_card=next_card,
-        col_crt_sec=CRT,
+        timing=_timing_at(int(now.timestamp())),
         learn_step_count=3,
         relearn_step_count=1,
         now_dt=now,
@@ -252,7 +265,7 @@ def test_map_fsrs_result_uses_the_review_instant_not_a_second_clock(tmp_path: Pa
     _type, queue, _due, _ivl, _left, _epoch = store._map_fsrs_result_to_anki(
         current_row=row,
         next_card=next_card,
-        col_crt_sec=CRT,
+        timing=_timing_at(int(review_dt.timestamp())),
         learn_step_count=3,
         relearn_step_count=1,
         now_dt=review_dt,
@@ -274,7 +287,7 @@ def test_get_next_due_for_deck_orders_by_absolute_time_across_units(tmp_path: Pa
 
     out = store._get_next_due_for_deck("Default")
 
-    assert out == {"queue": 3, "day_index": 2, "epoch_secs": (CRT_DAY + 2) * 86400}
+    assert out == {"queue": 3, "day_index": 2, "epoch_secs": _day_start(2)}
 
 
 def test_get_next_due_for_deck_review_does_not_beat_earlier_learn(tmp_path: Path) -> None:

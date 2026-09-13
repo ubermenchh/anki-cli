@@ -173,7 +173,7 @@ def test_answer_card_updates_card_and_writes_revlog_non_lapse(
     monkeypatch.setattr(
         store,
         "_card_row_to_fsrs",
-        lambda row, *, col_crt_sec, now_dt: SimpleNamespace(
+        lambda row, *, timing, now_dt: SimpleNamespace(
             state=direct_mod.State.Learning,
             step=0,
             stability=None,
@@ -265,7 +265,7 @@ def test_answer_card_lapse_increments_lapses_and_sets_relearn_type(
     monkeypatch.setattr(
         store,
         "_card_row_to_fsrs",
-        lambda row, *, col_crt_sec, now_dt: SimpleNamespace(
+        lambda row, *, timing, now_dt: SimpleNamespace(
             state=direct_mod.State.Learning,
             step=0,
             stability=None,
