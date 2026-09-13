@@ -43,12 +43,20 @@ def is_intraday_learn_due(due: int) -> bool:
     return due > LEARN_DUE_EPOCH_THRESHOLD
 
 
-def queue_from_type_sql(*, due_expr: str = "due") -> str:
+# A card parked in a filtered deck keeps its real due in ``odue`` while ``due``
+# holds a position; rslib's restore_queue_after_bury_or_suspend reads
+# ``original_due`` when it is set. Use this wherever the *scheduling* due of a
+# card is needed regardless of where it currently lives.
+RESTORED_DUE_SQL = "CASE WHEN odue > 0 THEN odue ELSE due END"
+
+
+def queue_from_type_sql(*, due_expr: str = RESTORED_DUE_SQL) -> str:
     """SQL CASE recomputing ``queue`` from ``type`` (rslib ``restore_queue_from_type``).
 
     Used when a card leaves the suspended/buried/filtered state. ``due_expr`` is
-    the expression holding the card's due value *after* the surrounding UPDATE,
-    which matters because SQLite evaluates SET clauses against the pre-update row.
+    the expression holding the card's scheduling due *after* the surrounding
+    UPDATE, which matters because SQLite evaluates SET clauses against the
+    pre-update row. The default reads ``odue`` for cards in a filtered deck.
     """
     return f"""CASE
                         WHEN type = 0 THEN 0
@@ -1244,6 +1252,7 @@ class AnkiDirectReadStore:
                     col_crt_sec=col_crt_sec,
                     learn_step_count=learn_count,
                     relearn_step_count=relearn_count,
+                    now_dt=review_dt,
                 )
 
                 out.append(
@@ -1717,7 +1726,7 @@ class AnkiDirectReadStore:
         placeholders = ", ".join(["?"] * len(filtered_deck_ids))
         # SQLite evaluates SET expressions against the pre-update row, so the
         # restored due value has to be spelled out again inside the queue CASE.
-        restored_due = "CASE WHEN odue > 0 THEN odue ELSE due END"
+        restored_due = RESTORED_DUE_SQL
         cursor = conn.execute(
             f"""
             UPDATE cards
@@ -2293,9 +2302,11 @@ class AnkiDirectReadStore:
                 col_crt_sec=col_crt_sec,
                 learn_step_count=learn_count,
                 relearn_step_count=relearn_count,
+                now_dt=review_dt,
             )
 
             now_sec = int(review_dt.timestamp())
+            today_days = max(0, int(now_sec // 86400) - int(col_crt_sec // 86400))
             reps = int(row["reps"]) + 1
             lapses = int(row["lapses"]) + (1 if ease == 1 else 0)
             raw_data = self._parse_card_data(str(row["data"] or ""))
@@ -2346,9 +2357,18 @@ class AnkiDirectReadStore:
             old_queue = int(row["queue"])
             old_ivl = int(row["ivl"])
 
-            logged_ivl = new_ivl if new_queue == 2 else -max(1, int(next_due_epoch - now_sec))
-            if old_queue in (1, 3):
+            # rslib as_revlog_interval: review/day-learn intervals are logged
+            # in positive days, intraday learning in negative seconds.
+            if new_queue == 2:
+                logged_ivl = new_ivl
+            elif new_queue == 3:
+                logged_ivl = max(1, int(new_due - today_days))
+            else:
+                logged_ivl = -max(1, int(next_due_epoch - now_sec))
+            if old_queue == 1:
                 logged_last_ivl = -max(1, int(old_due - now_sec))
+            elif old_queue == 3:
+                logged_last_ivl = max(1, int(old_due - today_days))
             elif old_queue == 2:
                 logged_last_ivl = max(1, old_ivl)
             else:
@@ -2889,23 +2909,31 @@ class AnkiDirectReadStore:
         col_crt_sec: int,
         learn_step_count: int,
         relearn_step_count: int,
+        now_dt: datetime,
     ) -> tuple[int, int, int, int, int, int]:
-        now_dt = datetime.now(UTC)
+        """Translate an FSRS result into Anki's ``(type, queue, due, ivl, left, due_epoch)``.
+
+        ``now_dt`` must be the same instant handed to the FSRS scheduler as
+        ``review_datetime`` so interval arithmetic is exact.
+        """
         next_due_dt = next_card.due if next_card.due is not None else now_dt
         next_due_epoch = int(next_due_dt.timestamp())
+        now_epoch = int(now_dt.timestamp())
+        crt_day = int(col_crt_sec // 86400)
+        today_days = max(0, int(now_epoch // 86400) - crt_day)
 
         if next_card.state == State.Review:
-            crt_day = int(col_crt_sec // 86400)
             due_days = max(0, int(next_due_epoch // 86400) - crt_day)
             ivl_days = max(1, round((next_due_dt - now_dt).total_seconds() / 86400.0))
             return (2, 2, due_days, ivl_days, 0, next_due_epoch)
 
         # Anki keeps learning steps shorter than a day in the intraday queue
-        # (epoch due) and moves longer steps to the day-learn queue (day index).
+        # (epoch due) and moves longer steps to the day-learn queue, whose due
+        # is today + round(step / 1 day) (rslib LearnState -> InDays).
         def learn_queue_and_due() -> tuple[int, int]:
-            if next_due_epoch - int(now_dt.timestamp()) >= 86400:
-                crt_day = int(col_crt_sec // 86400)
-                return (3, max(0, int(next_due_epoch // 86400) - crt_day))
+            delta = next_due_epoch - now_epoch
+            if delta >= 86400:
+                return (3, today_days + max(1, round(delta / 86400.0)))
             return (1, next_due_epoch)
 
         if next_card.state == State.Relearning:

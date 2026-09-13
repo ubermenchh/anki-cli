@@ -15,7 +15,6 @@ import pytest
 from fsrs import Card as FSRSCard
 from fsrs import State
 
-import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import (
     LEARN_DUE_EPOCH_THRESHOLD,
     AnkiDirectReadStore,
@@ -91,17 +90,20 @@ def test_is_intraday_learn_due_threshold(due: int, expected: bool) -> None:
 
 def test_queue_from_type_sql_matches_rslib_restore_queue_from_type(tmp_path: Path) -> None:
     conn = sqlite3.connect(":memory:")
-    sql = f"SELECT {queue_from_type_sql()} FROM (SELECT ? AS type, ? AS due)"
+    sql = f"SELECT {queue_from_type_sql()} FROM (SELECT ? AS type, ? AS due, ? AS odue)"
     cases = [
-        (0, 5, 0),  # new -> new
-        (2, 19_800, 2),  # review -> review
-        (1, 1_700_000_300, 1),  # learn, epoch due -> intraday
-        (1, 20_050, 3),  # learn, day index -> day-learn
-        (3, 1_700_000_300, 1),  # relearn, epoch due -> intraday
-        (3, 20_050, 3),  # relearn, day index -> day-learn
+        (0, 5, 0, 0),  # new -> new
+        (2, 19_800, 0, 2),  # review -> review
+        (1, 1_700_000_300, 0, 1),  # learn, epoch due -> intraday
+        (1, 20_050, 0, 3),  # learn, day index -> day-learn
+        (3, 1_700_000_300, 0, 1),  # relearn, epoch due -> intraday
+        (3, 20_050, 0, 3),  # relearn, day index -> day-learn
+        # In a filtered deck `due` is a position; the real value lives in odue.
+        (1, 3, 1_700_000_300, 1),
+        (3, 3, 20_050, 3),
     ]
-    for type_, due, expected in cases:
-        assert conn.execute(sql, (type_, due)).fetchone()[0] == expected, (type_, due)
+    for type_, due, odue, expected in cases:
+        assert conn.execute(sql, (type_, due, odue)).fetchone()[0] == expected, (type_, due, odue)
 
 
 # --- decode ------------------------------------------------------------------
@@ -155,20 +157,12 @@ def test_card_row_to_fsrs_relearning_is_a_property_of_type(tmp_path: Path) -> No
     assert card.state == State.Relearning
 
 
-def test_map_fsrs_result_short_step_stays_intraday(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_map_fsrs_result_short_step_stays_intraday(tmp_path: Path) -> None:
     store, db_path = _make_store(tmp_path)
     _insert_card(db_path, card_id=1, type_=0, queue=0, due=0)
     row = _card_row(db_path, 1)
     now = datetime.fromtimestamp(CRT + 100 * 86400, tz=UTC)
 
-    class _Now(datetime):
-        @classmethod
-        def now(cls, tz=None):  # type: ignore[override]
-            return now
-
-    monkeypatch.setattr(direct_mod, "datetime", _Now)
     next_card = FSRSCard(card_id=1, state=State.Learning, step=1, due=now.replace(minute=10))
     type_, queue, due, _ivl, _left, next_due_epoch = store._map_fsrs_result_to_anki(
         current_row=row,
@@ -176,6 +170,7 @@ def test_map_fsrs_result_short_step_stays_intraday(
         col_crt_sec=CRT,
         learn_step_count=3,
         relearn_step_count=1,
+        now_dt=now,
     )
 
     assert (type_, queue) == (1, 1)
@@ -183,21 +178,13 @@ def test_map_fsrs_result_short_step_stays_intraday(
     assert is_intraday_learn_due(due)
 
 
-def test_map_fsrs_result_long_step_moves_to_day_learn(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_map_fsrs_result_long_step_moves_to_day_learn(tmp_path: Path) -> None:
     """A learning step of >= 1 day becomes queue 3 with a day-index due (Anki v3)."""
     store, db_path = _make_store(tmp_path)
     _insert_card(db_path, card_id=1, type_=2, queue=2, due=0)
     row = _card_row(db_path, 1)
     now = datetime.fromtimestamp(CRT + 100 * 86400, tz=UTC)
 
-    class _Now(datetime):
-        @classmethod
-        def now(cls, tz=None):  # type: ignore[override]
-            return now
-
-    monkeypatch.setattr(direct_mod, "datetime", _Now)
     next_due = datetime.fromtimestamp(now.timestamp() + 3 * 86400, tz=UTC)
     next_card = FSRSCard(card_id=1, state=State.Relearning, step=0, due=next_due)
     type_, queue, due, _ivl, _left, next_due_epoch = store._map_fsrs_result_to_anki(
@@ -206,16 +193,72 @@ def test_map_fsrs_result_long_step_moves_to_day_learn(
         col_crt_sec=CRT,
         learn_step_count=3,
         relearn_step_count=2,
+        now_dt=now,
     )
 
     assert (type_, queue) == (3, 3)
-    assert due == CRT_DAY + 100 + 3 - CRT_DAY  # day index relative to crt
+    assert due == 100 + 3  # today (day 100 after crt) + 3 days
     assert not is_intraday_learn_due(due)
     assert next_due_epoch == int(next_due.timestamp())
     # Round-trips through the restore rule back to queue 3.
     conn = sqlite3.connect(":memory:")
-    sql = f"SELECT {queue_from_type_sql()} FROM (SELECT ? AS type, ? AS due)"
+    sql = f"SELECT {queue_from_type_sql(due_expr='due')} FROM (SELECT ? AS type, ? AS due)"
     assert conn.execute(sql, (type_, due)).fetchone()[0] == 3
+
+
+@pytest.mark.parametrize(
+    ("step_hours", "expected_days"),
+    [(24, 1), (36, 2), (47, 2), (60, 2), (61, 3)],
+)
+def test_map_fsrs_result_day_learn_rounds_step_like_anki(
+    tmp_path: Path, step_hours: int, expected_days: int
+) -> None:
+    """rslib converts InSecs(>= 1 day) to InDays(round(secs / 86400)) added to today."""
+    store, db_path = _make_store(tmp_path)
+    _insert_card(db_path, card_id=1, type_=1, queue=1, due=0)
+    row = _card_row(db_path, 1)
+    # 01:00 UTC so that flooring the absolute epoch would disagree with rounding.
+    now = datetime.fromtimestamp(CRT_DAY * 86400 + 100 * 86400 + 3600, tz=UTC)
+    next_due = datetime.fromtimestamp(now.timestamp() + step_hours * 3600, tz=UTC)
+    next_card = FSRSCard(card_id=1, state=State.Learning, step=1, due=next_due)
+
+    _type, queue, due, _ivl, _left, _epoch = store._map_fsrs_result_to_anki(
+        current_row=row,
+        next_card=next_card,
+        col_crt_sec=CRT,
+        learn_step_count=3,
+        relearn_step_count=1,
+        now_dt=now,
+    )
+
+    assert queue == 3
+    assert due == 100 + expected_days
+
+
+def test_map_fsrs_result_uses_the_review_instant_not_a_second_clock(tmp_path: Path) -> None:
+    """A 1-day step must be day-learn even if the wall clock ticked between FSRS
+    computing the due and us mapping it; hence now_dt is injected, not re-read."""
+    store, db_path = _make_store(tmp_path)
+    _insert_card(db_path, card_id=1, type_=1, queue=1, due=0)
+    row = _card_row(db_path, 1)
+    review_dt = datetime.fromtimestamp(CRT + 100 * 86400 + 0.999, tz=UTC)
+    next_card = FSRSCard(
+        card_id=1,
+        state=State.Learning,
+        step=2,
+        due=datetime.fromtimestamp(review_dt.timestamp() + 86400, tz=UTC),
+    )
+
+    _type, queue, _due, _ivl, _left, _epoch = store._map_fsrs_result_to_anki(
+        current_row=row,
+        next_card=next_card,
+        col_crt_sec=CRT,
+        learn_step_count=3,
+        relearn_step_count=1,
+        now_dt=review_dt,
+    )
+
+    assert queue == 3
 
 
 # --- next due for deck --------------------------------------------------------

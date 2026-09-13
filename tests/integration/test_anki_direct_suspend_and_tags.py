@@ -36,6 +36,7 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
             type INTEGER NOT NULL,
             queue INTEGER NOT NULL,
             due INTEGER NOT NULL DEFAULT 0,
+            odue INTEGER NOT NULL DEFAULT 0,
             mod INTEGER NOT NULL,
             usn INTEGER NOT NULL
         );
@@ -66,13 +67,14 @@ def _insert_card(
     card_type: int,
     queue: int,
     due: int = 0,
+    odue: int = 0,
     mod: int = 1,
     usn: int = 0,
 ) -> None:
     conn = sqlite3.connect(str(db_path))
     conn.execute(
-        "INSERT INTO cards (id, type, queue, due, mod, usn) VALUES (?, ?, ?, ?, ?, ?)",
-        (card_id, card_type, queue, due, mod, usn),
+        "INSERT INTO cards (id, type, queue, due, odue, mod, usn) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (card_id, card_type, queue, due, odue, mod, usn),
     )
     conn.commit()
     conn.close()
@@ -181,6 +183,22 @@ def test_unsuspend_cards_restores_queue_by_type(
     assert _card_row(db_path, 16)["queue"] == 3
     # due values are untouched by unsuspend.
     assert _card_row(db_path, 15)["due"] == 20_050
+
+
+def test_unsuspend_in_filtered_deck_reads_odue_for_the_learn_unit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """In a filtered deck `due` is a position; the scheduling due is in odue."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _insert_card(db_path, card_id=21, card_type=1, queue=-1, due=3, odue=1_700_000_300)
+    _insert_card(db_path, card_id=22, card_type=3, queue=-1, due=4, odue=20_050)
+
+    store.unsuspend_cards([21, 22])
+
+    assert _card_row(db_path, 21)["queue"] == 1  # epoch in odue -> intraday
+    assert _card_row(db_path, 22)["queue"] == 3  # day index in odue -> day-learn
 
 
 def test_suspend_and_unsuspend_return_noop_when_no_existing_ids(

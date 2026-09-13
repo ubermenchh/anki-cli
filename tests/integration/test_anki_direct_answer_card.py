@@ -18,8 +18,7 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
+    conn.executescript("""
         CREATE TABLE cards (
             id INTEGER PRIMARY KEY,
             nid INTEGER NOT NULL,
@@ -52,8 +51,7 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
             time INTEGER NOT NULL,
             type INTEGER NOT NULL
         );
-        """
-    )
+        """)
     conn.executescript(COL_TABLE_SQL)
     insert_col_row(conn, crt=0)
     conn.execute(
@@ -65,23 +63,23 @@ def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            100,   # id
+            100,  # id
             1000,  # nid
-            1,     # did
-            0,     # ord
-            111,   # mod
-            0,     # usn
-            2,     # type
-            2,     # queue
-            30,    # due
-            10,    # ivl
+            1,  # did
+            0,  # ord
+            111,  # mod
+            0,  # usn
+            2,  # type
+            2,  # queue
+            30,  # due
+            10,  # ivl
             2500,  # factor
-            20,    # reps
-            1,     # lapses
-            0,     # left
-            0,     # odue
-            0,     # odid
-            3,     # flags
+            20,  # reps
+            1,  # lapses
+            0,  # left
+            0,  # odue
+            0,  # odid
+            3,  # flags
             "{}",  # data
         ),
     )
@@ -299,3 +297,73 @@ def test_answer_card_lapse_increments_lapses_and_sets_relearn_type(
             "type": 2,  # relearn
         }
     ]
+
+
+def test_answer_card_day_learn_step_writes_day_index_and_positive_revlog_ivl(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A >= 1-day learning step lands in queue 3 with a day-index due, and the
+    revlog logs day-learn intervals in positive days (rslib as_revlog_interval)."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    monkeypatch.setattr(store, "_allocate_epoch_ms_id", lambda conn, table: 9003)
+
+    # Fixture col.crt is 0, so "today" is a large day index; pin the clock.
+    now_sec = 1_700_000_000
+    today = now_sec // 86400
+    monkeypatch.setattr(direct_mod.time, "time", lambda: now_sec)
+
+    class _Now(direct_mod.datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return direct_mod.datetime.fromtimestamp(now_sec, tz=direct_mod.UTC)
+
+    monkeypatch.setattr(direct_mod, "datetime", _Now)
+
+    # Card is already in day-learn: due tomorrow-ish (today + 1) -> lastIvl +1.
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "UPDATE cards SET type = 1, queue = 3, due = ?, left = 1001 WHERE id = 100",
+        (today + 1,),
+    )
+    conn.commit()
+    conn.close()
+
+    two_days_later = direct_mod.datetime.fromtimestamp(now_sec + 2 * 86400, tz=direct_mod.UTC)
+    monkeypatch.setattr(
+        store,
+        "_build_scheduler",
+        lambda conn, deck_id: (
+            type(
+                "FakeScheduler",
+                (),
+                {
+                    "review_card": lambda self, card, rating, review_datetime: (
+                        SimpleNamespace(
+                            state=direct_mod.State.Learning,
+                            step=1,
+                            due=two_days_later,
+                            stability=None,
+                            difficulty=None,
+                        ),
+                        None,
+                    )
+                },
+            )(),
+            0.9,
+            3,
+            1,
+        ),
+    )
+
+    result = store.answer_card(100, ease=3)
+
+    assert result["queue"] == 3
+    assert result["due"] == today + 2
+    row = _card_row(db_path, 100)
+    assert (row["type"], row["queue"], row["due"]) == (1, 3, today + 2)
+
+    (entry,) = _revlog_rows(db_path)
+    assert entry["ivl"] == 2  # positive days for day-learn
+    assert entry["lastIvl"] == 1  # previous due was today + 1

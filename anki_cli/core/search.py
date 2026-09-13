@@ -635,11 +635,13 @@ def _is_clause(
         return (f"{alias}.queue IN (-2, -3)", [])
 
     if value == "due":
+        # queue 1 (intraday learn) stores an epoch; queues 2 (review) and
+        # 3 (day-learn) store a day index relative to col.crt.
         return (
             "("
             f"{alias}.queue = 0 OR "
-            f"({alias}.queue IN (1, 3) AND {alias}.due <= ?) OR "
-            f"({alias}.queue = 2 AND {alias}.due <= ?)"
+            f"({alias}.queue = 1 AND {alias}.due <= ?) OR "
+            f"({alias}.queue IN (2, 3) AND {alias}.due <= ?)"
             ")",
             [now_sec, due_day_index],
         )

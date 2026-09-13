@@ -235,6 +235,20 @@ def test_bury_then_unbury_all_restores_queue_by_type(
     assert _card_row(db_path, 4)["queue"] == 1
 
 
+def test_unbury_in_filtered_deck_reads_odue_for_the_learn_unit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    # Buried learn card parked in a filtered deck: due=position, odue=epoch.
+    _insert_card(db_path, card_id=5, card_type=1, queue=-2, due=2, odue=1_700_000_300)
+
+    store.unbury_cards()
+
+    assert _card_row(db_path, 5)["queue"] == 1
+
+
 def test_unbury_deck_scope_includes_children(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
