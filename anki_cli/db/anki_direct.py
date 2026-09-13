@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 import betterproto
 from fsrs import Card as FSRSCard
 from fsrs import Rating, ReviewLog, Scheduler, State
+from fsrs.scheduler import LOWER_BOUNDS_PARAMETERS, UPPER_BOUNDS_PARAMETERS
 
 from anki_cli.core.search import compile_card_query, compile_note_query
 from anki_cli.db.timing import (
@@ -115,11 +116,29 @@ def upgrade_fsrs_parameters(values: list[float]) -> tuple[list[float], str]:
         return [*values, 0.0, FSRS5_DEFAULT_DECAY], "fsrs5-upgraded"
     if n == 17:
         w = list(values)
+        if w[5] * 3.0 + 1.0 <= 0.0:
+            # Corrupt blob; the log below would raise. Anki-optimized w5 >= 0.1.
+            return list(FSRS6_DEFAULT_PARAMETERS), "default"
         w[4] = w[5] * 2.0 + w[4]
         w[5] = math.log(w[5] * 3.0 + 1.0) / 3.0
         w[6] += 0.5
         return [*w, 0.0, 0.0, 0.0, FSRS5_DEFAULT_DECAY], "fsrs4.5-upgraded"
     return list(FSRS6_DEFAULT_PARAMETERS), "default"
+
+
+def clamp_fsrs_parameters(values: list[float]) -> tuple[list[float], bool]:
+    """Clamp 21 weights into py-fsrs's accepted range (fsrs-rs ``parameter_clipper``).
+
+    Anki schedules with upgraded legacy weights as-is; py-fsrs refuses anything
+    out of bounds, so clamping keeps the user's optimized weights instead of
+    throwing the whole set away. Returns the clamped list and whether anything
+    changed.
+    """
+    clamped = [
+        min(max(float(w), float(lo)), float(hi))
+        for w, lo, hi in zip(values, LOWER_BOUNDS_PARAMETERS, UPPER_BOUNDS_PARAMETERS, strict=True)
+    ]
+    return clamped, clamped != [float(w) for w in values]
 
 
 def fsrs_fuzz_seed(card_id: int, reps: int) -> int:
@@ -1329,7 +1348,8 @@ class AnkiDirectReadStore:
                 learn_step_count=learn_count,
                 relearn_step_count=relearn_count,
             )
-            base.last_review = self._last_review_time(conn, int(row["id"]))
+            if base.last_review is None:
+                base.last_review = self._last_review_time(conn, int(row["id"]))
 
             needs_seed = base.state in (State.Review, State.Relearning) and (
                 base.stability is None or base.difficulty is None or base.last_review is None
@@ -2420,7 +2440,8 @@ class AnkiDirectReadStore:
                 learn_step_count=learn_count,
                 relearn_step_count=relearn_count,
             )
-            fsrs_card.last_review = self._last_review_time(conn, int(row["id"]))
+            if fsrs_card.last_review is None:
+                fsrs_card.last_review = self._last_review_time(conn, int(row["id"]))
 
             needs_seed = fsrs_card.state in (State.Review, State.Relearning) and (
                 fsrs_card.stability is None
@@ -2500,7 +2521,9 @@ class AnkiDirectReadStore:
             data_obj.setdefault(
                 "pos", max(0, self._scheduling_due(row)) if int(row["type"]) == 0 else 0
             )
-            data_obj.pop("lrt", None)  # not an Anki CardData key; Anki would drop it
+            # rslib CardData.last_review_time ("lrt", seconds); Anki prefers it over
+            # the revlog when computing elapsed days.
+            data_obj["lrt"] = now_sec
             data_obj["dr"] = round(desired_retention, 2)
             if next_card.stability is not None:
                 data_obj["s"] = round(float(next_card.stability), 4)
@@ -3089,7 +3112,11 @@ class AnkiDirectReadStore:
         for candidate in (cfg.fsrs_params_6, cfg.fsrs_params_5, cfg.fsrs_params_4):
             values = [float(item) for item in candidate]
             if values:
-                return upgrade_fsrs_parameters(values)
+                params, source = upgrade_fsrs_parameters(values)
+                if source == "default":
+                    return params, source
+                params, changed = clamp_fsrs_parameters(params)
+                return params, f"{source}-clamped" if changed else source
         return list(FSRS6_DEFAULT_PARAMETERS), "default"
 
     @staticmethod
@@ -3166,9 +3193,16 @@ class AnkiDirectReadStore:
 
         stability = self._coerce_float_value(data.get("s"))
         difficulty = self._coerce_float_value(data.get("d"))
-        # last_review is filled in by the caller from the revlog; Anki's CardData
-        # has no such key, so anything we might cache there would be dropped.
+
+        # rslib CardData.last_review_time ("lrt"); callers fall back to the
+        # revlog when it is absent (cards last answered by an older Anki).
         last_review: datetime | None = None
+        lrt_value = self._coerce_int_value(data.get("lrt"))
+        if lrt_value is not None:
+            try:
+                last_review = datetime.fromtimestamp(lrt_value, tz=UTC)
+            except (TypeError, ValueError, OSError, OverflowError):
+                last_review = None
 
         card_type = int(row["type"])
         queue = int(row["queue"])

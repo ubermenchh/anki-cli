@@ -26,6 +26,7 @@ from anki_cli.db.anki_direct import (
     REVLOG_KIND_RELEARNING,
     REVLOG_KIND_REVIEW,
     AnkiDirectReadStore,
+    clamp_fsrs_parameters,
     fsrs_fuzz_seed,
     upgrade_fsrs_parameters,
 )
@@ -195,6 +196,38 @@ def test_upgrade_fsrs_parameters_matches_fsrs_rs_transforms() -> None:
     assert upgrade_fsrs_parameters([0.1] * 23)[1] == "default"
 
 
+def test_clamp_keeps_optimized_weights_instead_of_discarding_them() -> None:
+    from fsrs.scheduler import LOWER_BOUNDS_PARAMETERS, UPPER_BOUNDS_PARAMETERS
+
+    inside = list(FSRS6_DEFAULT_PARAMETERS)
+    assert clamp_fsrs_parameters(inside) == (inside, False)
+
+    over = list(FSRS6_DEFAULT_PARAMETERS)
+    over[4] = UPPER_BOUNDS_PARAMETERS[4] + 0.5  # e.g. an upgraded FSRS-4.5 w4 = 2*w5 + w4
+    over[7] = LOWER_BOUNDS_PARAMETERS[7] - 1.0
+    clamped, changed = clamp_fsrs_parameters(over)
+    assert changed is True
+    assert clamped[4] == UPPER_BOUNDS_PARAMETERS[4]
+    assert clamped[7] == LOWER_BOUNDS_PARAMETERS[7]
+    assert clamped[:4] == over[:4]
+    Scheduler(parameters=clamped)  # accepted by py-fsrs
+
+
+def test_upgraded_out_of_bounds_weights_are_clamped_not_defaulted(
+    clock: datetime, tmp_path: Path
+) -> None:
+    """FSRS-4.5 set whose upgraded w4 = 2*w5 + w4 exceeds py-fsrs's bound of 10:
+    Anki schedules with it as-is; we clamp rather than throw the set away."""
+    four = [0.4, 0.9, 2.3, 10.9, 7.5, 1.5, 1.0, 0.01, 1.5, 0.1, 1.0, 1.9, 0.1, 0.3, 2.3, 0.2, 2.9]
+    cfg = DeckConfigConfig(learn_steps=[1.0], relearn_steps=[10.0], fsrs_params_4=four)
+    store, db_path = _make_store(tmp_path, deck_config=cfg)
+    _insert_card(db_path, id=1, type=0, queue=0, due=1)
+
+    result = store.answer_card(1, ease=3)
+
+    assert result["fsrs_params"] == "fsrs4.5-upgraded-clamped"
+
+
 def test_fsrs5_deck_config_no_longer_crashes_answer(clock: datetime, tmp_path: Path) -> None:
     """Collections last optimized on Anki 24.06-24.10 carry fsrs_params_5 only."""
     fsrs5 = [
@@ -229,14 +262,19 @@ def test_fsrs5_deck_config_no_longer_crashes_answer(clock: datetime, tmp_path: P
     assert result["fsrs_params"] == "fsrs5-upgraded"
 
 
-def test_out_of_bounds_weights_fall_back_to_defaults(clock: datetime, tmp_path: Path) -> None:
-    cfg = DeckConfigConfig(learn_steps=[1.0], relearn_steps=[10.0], fsrs_params_6=[0.5] * 21)
+def test_unusable_weight_sets_fall_back_to_defaults(clock: datetime, tmp_path: Path) -> None:
+    # 23 weights: neither FSRS-4.5, 5 nor 6 -> defaults.
+    cfg = DeckConfigConfig(learn_steps=[1.0], relearn_steps=[10.0], fsrs_params_6=[0.5] * 23)
     store, db_path = _make_store(tmp_path, deck_config=cfg)
     _insert_card(db_path, id=1, type=0, queue=0, due=1)
 
     result = store.answer_card(1, ease=3)
 
     assert result["fsrs_params"] == "default"
+    # A corrupt FSRS-4.5 blob whose w5 makes the upgrade log undefined also defaults.
+    bad = [1.0] * 17
+    bad[5] = -1.0
+    assert upgrade_fsrs_parameters(bad)[1] == "default"
 
 
 # --- 3. deterministic fuzz ------------------------------------------------------
@@ -351,7 +389,8 @@ def test_last_review_time_reads_latest_real_review(tmp_path: Path) -> None:
         assert store._last_review_time(conn, 3) is None
 
 
-def test_answer_does_not_write_lrt_and_removes_a_stale_one(clock: datetime, tmp_path: Path) -> None:
+def test_answer_writes_lrt_like_anki_and_keeps_custom_data(clock: datetime, tmp_path: Path) -> None:
+    """rslib CardData.last_review_time is serialized as "lrt" (seconds)."""
     store, db_path = _make_store(tmp_path)
     _insert_card(
         db_path,
@@ -364,14 +403,35 @@ def test_answer_does_not_write_lrt_and_removes_a_stale_one(clock: datetime, tmp_
         factor=2500,
         data=json.dumps({"s": 10.0, "d": 5.0, "lrt": 123, "cd": "keep"}),
     )
-    _insert_revlog(db_path, rid=(NOW - 10 * 86400) * 1000, cid=1, ease=3, type_=1)
 
     store.answer_card(1, ease=3)
 
     data = json.loads(_row(db_path, 1)["data"])
-    assert "lrt" not in data
+    assert data["lrt"] == NOW
     assert data["cd"] == "keep"  # unrelated custom data preserved
-    assert set(data) <= {"pos", "s", "d", "dr", "cd"}  # only Anki CardData keys
+    assert set(data) <= {"pos", "s", "d", "dr", "lrt", "cd"}  # only Anki CardData keys
+
+
+def test_lrt_is_preferred_over_the_revlog_for_last_review(tmp_path: Path) -> None:
+    """Anki prefers card.last_review_time; the revlog is the fallback for cards
+    last answered by a version that predates the key."""
+    store, db_path = _make_store(tmp_path)
+    timing = sched_timing_today_v1(CRT, NOW)
+    now = datetime.fromtimestamp(NOW, tz=UTC)
+    _insert_card(
+        db_path, id=1, type=2, queue=2, due=100, ivl=10, data=json.dumps({"lrt": NOW - 5 * 86400})
+    )
+    _insert_card(db_path, id=2, type=2, queue=2, due=100, ivl=10, data="{}")
+    _insert_revlog(db_path, rid=(NOW - 21 * 86400) * 1000, cid=1, ease=3, type_=1)
+    _insert_revlog(db_path, rid=(NOW - 20 * 86400) * 1000, cid=2, ease=3, type_=1)
+
+    with_lrt = store._card_row_to_fsrs(_row(db_path, 1), timing=timing, now_dt=now)
+    without = store._card_row_to_fsrs(_row(db_path, 2), timing=timing, now_dt=now)
+
+    assert with_lrt.last_review == datetime.fromtimestamp(NOW - 5 * 86400, tz=UTC)
+    assert without.last_review is None  # caller then consults the revlog
+    with store._connect() as conn:
+        assert store._last_review_time(conn, 2) == datetime.fromtimestamp(NOW - 20 * 86400, tz=UTC)
 
 
 def test_stored_memory_state_is_used_when_revlog_supplies_last_review(

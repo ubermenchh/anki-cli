@@ -217,7 +217,7 @@ def test_answer_card_updates_card_and_writes_revlog_non_lapse(
     assert data["dr"] == 0.9
     assert data["s"] == 3.2
     assert data["d"] == 6.7
-    assert "lrt" not in data  # not an Anki CardData key; Anki would drop it
+    assert data["lrt"] == row["mod"]  # rslib CardData.last_review_time, seconds
 
     revlog = _revlog_rows(db_path)
     assert revlog == [
