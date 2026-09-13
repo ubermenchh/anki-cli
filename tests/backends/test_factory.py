@@ -40,6 +40,21 @@ def test_create_backend_direct_missing_file_maps_to_factory_error(tmp_path: Path
         create_backend_from_context({"backend": "direct", "collection_path": missing})
 
 
+def test_create_backend_direct_legacy_schema_maps_to_factory_error(tmp_path: Path) -> None:
+    """Regression for #24: a schema-11 collection is refused with a clear message."""
+    import sqlite3
+
+    db = tmp_path / "collection.anki2"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE col (id INTEGER PRIMARY KEY, crt INTEGER, ver INTEGER)")
+    conn.execute("INSERT INTO col (id, crt, ver) VALUES (1, 0, 11)")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(BackendFactoryError, match="Unsupported collection schema 11.*2.1.50"):
+        create_backend_from_context({"backend": "direct", "collection_path": db})
+
+
 def test_create_backend_direct_success(tmp_path: Path) -> None:
     db = tmp_path / "collection.db"
     db.touch()

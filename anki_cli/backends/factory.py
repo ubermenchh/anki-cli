@@ -8,6 +8,7 @@ from typing import Any
 from anki_cli.backends.ankiconnect import AnkiConnectBackend, AnkiConnectError
 from anki_cli.backends.direct import DirectBackend
 from anki_cli.backends.protocol import AnkiBackend
+from anki_cli.db.anki_direct import UnsupportedCollectionError
 from anki_cli.models.config import AppConfig
 
 
@@ -46,7 +47,7 @@ def create_backend_from_context(obj: dict[str, Any]) -> AnkiBackend:
             raise BackendFactoryError("Direct backend requires a collection path.")
         try:
             return DirectBackend(collection_path)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, UnsupportedCollectionError) as exc:
             raise BackendFactoryError(str(exc)) from exc
 
     if backend_name == "standalone":

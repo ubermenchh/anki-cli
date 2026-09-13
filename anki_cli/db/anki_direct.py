@@ -76,6 +76,17 @@ def queue_from_type_sql(*, due_expr: str = RESTORED_DUE_SQL) -> str:
                     END"""
 
 
+# Lowest collection schema this module understands: separate decks / notetypes /
+# fields / templates / deck_config tables holding protobuf blobs. Anki upgrades a
+# profile to it on first open with 2.1.50+ (2022); older files (schema 11) keep
+# everything as JSON inside the col table and have none of those tables.
+MIN_SUPPORTED_SCHEMA_VERSION = 18
+
+
+class UnsupportedCollectionError(RuntimeError):
+    """The collection file is real but its schema is older than we can read or write."""
+
+
 class AnkiDirectReadStore:
     """Helpers for Anki's collection(.anki21b/.anki2) schema."""
 
@@ -84,6 +95,34 @@ class AnkiDirectReadStore:
         if not resolved.exists():
             raise FileNotFoundError(f"Direct DB not found: {resolved}")
         self.db_path = resolved
+        self._check_schema_version()
+
+    def _check_schema_version(self) -> None:
+        """Refuse legacy collections up front instead of failing mid-command.
+
+        Only the schema version is inspected; a file without a readable
+        ``col.ver`` (a non-Anki SQLite file, or a stripped-down test fixture)
+        is left for later queries to reject on their own terms.
+        """
+        try:
+            conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=1.0)
+        except sqlite3.Error:
+            return
+        try:
+            row = conn.execute("SELECT ver FROM col LIMIT 1").fetchone()
+        except sqlite3.Error:
+            return
+        finally:
+            conn.close()
+        if row is None or row[0] is None:
+            return
+        ver = int(row[0])
+        if ver < MIN_SUPPORTED_SCHEMA_VERSION:
+            raise UnsupportedCollectionError(
+                f"Unsupported collection schema {ver} at {self.db_path} "
+                f"(need >= {MIN_SUPPORTED_SCHEMA_VERSION}). Open the profile once in "
+                "Anki 2.1.50 or newer to upgrade it, then retry."
+            )
 
     @staticmethod
     def _unicase_collation(left: str | None, right: str | None) -> int:
