@@ -74,7 +74,15 @@ _NOTE_ADD = click.Command(
 _CONFIG_SET = click.Command(
     "config:set", params=[click.Option(["--key"]), click.Option(["--value"])]
 )
-_COMMANDS = {c.name: c for c in (_CARDS_IDS, _NOTE_ADD, _CONFIG_SET)}
+_EXOTIC = click.Command(
+    "exotic",
+    params=[
+        click.Option(["-v", "--verbose"], count=True),
+        click.Option(["-q", "--query"]),
+        click.Option(["--range"], nargs=2),
+    ],
+)
+_COMMANDS = {c.name: c for c in (_CARDS_IDS, _NOTE_ADD, _CONFIG_SET, _EXOTIC)}
 
 
 def _resolve(name: str):
@@ -88,11 +96,37 @@ def _pp(argv: list[str]) -> list[str]:
     )
 
 
-def test_option_arity_distinguishes_flags_from_valued_options() -> None:
+def test_option_arity_counts_tokens_consumed() -> None:
     arity = option_arity(_NOTE_ADD)
-    assert arity == {"--deck": True, "--notetype": True, "--allow-duplicate": False}
-    assert option_arity(_CARDS_IDS) == {"--query": True, "-q": True}
+    assert arity == {
+        "-h": 0,
+        "--help": 0,
+        "--deck": 1,
+        "--notetype": 1,
+        "--allow-duplicate": 0,
+    }
+    assert option_arity(_CARDS_IDS) == {"-h": 0, "--help": 0, "--query": 1, "-q": 1}
     assert option_arity(None) == {}
+
+    exotic = click.Command(
+        "x",
+        params=[
+            click.Option(["-v", "--verbose"], count=True),  # Click consumes nothing
+            click.Option(["--range"], nargs=2),
+            click.Option(["--on/--off"]),
+            click.Option(["--field"], multiple=True),
+        ],
+    )
+    assert option_arity(exotic) == {
+        "-h": 0,
+        "--help": 0,
+        "-v": 0,
+        "--verbose": 0,
+        "--range": 2,
+        "--on": 0,
+        "--off": 0,
+        "--field": 1,
+    }
 
 
 @pytest.mark.parametrize(
@@ -139,6 +173,12 @@ def test_option_arity_distinguishes_flags_from_valued_options() -> None:
         (["note:add", "--typo", "Front=Q"], ["note:add", "--typo", "Front=Q"]),
         # Unknown command: nothing after it can be resolved; legacy behaviour.
         (["nope", "a=b"], ["nope", "--a", "b"]),
+        # count / nargs=2 / short-attached / flag-cluster follow Click's consumption.
+        (["exotic", "-v", "Front=Q"], ["exotic", "-v", "--Front", "Q"]),
+        (["exotic", "--range", "1", "a=b", "c=d"], ["exotic", "--range", "1", "a=b", "--c", "d"]),
+        (["exotic", "-qdeck:x", "Front=Q"], ["exotic", "-qdeck:x", "--Front", "Q"]),
+        (["exotic", "-vq", "prop:x=1", "Front=Q"], ["exotic", "-vq", "prop:x=1", "--Front", "Q"]),
+        (["exotic", "-h", "Front=Q"], ["exotic", "-h", "--Front", "Q"]),
         # Bare '-' is a positional, not an option.
         (["note:add", "-", "Front=Q"], ["note:add", "-", "--Front", "Q"]),
         # '--' terminates processing.
