@@ -288,6 +288,7 @@ def test_update_note_updates_fields_tags_and_checksum(
         "note_id": 1001,
         "updated_fields": True,
         "updated_tags": True,
+        "generated_cards": [],
     }
 
     note = _note_row(db_path, 1001)
@@ -498,3 +499,76 @@ def test_add_note_conditional_front_and_special_fields(
 
     assert _card_ords(db_path, no_tags) == [0, 3]
     assert _card_ords(db_path, tagged) == [0, 1, 2, 3]
+
+
+def test_update_note_generates_cards_whose_template_now_renders(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """rslib generate_cards_for_existing_note: filling Back later must create the
+    reverse card that add_note correctly withheld."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _install_templates(db_path, 10, ["{{Front}}", "{{Back}}"])
+    nid = store.add_note(
+        deck="Other",
+        notetype="Basic",
+        fields={"Front": "Q", "Back": ""},
+        tags=[],
+        allow_duplicate=True,
+    )
+    assert _card_ords(db_path, nid) == [0]
+
+    result = store.update_note(note_id=nid, fields={"Back": "A"}, tags=None)
+
+    assert result["generated_cards"] == [1]
+    cards = _cards_for_note(db_path, nid)
+    assert sorted(int(c["ord"]) for c in cards) == [0, 1]
+    # New card lands in the deck of the note's existing cards, as a new card.
+    new = next(c for c in cards if int(c["ord"]) == 1)
+    assert (new["did"], new["type"], new["queue"]) == (2, 0, 0)
+
+
+def test_update_note_never_removes_cards_and_reports_none_when_nothing_new(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Emptying a field does not delete its card (Anki leaves that to Empty Cards)."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _install_templates(db_path, 10, ["{{Front}}", "{{Back}}"])
+    nid = store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Front": "Q", "Back": "A"},
+        tags=[],
+        allow_duplicate=True,
+    )
+
+    result = store.update_note(note_id=nid, fields={"Back": ""}, tags=None)
+
+    assert result["generated_cards"] == []
+    assert _card_ords(db_path, nid) == [0, 1]
+
+
+def test_update_note_tags_can_unlock_a_tags_template(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _install_templates(db_path, 10, ["{{Front}}", "{{Tags}}"])
+    # Whitespace-only tags normalize to none: no Tags card yet.
+    nid = store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Front": "Q", "Back": ""},
+        tags=[" "],
+        allow_duplicate=True,
+    )
+    assert _card_ords(db_path, nid) == [0]
+
+    result = store.update_note(note_id=nid, fields=None, tags=["t"])
+
+    assert result["generated_cards"] == [1]
+    assert _card_ords(db_path, nid) == [0, 1]

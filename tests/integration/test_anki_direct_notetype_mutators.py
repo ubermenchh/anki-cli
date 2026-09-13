@@ -617,12 +617,16 @@ def test_remove_notetype_field_shifts_sort_idx_and_requirement_ords(
     after = NotetypeConfig().parse(bytes(_notetype_row_by_id(db_path, ntid)["config"]))
     # Sort field "C" moved from ord 2 to ord 1.
     assert int(after.sort_field_idx) == 1
-    # reqs are recomputed from the templates (as Anki does on save), not
-    # renumbered: Card 1's front {{A}} -> ANY [0]; Card 2's front {{B}} now
-    # references a field that no longer exists -> NONE.
-    assert [list(req.field_ords) for req in after.reqs] == [[0], []]
-    assert after.reqs[0].kind == NotetypeConfigCardRequirementKind.KIND_ANY
-    assert after.reqs[1].kind == NotetypeConfigCardRequirementKind.KIND_NONE
+    # Anki rewrites the templates first: Card 2's front {{B}} loses its only
+    # field and gets the first remaining field appended ({{A}}); its back
+    # {{C}} is untouched. reqs are then recomputed from the result.
+    templates = _templates_for_ntid(db_path, ntid)
+    card2 = NotetypeTemplateConfig().parse(bytes(templates[1]["config"]))
+    assert card2.q_format == "{{A}}"
+    assert card2.a_format == "{{C}}"
+    assert int(templates[1]["usn"]) == -1
+    assert [list(req.field_ords) for req in after.reqs] == [[0], [0]]
+    assert all(req.kind == NotetypeConfigCardRequirementKind.KIND_ANY for req in after.reqs)
 
     note = _note_row(db_path, 100)
     assert note["flds"] == "a\x1fc\x1fd"

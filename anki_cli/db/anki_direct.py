@@ -19,9 +19,12 @@ from fsrs.scheduler import LOWER_BOUNDS_PARAMETERS, UPPER_BOUNDS_PARAMETERS
 
 from anki_cli.core.search import compile_card_query, compile_note_query
 from anki_cli.core.template import (
+    _CLOZE_RE,
     SPECIAL_FIELDS,
+    TemplateParseError,
     field_is_empty,
     parse_template,
+    remove_field_from_template,
     template_renders_with_fields,
     template_requirements,
 )
@@ -678,8 +681,18 @@ class AnkiDirectReadStore:
                 "UPDATE notetypes SET mtime_secs = ?, usn = -1, config = ? WHERE id = ?",
                 (now_sec, bytes(config), ntid),
             )
-            # Anki recomputes the legacy reqs cache from the templates on save
-            # rather than renumbering the old entries.
+            # Anki drops references to the removed field from every template
+            # (falling back to the first remaining field if a front would be
+            # left empty), then recomputes the legacy reqs cache from the result.
+            remaining_names = [str(f["name"]) for f in fields if int(f["ord"]) != removed_ord]
+            self._remove_field_from_templates(
+                conn,
+                ntid=ntid,
+                removed_name=stored_field_name,
+                first_remaining_field=remaining_names[0],
+                is_cloze=int(config.kind) == 1,
+                now_sec=now_sec,
+            )
             self._recompute_reqs(conn, ntid)
             self._mark_schema_modified(conn)
 
@@ -2084,29 +2097,94 @@ class AnkiDirectReadStore:
                 ordered_values,
                 is_cloze,
                 field_names=field_names,
-                has_tags=bool(tags),
+                has_tags=bool(tag_text.strip()),
+                ensure_not_empty=True,
             )
-            next_due = self._next_new_due(conn)
-            for offset, ord_value in enumerate(template_ords):
-                conn.execute(
-                    """
-                    INSERT INTO cards (
-                        id, nid, did, ord, mod, usn, type, queue, due, ivl, factor, reps,
-                        lapses, left, odue, odid, flags, data
-                    )
-                    VALUES (?, ?, ?, ?, ?, -1, 0, 0, ?, 0, 0, 0, 0, 0, 0, 0, 0, '{}')
-                    """,
-                    (
-                        self._allocate_row_id(conn, "cards"),
-                        note_id,
-                        deck_id,
-                        ord_value,
-                        now_sec,
-                        next_due + offset,
-                    ),
-                )
+            self._insert_new_cards(
+                conn, note_id=note_id, deck_id=deck_id, ords=template_ords, now_sec=now_sec
+            )
 
             return note_id
+
+    def _insert_new_cards(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        note_id: int,
+        deck_id: int,
+        ords: list[int],
+        now_sec: int,
+    ) -> None:
+        if not ords:
+            return
+        next_due = self._next_new_due(conn)
+        for offset, ord_value in enumerate(ords):
+            conn.execute(
+                """
+                INSERT INTO cards (
+                    id, nid, did, ord, mod, usn, type, queue, due, ivl, factor, reps,
+                    lapses, left, odue, odid, flags, data
+                )
+                VALUES (?, ?, ?, ?, ?, -1, 0, 0, ?, 0, 0, 0, 0, 0, 0, 0, 0, '{}')
+                """,
+                (
+                    self._allocate_row_id(conn, "cards"),
+                    note_id,
+                    deck_id,
+                    ord_value,
+                    now_sec,
+                    next_due + offset,
+                ),
+            )
+
+    def _generate_missing_cards(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        note_id: int,
+        notetype_id: int,
+        field_values: list[str],
+        field_names: list[str],
+        has_tags: bool,
+        now_sec: int,
+    ) -> list[int]:
+        """Cards a template now renders for but the note lacks (rslib
+        ``generate_cards_for_existing_note``). Existing cards are never removed;
+        Anki leaves that to Empty Cards. New cards go to the deck of the note's
+        existing cards (home deck if one is on loan)."""
+        existing_rows = conn.execute(
+            "SELECT ord, did, odid FROM cards WHERE nid = ? ORDER BY ord", (note_id,)
+        ).fetchall()
+        existing = {int(r["ord"]) for r in existing_rows}
+        nt_row = conn.execute(
+            "SELECT config FROM notetypes WHERE id = ?", (notetype_id,)
+        ).fetchone()
+        is_cloze = False
+        if nt_row is not None:
+            is_cloze = int(
+                self._decode_notetype_config(bytes(nt_row["config"] or b""), ntid=notetype_id).kind
+            ) == 1
+        wanted = self._template_ords_for_note(
+            conn,
+            notetype_id,
+            field_values,
+            is_cloze,
+            field_names=field_names,
+            has_tags=has_tags,
+            ensure_not_empty=False,
+        )
+        missing = sorted(set(wanted) - existing)
+        if not missing:
+            return []
+        if existing_rows:
+            first = existing_rows[0]
+            deck_id = int(first["odid"]) if int(first["odid"]) != 0 else int(first["did"])
+        else:
+            deck_id = 1
+        self._insert_new_cards(
+            conn, note_id=note_id, deck_id=deck_id, ords=missing, now_sec=now_sec
+        )
+        return missing
 
     def add_notes(self, notes: list[dict[str, JSONValue]]) -> list[int | None]:
         output: list[int | None] = []
@@ -2185,17 +2263,32 @@ class AnkiDirectReadStore:
                 )
                 updated_fields = True
 
+            tag_text = str(row["tags"] or "")
             if tags is not None:
+                tag_text = self._format_tags(tags)
                 conn.execute(
                     "UPDATE notes SET tags = ?, mod = ?, usn = -1 WHERE id = ?",
-                    (self._format_tags(tags), now_sec, note_id),
+                    (tag_text, now_sec, note_id),
                 )
                 updated_tags = True
+
+            generated_cards: list[int] = []
+            if updated_fields or updated_tags:
+                generated_cards = self._generate_missing_cards(
+                    conn,
+                    note_id=note_id,
+                    notetype_id=notetype_id,
+                    field_values=current_values,
+                    field_names=field_names,
+                    has_tags=bool(tag_text.strip()),
+                    now_sec=now_sec,
+                )
 
         return {
             "note_id": note_id,
             "updated_fields": updated_fields,
             "updated_tags": updated_tags,
+            "generated_cards": generated_cards,
         }
 
     def delete_notes(self, note_ids: list[int]) -> dict[str, JSONValue]:
@@ -2932,22 +3025,25 @@ class AnkiDirectReadStore:
         *,
         field_names: list[str] | None = None,
         has_tags: bool = False,
+        ensure_not_empty: bool = True,
     ) -> list[int]:
-        """Which cards a new note gets (rslib ``CardGenContext::new_cards_required``).
+        """Which cards a note should have (rslib ``CardGenContext::new_cards_required``).
 
         Normal notetypes: a template yields a card only if its front renders
         non-empty given the note's non-empty fields (plus Anki's special fields).
-        If nothing would render, the first template is used anyway, as Anki does
-        for new notes (``ensure_not_empty``). The legacy ``reqs`` cache is not
-        consulted for this, matching modern Anki.
+        A template that fails to parse never renders, as in Anki. With
+        ``ensure_not_empty`` (new notes) the first template is used when nothing
+        would render. The legacy ``reqs`` cache is not consulted, matching modern
+        Anki.
         """
         if is_cloze:
-            import re
-
             text = "\n".join(field_values)
-            matches = {int(m.group(1)) for m in re.finditer(r"\{\{c(\d+)::", text)}
+            # rslib parses the cloze number as u16; anything larger is not a cloze.
+            matches = {
+                int(m.group(1)) for m in _CLOZE_RE.finditer(text) if int(m.group(1)) <= 0xFFFF
+            }
             if not matches:
-                return [0]
+                return [0] if ensure_not_empty else []
             return sorted({min(499, max(0, idx - 1)) for idx in matches})
 
         rows = conn.execute(
@@ -2955,7 +3051,7 @@ class AnkiDirectReadStore:
             (mid,),
         ).fetchall()
         if not rows:
-            return [0]
+            return [0] if ensure_not_empty else []
 
         names = field_names if field_names is not None else self._field_schema_for_mid(conn, mid)[0]
         nonempty = {
@@ -2974,9 +3070,64 @@ class AnkiDirectReadStore:
         for row in rows:
             ord_ = int(row["ord"])
             cfg = self._decode_template_config(bytes(row["config"] or b""), ntid=mid, ord_=ord_)
-            if template_renders_with_fields(parse_template(cfg.q_format), nonempty):
+            try:
+                nodes = parse_template(cfg.q_format)
+            except TemplateParseError:
+                continue
+            if template_renders_with_fields(nodes, nonempty):
                 ords.append(ord_)
-        return ords if ords else [int(rows[0]["ord"])]
+        if not ords and ensure_not_empty:
+            return [int(rows[0]["ord"])]
+        return ords
+
+    def _remove_field_from_templates(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        ntid: int,
+        removed_name: str,
+        first_remaining_field: str,
+        is_cloze: bool,
+        now_sec: int,
+    ) -> int:
+        """rslib ``update_templates_for_renamed_and_removed_fields`` (removal case)."""
+        rows = conn.execute(
+            "SELECT ord, config FROM templates WHERE ntid = ? ORDER BY ord", (ntid,)
+        ).fetchall()
+        changed = 0
+        for row in rows:
+            ord_ = int(row["ord"])
+            tcfg = self._decode_template_config(bytes(row["config"] or b""), ntid=ntid, ord_=ord_)
+            before = bytes(tcfg)
+            for attr, question_side in (
+                ("q_format", True),
+                ("a_format", False),
+                ("q_format_browser", True),
+                ("a_format_browser", False),
+            ):
+                text = getattr(tcfg, attr, "") or ""
+                if not text:
+                    continue
+                setattr(
+                    tcfg,
+                    attr,
+                    remove_field_from_template(
+                        text,
+                        {removed_name},
+                        first_remaining_field=first_remaining_field,
+                        is_cloze=is_cloze,
+                        question_side=question_side,
+                    ),
+                )
+            after = bytes(tcfg)
+            if after != before:
+                conn.execute(
+                    "UPDATE templates SET config = ?, mtime_secs = ?, usn = -1 "
+                    "WHERE ntid = ? AND ord = ?",
+                    (after, now_sec, ntid, ord_),
+                )
+                changed += 1
+        return changed
 
     def _recompute_reqs(self, conn: sqlite3.Connection, ntid: int) -> None:
         """Rewrite the legacy ``reqs`` cache from the templates (rslib
@@ -3000,7 +3151,10 @@ class AnkiDirectReadStore:
         for row in rows:
             ord_ = int(row["ord"])
             tcfg = self._decode_template_config(bytes(row["config"] or b""), ntid=ntid, ord_=ord_)
-            kind, ords = template_requirements(parse_template(tcfg.q_format), field_names)
+            try:
+                kind, ords = template_requirements(parse_template(tcfg.q_format), field_names)
+            except TemplateParseError:
+                kind, ords = "none", []
             reqs.append(
                 NotetypeConfigCardRequirement(card_ord=ord_, kind=kinds[kind], field_ords=ords)
             )
