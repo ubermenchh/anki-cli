@@ -104,11 +104,16 @@ class AnkiDirectReadStore:
         ``col.ver`` (a non-Anki SQLite file, or a stripped-down test fixture)
         is left for later queries to reject on their own terms.
         """
+        # Plain path + query_only rather than a file: URI: SQLite's URI parser
+        # treats '#' and '?' in the path as delimiters, so a profile named
+        # "Deck#1" would silently open (and create) a different file. The file
+        # is known to exist, so the default rwc open cannot create anything.
         try:
-            conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=1.0)
+            conn = sqlite3.connect(str(self.db_path), timeout=1.0)
         except sqlite3.Error:
             return
         try:
+            conn.execute("PRAGMA query_only = ON")
             row = conn.execute("SELECT ver FROM col LIMIT 1").fetchone()
         except sqlite3.Error:
             return
@@ -116,7 +121,10 @@ class AnkiDirectReadStore:
             conn.close()
         if row is None or row[0] is None:
             return
-        ver = int(row[0])
+        try:
+            ver = int(row[0])
+        except (TypeError, ValueError):
+            return
         if ver < MIN_SUPPORTED_SCHEMA_VERSION:
             raise UnsupportedCollectionError(
                 f"Unsupported collection schema {ver} at {self.db_path} "

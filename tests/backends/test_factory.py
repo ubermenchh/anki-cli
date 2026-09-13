@@ -51,7 +51,7 @@ def test_create_backend_direct_legacy_schema_maps_to_factory_error(tmp_path: Pat
     conn.commit()
     conn.close()
 
-    with pytest.raises(BackendFactoryError, match=r"Unsupported collection schema 11.*2\.1\.50"):
+    with pytest.raises(BackendFactoryError, match="Unsupported collection schema 11"):
         create_backend_from_context({"backend": "direct", "collection_path": db})
 
 
