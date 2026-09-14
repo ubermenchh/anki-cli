@@ -9,7 +9,12 @@ type SQLParam = str | int | float
 
 TokenKind = Literal["TERM", "LPAREN", "RPAREN", "OR", "AND", "NOT", "EOF"]
 
-_FILTER_PREFIXES = {"deck", "notetype", "tag", "is", "flag", "prop", "nid", "cid", "added"}
+# Anki spells the notetype filter ``note:``; ``notetype:`` is kept as this CLI's
+# original spelling. Both compile to the same node.
+_FILTER_PREFIXES = {
+    "deck", "notetype", "note", "tag", "is", "flag", "prop", "nid", "cid", "added",
+}
+_PREFIX_ALIASES = {"note": "notetype"}
 _IS_VALUES = {"new", "learn", "review", "due", "suspended", "buried"}
 _PROP_PATTERN = re.compile(r"^(ivl|due|reps|lapses)(<=|>=|=|<|>)(-?\d+)$", re.IGNORECASE)
 _PROP_COLUMNS = {
@@ -33,6 +38,10 @@ class Token:
     kind: TokenKind
     value: str
     position: int
+    # Index in ``value`` of the first ``:`` that was not backslash-escaped, i.e.
+    # the prefix/value separator. ``None`` when the term has no such colon, so
+    # ``a\:b`` is a plain-text search for ``a:b`` (Anki's escape as well).
+    separator: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +81,6 @@ class _Clause:
     where: str
     params: list[SQLParam]
     needs_notes_join: bool = False
-    needs_decks_join: bool = False
 
 
 def tokenize(query: str) -> list[Token]:
@@ -103,7 +111,7 @@ def tokenize(query: str) -> list[Token]:
             continue
 
         start = i
-        term, i = _read_term(query, i)
+        term, i, separator = _read_term(query, i)
         if not term:
             continue
 
@@ -117,7 +125,7 @@ def tokenize(query: str) -> list[Token]:
         else:
             kind = "TERM"
 
-        tokens.append(Token(kind=kind, value=term, position=start))
+        tokens.append(Token(kind=kind, value=term, position=start, separator=separator))
 
     tokens.append(Token(kind="EOF", value="", position=length))
     return tokens
@@ -128,28 +136,43 @@ def parse(query: str) -> SearchNode:
     return parser.parse()
 
 
-def compile_card_query(query: str, *, now_sec: int, due_day_index: int) -> CompiledSQL:
-    return compile_card(parse(query), now_sec=now_sec, due_day_index=due_day_index)
+@dataclass(frozen=True, slots=True)
+class SearchContext:
+    """The collection's "today", as the time-relative filters need it.
+
+    ``now_sec`` bounds intraday learning (``queue = 1`` holds an epoch);
+    ``due_day_index`` bounds review / day-learn (``queue IN (2, 3)`` hold a day
+    index relative to ``col.crt``); ``next_day_at`` is the epoch second the next
+    scheduling day starts, which is what ``added:N`` counts back from (rslib
+    ``write_added``), so ``added:1`` means "since the last rollover", not
+    "the last 24 hours".
+    """
+
+    now_sec: int
+    due_day_index: int
+    next_day_at: int
 
 
-def compile_note_query(query: str, *, now_sec: int, due_day_index: int) -> CompiledSQL:
-    return compile_note(parse(query), now_sec=now_sec, due_day_index=due_day_index)
+def compile_card_query(query: str, *, ctx: SearchContext) -> CompiledSQL:
+    return compile_card(parse(query), ctx=ctx)
 
 
-def compile_card(node: SearchNode, *, now_sec: int, due_day_index: int) -> CompiledSQL:
-    clause = _compile_card_node(node, now_sec=now_sec, due_day_index=due_day_index)
+def compile_note_query(query: str, *, ctx: SearchContext) -> CompiledSQL:
+    return compile_note(parse(query), ctx=ctx)
+
+
+def compile_card(node: SearchNode, *, ctx: SearchContext) -> CompiledSQL:
+    clause = _compile_card_node(node, ctx=ctx)
     joins: list[str] = []
 
     if clause.needs_notes_join:
         joins.append("JOIN notes AS n ON n.id = c.nid")
-    if clause.needs_decks_join:
-        joins.append("LEFT JOIN decks AS d ON d.id = c.did")
 
     return CompiledSQL(where=clause.where, params=tuple(clause.params), joins=tuple(joins))
 
 
-def compile_note(node: SearchNode, *, now_sec: int, due_day_index: int) -> CompiledSQL:
-    clause = _compile_note_node(node, now_sec=now_sec, due_day_index=due_day_index)
+def compile_note(node: SearchNode, *, ctx: SearchContext) -> CompiledSQL:
+    clause = _compile_note_node(node, ctx=ctx)
     return CompiledSQL(where=clause.where, params=tuple(clause.params), joins=())
 
 
@@ -256,10 +279,18 @@ class _Parser:
         return token
 
 
-def _read_term(query: str, start: int) -> tuple[str, int]:
+def _read_term(query: str, start: int) -> tuple[str, int, int | None]:
+    """Read one term; return ``(text, end, separator)``.
+
+    ``separator`` is the index in ``text`` of the first colon that was not
+    backslash-escaped (quotes do not protect a colon, matching Anki, where
+    ``"deck:My Deck"`` is still a deck search and only ``\\:`` is literal).
+    """
     i = start
     length = len(query)
     out: list[str] = []
+    out_len = 0
+    separator: int | None = None
 
     while i < length:
         ch = query[i]
@@ -268,26 +299,34 @@ def _read_term(query: str, start: int) -> tuple[str, int]:
             break
 
         if ch in {"'", '"'}:
-            quoted, i = _read_quoted(query, i)
+            quoted, i, quoted_sep = _read_quoted(query, i)
+            if separator is None and quoted_sep is not None:
+                separator = out_len + quoted_sep
             out.append(quoted)
+            out_len += len(quoted)
             continue
 
         if ch == "\\" and i + 1 < length:
             out.append(query[i + 1])
+            out_len += 1
             i += 2
             continue
 
+        if ch == ":" and separator is None:
+            separator = out_len
         out.append(ch)
+        out_len += 1
         i += 1
 
-    return "".join(out), i
+    return "".join(out), i, separator
 
 
-def _read_quoted(query: str, start: int) -> tuple[str, int]:
+def _read_quoted(query: str, start: int) -> tuple[str, int, int | None]:
     quote_char = query[start]
     i = start + 1
     length = len(query)
     out: list[str] = []
+    separator: int | None = None
 
     while i < length:
         ch = query[i]
@@ -298,8 +337,10 @@ def _read_quoted(query: str, start: int) -> tuple[str, int]:
             continue
 
         if ch == quote_char:
-            return "".join(out), i + 1
+            return "".join(out), i + 1, separator
 
+        if ch == ":" and separator is None:
+            separator = len(out)
         out.append(ch)
         i += 1
 
@@ -311,15 +352,32 @@ def _term_to_filter(token: Token, *, query: str) -> FilterNode:
     if not term:
         raise SearchParseError("Empty term is not allowed", query=query, position=token.position)
 
-    if ":" not in term:
+    # ``token.value`` is already unescaped, so ``token.separator`` (recorded by
+    # the tokenizer) is the only way to tell ``deck:x`` from a literal ``a\\:b``.
+    # ``term`` was stripped; the separator index is relative to the unstripped
+    # value, so shift it by the leading whitespace that was removed.
+    separator = token.separator
+    if separator is not None:
+        separator -= len(token.value) - len(token.value.lstrip())
+    if separator is None or separator <= 0:
+        # No prefix (or an empty one like ``:foo``): plain-text search.
         return FilterNode(kind="text", value=term)
 
-    prefix, raw_value = term.split(":", 1)
-    key = prefix.casefold()
+    prefix, raw_value = term[:separator], term[separator + 1 :]
+    key = _PREFIX_ALIASES.get(prefix.casefold(), prefix.casefold())
 
     if key not in _FILTER_PREFIXES:
-        # Keep backward compatibility: unknown prefix behaves like plain text.
-        return FilterNode(kind="text", value=term)
+        # Anki treats an unknown prefix as a field search (``front:dog``); this
+        # CLI does not implement field search, and silently falling back to
+        # full-text (the old behaviour) returned wrong results for real Anki
+        # filters like ``card:``, ``rated:`` or ``mid:``. Refuse instead.
+        supported = ", ".join(sorted(_FILTER_PREFIXES - set(_PREFIX_ALIASES)))
+        raise SearchParseError(
+            f"Unsupported filter '{prefix}:'. Supported: {supported}. "
+            "To search for a literal colon, escape it as '\\:'.",
+            query=query,
+            position=token.position,
+        )
 
     value = raw_value.strip()
     if not value:
@@ -392,53 +450,44 @@ def _parse_int(raw: str, *, query: str, position: int, label: str) -> int:
         ) from exc
 
 
-def _compile_card_node(node: SearchNode, *, now_sec: int, due_day_index: int) -> _Clause:
+def _compile_card_node(node: SearchNode, *, ctx: SearchContext) -> _Clause:
     if isinstance(node, AndNode):
         return _compile_boolean(
-            node.children,
-            "AND",
-            lambda child: _compile_card_node(child, now_sec=now_sec, due_day_index=due_day_index),
+            node.children, "AND", lambda child: _compile_card_node(child, ctx=ctx)
         )
 
     if isinstance(node, OrNode):
         return _compile_boolean(
-            node.children,
-            "OR",
-            lambda child: _compile_card_node(child, now_sec=now_sec, due_day_index=due_day_index),
+            node.children, "OR", lambda child: _compile_card_node(child, ctx=ctx)
         )
 
     if isinstance(node, NotNode):
-        child = _compile_card_node(node.child, now_sec=now_sec, due_day_index=due_day_index)
+        child = _compile_card_node(node.child, ctx=ctx)
         return _Clause(
             where=f"NOT ({child.where})",
             params=list(child.params),
             needs_notes_join=child.needs_notes_join,
-            needs_decks_join=child.needs_decks_join,
         )
 
-    return _compile_card_filter(node, now_sec=now_sec, due_day_index=due_day_index)
+    return _compile_card_filter(node, ctx=ctx)
 
 
-def _compile_note_node(node: SearchNode, *, now_sec: int, due_day_index: int) -> _Clause:
+def _compile_note_node(node: SearchNode, *, ctx: SearchContext) -> _Clause:
     if isinstance(node, AndNode):
         return _compile_boolean(
-            node.children,
-            "AND",
-            lambda child: _compile_note_node(child, now_sec=now_sec, due_day_index=due_day_index),
+            node.children, "AND", lambda child: _compile_note_node(child, ctx=ctx)
         )
 
     if isinstance(node, OrNode):
         return _compile_boolean(
-            node.children,
-            "OR",
-            lambda child: _compile_note_node(child, now_sec=now_sec, due_day_index=due_day_index),
+            node.children, "OR", lambda child: _compile_note_node(child, ctx=ctx)
         )
 
     if isinstance(node, NotNode):
-        child = _compile_note_node(node.child, now_sec=now_sec, due_day_index=due_day_index)
+        child = _compile_note_node(node.child, ctx=ctx)
         return _Clause(where=f"NOT ({child.where})", params=list(child.params))
 
-    return _compile_note_filter(node, now_sec=now_sec, due_day_index=due_day_index)
+    return _compile_note_filter(node, ctx=ctx)
 
 
 def _compile_boolean(
@@ -455,24 +504,21 @@ def _compile_boolean(
     pieces: list[str] = []
     params: list[SQLParam] = []
     needs_notes_join = False
-    needs_decks_join = False
 
     for child in children:
         compiled = compile_child(child)
         pieces.append(f"({compiled.where})")
         params.extend(compiled.params)
         needs_notes_join = needs_notes_join or compiled.needs_notes_join
-        needs_decks_join = needs_decks_join or compiled.needs_decks_join
 
     return _Clause(
         where=f" {operator} ".join(pieces),
         params=params,
         needs_notes_join=needs_notes_join,
-        needs_decks_join=needs_decks_join,
     )
 
 
-def _compile_card_filter(node: FilterNode, *, now_sec: int, due_day_index: int) -> _Clause:
+def _compile_card_filter(node: FilterNode, *, ctx: SearchContext) -> _Clause:
     if node.kind == "text":
         if not node.value:
             return _Clause(where="1=1", params=[])
@@ -483,11 +529,8 @@ def _compile_card_filter(node: FilterNode, *, now_sec: int, due_day_index: int) 
         )
 
     if node.kind == "deck":
-        return _Clause(
-            where="d.name LIKE ? ESCAPE '\\'",
-            params=[_glob_to_like(node.value)],
-            needs_decks_join=True,
-        )
+        deck_sql, deck_params = _deck_clause(node.value, alias="c")
+        return _Clause(where=deck_sql, params=deck_params)
 
     if node.kind == "notetype":
         return _Clause(
@@ -497,12 +540,8 @@ def _compile_card_filter(node: FilterNode, *, now_sec: int, due_day_index: int) 
         )
 
     if node.kind == "tag":
-        tag_pattern = _glob_to_like(node.value)
-        return _Clause(
-            where="n.tags LIKE ? ESCAPE '\\'",
-            params=[f"% {tag_pattern} %"],
-            needs_notes_join=True,
-        )
+        tag_sql, tag_params = _tag_clause(node.value)
+        return _Clause(where=tag_sql, params=tag_params, needs_notes_join=True)
 
     if node.kind == "nid":
         return _Clause(where="c.nid = ?", params=[int(node.value)])
@@ -511,20 +550,10 @@ def _compile_card_filter(node: FilterNode, *, now_sec: int, due_day_index: int) 
         return _Clause(where="c.id = ?", params=[int(node.value)])
 
     if node.kind == "added":
-        cutoff = now_sec - (int(node.value) * 86400)
-        return _Clause(
-            where="n.mod >= ?",
-            params=[cutoff],
-            needs_notes_join=True,
-        )
+        return _Clause(where="c.id > ?", params=[_added_cutoff_ms(node.value, ctx=ctx)])
 
     if node.kind == "is":
-        is_sql, is_params = _is_clause(
-            node.value,
-            now_sec=now_sec,
-            due_day_index=due_day_index,
-            alias="c",
-        )
+        is_sql, is_params = _is_clause(node.value, ctx=ctx, alias="c")
         return _Clause(where=is_sql, params=is_params)
 
     if node.kind == "flag":
@@ -537,7 +566,7 @@ def _compile_card_filter(node: FilterNode, *, now_sec: int, due_day_index: int) 
     raise ValueError(f"Unsupported card filter kind: {node.kind}")
 
 
-def _compile_note_filter(node: FilterNode, *, now_sec: int, due_day_index: int) -> _Clause:
+def _compile_note_filter(node: FilterNode, *, ctx: SearchContext) -> _Clause:
     if node.kind == "text":
         if not node.value:
             return _Clause(where="1=1", params=[])
@@ -550,11 +579,8 @@ def _compile_note_filter(node: FilterNode, *, now_sec: int, due_day_index: int) 
         return _Clause(where="n.id = ?", params=[int(node.value)])
 
     if node.kind == "tag":
-        tag_pattern = _glob_to_like(node.value)
-        return _Clause(
-            where="n.tags LIKE ? ESCAPE '\\'",
-            params=[f"% {tag_pattern} %"],
-        )
+        tag_sql, tag_params = _tag_clause(node.value)
+        return _Clause(where=tag_sql, params=tag_params)
 
     if node.kind == "notetype":
         return _Clause(
@@ -563,19 +589,17 @@ def _compile_note_filter(node: FilterNode, *, now_sec: int, due_day_index: int) 
         )
 
     if node.kind == "added":
-        cutoff = now_sec - (int(node.value) * 86400)
-        return _Clause(where="n.mod >= ?", params=[cutoff])
+        # Anki has no note-level searches; "added" is a property of the card id.
+        return _Clause(
+            where="EXISTS (SELECT 1 FROM cards AS c WHERE c.nid = n.id AND c.id > ?)",
+            params=[_added_cutoff_ms(node.value, ctx=ctx)],
+        )
 
     if node.kind == "deck":
+        deck_sql, deck_params = _deck_clause(node.value, alias="c")
         return _Clause(
-            where=(
-                "EXISTS ("
-                "SELECT 1 FROM cards AS c "
-                "JOIN decks AS d ON d.id = c.did "
-                "WHERE c.nid = n.id AND d.name LIKE ? ESCAPE '\\'"
-                ")"
-            ),
-            params=[_glob_to_like(node.value)],
+            where=f"EXISTS (SELECT 1 FROM cards AS c WHERE c.nid = n.id AND ({deck_sql}))",
+            params=deck_params,
         )
 
     if node.kind == "cid":
@@ -585,12 +609,7 @@ def _compile_note_filter(node: FilterNode, *, now_sec: int, due_day_index: int) 
         )
 
     if node.kind == "is":
-        is_sql, is_params = _is_clause(
-            node.value,
-            now_sec=now_sec,
-            due_day_index=due_day_index,
-            alias="c",
-        )
+        is_sql, is_params = _is_clause(node.value, ctx=ctx, alias="c")
         return _Clause(
             where=f"EXISTS (SELECT 1 FROM cards AS c WHERE c.nid = n.id AND ({is_sql}))",
             params=is_params,
@@ -612,13 +631,55 @@ def _compile_note_filter(node: FilterNode, *, now_sec: int, due_day_index: int) 
     raise ValueError(f"Unsupported note filter kind: {node.kind}")
 
 
+def _deck_clause(value: str, *, alias: str) -> tuple[str, list[SQLParam]]:
+    """rslib ``write_deck``: the named deck *and its children*, by ``did`` or, for a
+    card visiting a filtered deck, by its home deck ``odid``.
+
+    ``deck:Lang`` matches ``Lang`` and ``Lang::Spanish`` but not ``Language``;
+    ``*`` globs as before.
+    """
+    pattern = _glob_to_like(value)
+    ids_subquery = (
+        "SELECT id FROM decks "
+        "WHERE name LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\'"
+    )
+    child_pattern = f"{pattern}::%"
+    return (
+        f"({alias}.did IN ({ids_subquery}) "
+        f"OR ({alias}.odid != 0 AND {alias}.odid IN ({ids_subquery})))",
+        [pattern, child_pattern, pattern, child_pattern],
+    )
+
+
+def _tag_clause(value: str) -> tuple[str, list[SQLParam]]:
+    """rslib ``write_tag``: ``tag:foo`` matches ``foo`` and ``foo::child``;
+    ``tag:none`` is the untagged note. Tags are stored as `` a b `` with a space
+    on each side, which is what the surrounding ``%`` / `` `` anchors rely on."""
+    if value.casefold() == "none":
+        return ("n.tags = ''", [])
+    pattern = _glob_to_like(value)
+    return (
+        "(n.tags LIKE ? ESCAPE '\\' OR n.tags LIKE ? ESCAPE '\\')",
+        [f"% {pattern} %", f"% {pattern}::%"],
+    )
+
+
+def _added_cutoff_ms(value: str, *, ctx: SearchContext) -> int:
+    """rslib ``write_added``: ``added:N`` is "created since N scheduling days
+    ago", counted back from the next rollover, compared against the card id
+    (creation time in ms). ``added:1`` is today's cards."""
+    days = int(value)
+    return (ctx.next_day_at - days * 86_400) * 1_000
+
+
 def _is_clause(
     value: str,
     *,
-    now_sec: int,
-    due_day_index: int,
+    ctx: SearchContext,
     alias: str,
 ) -> tuple[str, list[SQLParam]]:
+    now_sec = ctx.now_sec
+    due_day_index = ctx.due_day_index
     if value == "new":
         return (f"{alias}.queue = 0", [])
 
@@ -635,11 +696,13 @@ def _is_clause(
         return (f"{alias}.queue IN (-2, -3)", [])
 
     if value == "due":
-        # queue 1 (intraday learn) stores an epoch; queues 2 (review) and
-        # 3 (day-learn) store a day index relative to col.crt.
+        # rslib StateKind::Due: learning or review cards whose due time has
+        # passed. New cards (queue 0) are never "due" — Anki's is:due does not
+        # include them, and the CLI used to, which made every "is:due" count
+        # and pick include the whole new queue. queue 1 (intraday learn) stores
+        # an epoch; queues 2 (review) and 3 (day-learn) a day index.
         return (
             "("
-            f"{alias}.queue = 0 OR "
             f"({alias}.queue = 1 AND {alias}.due <= ?) OR "
             f"({alias}.queue IN (2, 3) AND {alias}.due <= ?)"
             ")",
@@ -663,11 +726,15 @@ def _prop_clause(node: FilterNode, *, alias: str) -> tuple[str, list[SQLParam]]:
     return (f"{alias}.{column_name} {node.operator} ?", [threshold])
 
 
-def _escape_like(value: str) -> str:
+def escape_like(value: str) -> str:
+    """Escape ``value`` for a ``LIKE ? ESCAPE '\\'`` pattern (``\\``, ``%``, ``_``)."""
     escaped = value.replace("\\", "\\\\")
     escaped = escaped.replace("%", "\\%")
     escaped = escaped.replace("_", "\\_")
     return escaped
+
+
+_escape_like = escape_like
 
 
 def _glob_to_like(value: str) -> str:

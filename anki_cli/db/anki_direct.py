@@ -17,7 +17,12 @@ from fsrs import Card as FSRSCard
 from fsrs import Rating, ReviewLog, Scheduler, State
 from fsrs.scheduler import LOWER_BOUNDS_PARAMETERS, UPPER_BOUNDS_PARAMETERS
 
-from anki_cli.core.search import compile_card_query, compile_note_query
+from anki_cli.core.search import (
+    SearchContext,
+    compile_card_query,
+    compile_note_query,
+    escape_like,
+)
 from anki_cli.core.template import (
     _CLOZE_RE,
     SPECIAL_FIELDS,
@@ -994,9 +999,7 @@ class AnkiDirectReadStore:
     # ---- notes ------------------------------------------------------------
 
     def find_note_ids(self, query: str) -> list[int]:
-        now_sec = int(time.time())
-        due_day_index = self._today_due_index(now_sec)
-        compiled = compile_note_query(query, now_sec=now_sec, due_day_index=due_day_index)
+        compiled = compile_note_query(query, ctx=self._search_context())
 
         joins_sql = ""
         if compiled.joins:
@@ -1080,9 +1083,7 @@ class AnkiDirectReadStore:
     # ---- cards ------------------------------------------------------------
 
     def find_card_ids(self, query: str) -> list[int]:
-        now_sec = int(time.time())
-        due_day_index = self._today_due_index(now_sec)
-        compiled = compile_card_query(query, now_sec=now_sec, due_day_index=due_day_index)
+        compiled = compile_card_query(query, ctx=self._search_context())
 
         joins_sql = ""
         if compiled.joins:
@@ -2871,6 +2872,16 @@ class AnkiDirectReadStore:
         with self._connect() as conn:
             return self._timing(conn, now_sec).days_elapsed
 
+    def _search_context(self) -> SearchContext:
+        now_sec = int(time.time())
+        with self._connect() as conn:
+            timing = self._timing(conn, now_sec)
+        return SearchContext(
+            now_sec=now_sec,
+            due_day_index=timing.days_elapsed,
+            next_day_at=timing.next_day_at,
+        )
+
     def _deck_filter(
         self,
         conn: sqlite3.Connection,
@@ -2879,7 +2890,18 @@ class AnkiDirectReadStore:
         if deck is None:
             return "", ()
 
-        rows = conn.execute("SELECT id FROM decks WHERE name = ?", (deck.strip(),)).fetchall()
+        # The deck and its children, like Anki's deck list and ``deck:`` search:
+        # ``--deck Japanese`` covers ``Japanese::Core`` too. Names are unique
+        # case-insensitively in Anki, hence NOCASE rather than ``=``.
+        name = deck.strip()
+        rows = conn.execute(
+            """
+            SELECT id FROM decks
+            WHERE name = ? COLLATE NOCASE
+               OR name LIKE ? ESCAPE '\\'
+            """,
+            (name, f"{escape_like(name)}::%"),
+        ).fetchall()
         ids = [int(row["id"]) for row in rows]
         if not ids:
             # impossible clause

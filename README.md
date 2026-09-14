@@ -100,16 +100,20 @@ The remote Anki Desktop must have AnkiConnect configured to accept non-localhost
 
 ## Search Query Language
 
-Supported filters:
+Filters follow Anki's own semantics:
 
-- `deck:NAME` (supports `*` glob)
-- `notetype:NAME`
-- `tag:NAME` (supports `*` glob)
-- `is:new`, `is:learn`, `is:review`, `is:due`, `is:suspended`, `is:buried`
+- `deck:NAME` — the deck and its subdecks (`deck:Lang` covers `Lang::Spanish`); supports `*` glob
+- `notetype:NAME` (or Anki's spelling `note:NAME`)
+- `tag:NAME` — the tag and its children (`tag:verb` covers `verb::irregular`); `tag:none` for untagged notes; supports `*` glob
+- `is:new`, `is:learn`, `is:review`, `is:due` (learning/review cards whose due time has passed; never new cards), `is:suspended`, `is:buried`
+- `added:N` — cards created in the last N scheduling days (`added:1` = since the last rollover)
 - `flag:N`
 - `prop:ivl>N`, `prop:due>N`, `prop:reps>N`, `prop:lapses>N` (`<`, `<=`, `=`, `>=`, `>`)
 - `nid:ID`, `cid:ID`
-- bare text and quoted text (`"specific text"`)
+- bare text and quoted text (`"specific text"`); escape a literal colon as `\:`
+
+Any other `prefix:` (for example `card:`, `rated:`, `mid:`, field searches like `front:dog`) is
+rejected with `INVALID_INPUT` rather than silently searched as text.
 
 Logical syntax:
 

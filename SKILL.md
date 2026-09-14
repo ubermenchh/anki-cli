@@ -235,15 +235,20 @@ anki config:set --key "display.default_output" --value "json"
 
 | Filter | Example |
 |--------|---------|
-| Deck | `deck:Japanese`, `deck:Japanese*` (glob) |
-| Notetype | `notetype:Basic` |
-| Tag | `tag:verb`, `tag:lang*` (glob) |
+| Deck | `deck:Japanese` (includes `Japanese::*` subdecks), `deck:Japanese*` (glob) |
+| Notetype | `notetype:Basic` or `note:Basic` |
+| Tag | `tag:verb` (includes `verb::*` children), `tag:lang*` (glob), `tag:none` (untagged) |
 | State | `is:new`, `is:learn`, `is:review`, `is:due`, `is:suspended`, `is:buried` |
+| Added | `added:1` (created since the last rollover), `added:7` |
 | Flag | `flag:1` through `flag:7`, `flag:0` (no flag) |
 | Property | `prop:ivl>30`, `prop:due<5`, `prop:reps>=10`, `prop:lapses=0` |
 | Note ID | `nid:1234567890` |
 | Card ID | `cid:1234567890` |
-| Text | bare words or `"quoted phrase"` |
+| Text | bare words or `"quoted phrase"`; `\:` for a literal colon |
+
+Semantics match Anki: `is:due` never includes new cards (use `is:new`), and `deck:`/`tag:` are
+hierarchical. Any other `prefix:` (`card:`, `rated:`, `mid:`, `front:` field search, ...) is
+rejected with `INVALID_INPUT` — do not expect it to fall back to text search.
 
 ### Logical Operators
 

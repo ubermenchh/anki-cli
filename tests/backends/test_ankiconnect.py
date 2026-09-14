@@ -220,8 +220,10 @@ def test_get_due_counts_uses_expected_queries() -> None:
     counts = backend.get_due_counts(deck='Deck "A"')
 
     assert counts == {"new": 2, "learn": 1, "review": 3, "total": 6}
+    # Anki's is:due excludes new cards, so the new count must not be gated on it
+    # (the old "is:due is:new" query always returned 0).
     assert seen == [
-        'deck:"Deck \\"A\\"" is:due is:new',
+        'deck:"Deck \\"A\\"" is:new',
         'deck:"Deck \\"A\\"" is:due is:learn',
         'deck:"Deck \\"A\\"" is:due is:review',
     ]

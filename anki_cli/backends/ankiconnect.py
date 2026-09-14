@@ -770,7 +770,9 @@ class AnkiConnectBackend(AnkiBackend):
     # Review summary
     def get_due_counts(self, deck: str | None = None) -> dict[str, int]:
         prefix = self._deck_query_prefix(deck)
-        new_count = len(self.find_cards(f"{prefix}is:due is:new"))
+        # Anki's is:due never includes new cards, so "is:due is:new" is always
+        # empty; new cards are simply is:new (queue 0 is not gated by time).
+        new_count = len(self.find_cards(f"{prefix}is:new"))
         learn_count = len(self.find_cards(f"{prefix}is:due is:learn"))
         review_count = len(self.find_cards(f"{prefix}is:due is:review"))
 
