@@ -67,24 +67,31 @@ def test_get_due_counts_all_decks_counts_only_due_cards(tmp_path: Path) -> None:
     }
 
 
-def test_get_due_counts_deck_filter_is_exact_name_match(tmp_path: Path) -> None:
+def test_get_due_counts_deck_filter_includes_children_like_anki(tmp_path: Path) -> None:
+    """``--deck DeckA`` covers ``DeckA::Child`` (Anki's deck list / ``deck:`` search),
+    but not ``DeckAB`` — the child separator is ``::``, not a name prefix."""
     store = _make_store(
         tmp_path,
-        decks=[(1, "DeckA"), (2, "DeckA::Child"), (3, "DeckB")],
+        decks=[(1, "DeckA"), (2, "DeckA::Child"), (3, "DeckB"), (4, "DeckAB")],
         cards=[
-            (1, 1, 0, 0),
-            (2, 1, 1, 0),
-            (3, 2, 2, 0),
-            (4, 3, 0, 0),
+            (1, 1, 0, 0),  # DeckA new
+            (2, 1, 1, 0),  # DeckA learn due
+            (3, 2, 2, 0),  # DeckA::Child review due -> counted under DeckA
+            (4, 3, 0, 0),  # DeckB new
+            (5, 4, 0, 0),  # DeckAB new -> not DeckA
         ],
     )
 
     assert store.get_due_counts(deck="DeckA") == {
         "new": 1,
         "learn": 1,
-        "review": 0,
-        "total": 2,
+        "review": 1,
+        "total": 3,
     }
+    # The child on its own is still addressable.
+    assert store.get_due_counts(deck="DeckA::Child")["total"] == 1
+    # Deck names are unique case-insensitively in Anki.
+    assert store.get_due_counts(deck="decka")["total"] == 3
 
     assert store.get_due_counts(deck="MissingDeck") == {
         "new": 0,
@@ -92,6 +99,16 @@ def test_get_due_counts_deck_filter_is_exact_name_match(tmp_path: Path) -> None:
         "review": 0,
         "total": 0,
     }
+
+
+def test_get_due_counts_deck_filter_escapes_like_metacharacters(tmp_path: Path) -> None:
+    store = _make_store(
+        tmp_path,
+        decks=[(1, "100%"), (2, "100%::Sub"), (3, "100X")],
+        cards=[(1, 1, 0, 0), (2, 2, 0, 0), (3, 3, 0, 0)],
+    )
+
+    assert store.get_due_counts(deck="100%")["new"] == 2
 
 
 def test_get_next_due_card_prefers_learning_before_review_and_new(tmp_path: Path) -> None:
