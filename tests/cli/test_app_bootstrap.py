@@ -112,6 +112,31 @@ def test_detection_error_emits_backend_unavailable_with_exit_code(monkeypatch) -
     assert payload["meta"]["command"] == "bootstrap"
 
 
+def test_cli_unopenable_collection_emits_backend_unavailable(tmp_path: Path) -> None:
+    """End-to-end: an unopenable ``--col`` emits the envelope, no traceback.
+
+    ``resolve_runtime_config``/``detect_backend`` run unstubbed: the regression
+    was the fail-closed lock probe's ``sqlite3.OperationalError`` escaping
+    ``detect_backend`` — ``app.py`` catches only ``DetectionError`` — so
+    ``anki --backend direct --col <dir> version`` crashed instead of emitting
+    BACKEND_UNAVAILABLE. A directory passes ``exists()`` but
+    ``sqlite3.connect`` cannot open it.
+    """
+    bad = tmp_path / "collection.anki2"
+    bad.mkdir()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app_mod.main,
+        ["--backend", "direct", "--format", "json", "--col", str(bad), "version"],
+    )
+
+    payload = _error_payload(result)
+    assert result.exit_code == 7
+    assert payload["error"]["code"] == "BACKEND_UNAVAILABLE"
+    assert "Traceback" not in result.output
+
+
 def test_bootstrap_success_passes_context_to_subcommand(monkeypatch) -> None:
     captured = _install_dummy_command(monkeypatch)
 

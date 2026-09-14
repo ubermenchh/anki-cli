@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from hashlib import sha1
 from pathlib import Path
 from typing import Any
@@ -14,10 +15,40 @@ from anki_cli.db.anki_direct import (
     EmptyNoteError,
     NoteRejectedError,
 )
-from tests.integration.conftest import COL_TABLE_SQL, assert_col_untouched, insert_col_row
+from tests.integration.conftest import (
+    COL_TABLE_SQL,
+    CSUM_A_SPACE_B,
+    CSUM_AMPX_KEPT,
+    CSUM_AUDIO_A_MP3,
+    CSUM_BAD_NUM_KEPT,
+    CSUM_BOGUS_KEPT,
+    CSUM_CAPITAL_A,
+    CSUM_CHECK_KEPT,
+    CSUM_F1,
+    CSUM_HEX_UPPER_X_KEPT,
+    CSUM_IMG_X_PNG,
+    CSUM_IMG_Y_JPG,
+    CSUM_IMG_Z_GIF,
+    CSUM_KYOU,
+    CSUM_NBSP_NOSEMI_KEPT,
+    CSUM_OBJECT_O_SWF,
+    CSUM_Q,
+    CSUM_Q_AMP_A,
+    CSUM_R_AMPD_KEPT,
+    CSUM_SURROGATE_KEPT,
+    CSUM_TEST,
+    CSUM_VIDEO_V_MP4,
+    assert_col_untouched,
+    insert_col_row,
+)
 
 
 def _checksum(first_field: str) -> int:
+    """Raw sha1-based csum of the field *as written* (no HTML stripping).
+
+    Fixture helper only — the ``CSUM_*`` literals are the oracle for the
+    store's own ``_field_checksum``.
+    """
     digest = sha1(first_field.encode("utf-8")).hexdigest()
     return int(digest[:8], 16)
 
@@ -120,7 +151,10 @@ def _insert_note(
     front: str,
     back: str,
     tags: str = " old ",
+    csum: int = 0,
 ) -> None:
+    # ``csum`` is fixture input, never asserted — the literal-oracle tests own
+    # the real values. ``0`` just keeps the column populated.
     flds = f"{front}\x1f{back}"
     conn = sqlite3.connect(str(db_path))
     conn.execute(
@@ -137,7 +171,7 @@ def _insert_note(
             tags,
             flds,
             front,
-            _checksum(front),
+            csum,
         ),
     )
     conn.commit()
@@ -242,7 +276,7 @@ def test_add_note_creates_note_and_card_with_ordered_fields(
     assert note["mid"] == 10
     assert note["flds"] == "Q\x1fA"  # schema order: Front, Back
     assert note["sfld"] == "Q"
-    assert note["csum"] == _checksum("Q")
+    assert note["csum"] == CSUM_Q
     assert note["tags"] == " alpha zeta "
     assert note["usn"] == -1
 
@@ -300,7 +334,7 @@ def test_update_note_updates_fields_tags_and_checksum(
     note = _note_row(db_path, 1001)
     assert note["flds"] == "F1\x1fB1"
     assert note["sfld"] == "F1"
-    assert note["csum"] == _checksum("F1")
+    assert note["csum"] == CSUM_F1
     assert note["tags"] == " a z "
     assert note["usn"] == -1
 
@@ -372,6 +406,144 @@ def test_delete_notes_empty_or_non_positive_input_returns_noop(
         "deleted_cards": 0,
         "missing_note_ids": [],
     }
+
+
+@pytest.mark.parametrize(
+    ("first_field", "expected"),
+    [
+        # External oracle: rslib's own vectors (rslib/src/notes/mod.rs).
+        ("test", CSUM_TEST),
+        ("今日", CSUM_KYOU),
+        # Plain text and markup-stripped equivalents.
+        ("Q", CSUM_Q),
+        ("<b>Q</b>", CSUM_Q),
+        # Media tags keep their src/data filename: every tag name branch,
+        # case-folded, double/single-quoted and unquoted attribute values.
+        ('<img src="x.png">', CSUM_IMG_X_PNG),
+        ("<IMG SRC='y.jpg'>", CSUM_IMG_Y_JPG),
+        ("<img src=z.gif>", CSUM_IMG_Z_GIF),
+        ('<audio src="a.mp3"></audio>', CSUM_AUDIO_A_MP3),
+        ('<object data="o.swf">', CSUM_OBJECT_O_SWF),
+        ('<video src="v.mp4"></video>', CSUM_VIDEO_V_MP4),
+        # comment / style / script alternations.
+        ("<!-- c -->Q", CSUM_Q),
+        ("<style>p{}</style>Q", CSUM_Q),
+        ("<script>x()</script>Q", CSUM_Q),
+        # Mutation survivors: attributed <style>, a newline inside a comment
+        # and inside a media tag — each kills a mutant (dropped ``re.DOTALL``,
+        # narrowed ``<script[^>]*>``, ``video``/``source`` cut from the
+        # alternation) that the rows above all pass.
+        ('<style type="text/css">\np{}\n</style>Q', CSUM_Q),
+        ("<!-- multi\nline -->Q", CSUM_Q),
+        ('<img\n  src="x.png">', CSUM_IMG_X_PNG),
+        # Entity paths: well-formed entities decode.
+        ("Q&amp;A", CSUM_Q_AMP_A),
+        ("a&nbsp;b", CSUM_A_SPACE_B),
+        ("&#65;", CSUM_CAPITAL_A),
+        ("&#x41;", CSUM_CAPITAL_A),
+        # Strict all-or-nothing decode: any malformed entity keeps the ENTIRE
+        # original string (htmlescape errs → rslib hashes the input verbatim).
+        ("R&amp;D & more", CSUM_R_AMPD_KEPT),  # bare '&' → PrematureEnd
+        ("&ampx", CSUM_AMPX_KEPT),  # no-semicolon legacy form → PrematureEnd
+        ("a&nbsp b", CSUM_NBSP_NOSEMI_KEPT),  # no-semicolon legacy form
+        ("&check;", CSUM_CHECK_KEPT),  # HTML5-only name → UnknownEntity
+        ("&#X41;", CSUM_HEX_UPPER_X_KEPT),  # uppercase X → MalformedNumEscape
+        ("&#xD800;", CSUM_SURROGATE_KEPT),  # surrogate → InvalidCharacter
+        ("&bogus;", CSUM_BOGUS_KEPT),  # unknown name → UnknownEntity
+        ("&#32a;", CSUM_BAD_NUM_KEPT),  # junk digit → MalformedNumEscape
+    ],
+)
+def test_field_checksum_matches_anki(
+    first_field: str,
+    expected: int,
+    tmp_path: Path,
+) -> None:
+    """Pin ``_field_checksum`` to the Anki/rslib oracle.
+
+    Anki strips HTML before hashing but keeps media filenames, so the literal
+    for ``<b>Q</b>`` equals the one for ``Q`` — the old oracle re-implemented
+    the hash line-for-line and could not detect that divergence. ``"test"``
+    and ``"今日"`` are rslib's own test vectors; the rest pin literals for the
+    stripped text named in conftest.
+    """
+    db_path = tmp_path / "collection.db"
+    db_path.touch()  # pure function — only the path must exist
+    store = AnkiDirectReadStore(db_path)
+
+    assert store._field_checksum(first_field) == expected
+
+
+def test_field_checksum_srcless_media_tag_is_linear(tmp_path: Path) -> None:
+    """Regression for the regex backtracking bug.
+
+    A media tag whose quoted attributes never reach ``src=``/``data=`` made the
+    old ``(?:[^>]|"[^"]+?"|'[^']+?')+?`` enumerate 2**n parses; 40 attrs must
+    strip to ``"Q"`` in well under a second even while the write lock is held.
+    """
+    attrs = " ".join(f'a{i}="v{i}"' for i in range(40))
+    db_path = tmp_path / "collection.db"
+    db_path.touch()
+    store = AnkiDirectReadStore(db_path)
+
+    t0 = time.perf_counter()
+    assert store._field_checksum(f"<img {attrs}>Q") == CSUM_Q
+    assert time.perf_counter() - t0 < 0.5
+
+
+def test_add_note_rejects_csum_duplicate_across_markup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """``<b>Q</b>`` must collide with ``Q`` — the point of stripping for csum.
+
+    The refusal is an ordinary ``DuplicateNoteError`` (csum is compared, not
+    markup), the refusal persists nothing, and ``allow_duplicate=True`` still
+    inserts — the flag lifts the check, not the checksum.
+    """
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    _insert_note(db_path, note_id=1, front="Q", back="A", csum=CSUM_Q)
+
+    with pytest.raises(DuplicateNoteError):
+        store.add_note(
+            deck="Default",
+            notetype="Basic",
+            fields={"Front": "<b>Q</b>", "Back": "A"},
+            tags=None,
+            allow_duplicate=False,
+        )
+    assert _note_ids(db_path) == [1]
+
+    second = store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Front": "<b>Q</b>", "Back": "A"},
+        tags=None,
+        allow_duplicate=True,
+    )
+    assert _note_ids(db_path) == [1, second]
+
+
+def test_add_note_checksums_stripped_first_field(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """End-to-end: a markup-bearing first field still lands the Anki csum."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+
+    note_id = store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Back": "A", "Front": "<b>Q</b>"},
+        tags=None,
+        allow_duplicate=False,
+    )
+
+    note = _note_row(db_path, note_id)
+    # TODO(#23): Anki stores the *stripped* sfld ("Q"); flip when fixed.
+    assert note["sfld"] == "<b>Q</b>"
+    assert note["csum"] == CSUM_Q
 
 
 # --- card generation honours the templates (#22 item 7) ---------------------------

@@ -56,7 +56,7 @@ def detect_backend(
                 "Direct backend forced, but no Anki collection DB was found.",
                 exit_code=3
             )
-        if _anki_process_running() or _sqlite_write_locked(path):
+        if _anki_process_running() or _probe_write_lock(path):
             raise DetectionError(
                 "Anki Desktop appears to be running while AnkiConnect is unavailable. "
                 "Close Anki Desktop or use --backend ankiconnect.",
@@ -80,7 +80,7 @@ def detect_backend(
 
     direct_path = _resolve_direct_collection(col_override)
     if direct_path is not None:
-        if _anki_process_running() or _sqlite_write_locked(direct_path):
+        if _anki_process_running() or _probe_write_lock(direct_path):
             raise DetectionError(
                 "Anki is running but AnkiConnect is unavailable. "
                 "Install AnkiConnect or close Anki Desktop.",
@@ -271,18 +271,44 @@ def _anki_process_running_windows() -> bool:
         return False
 
 
+def _probe_write_lock(db_path: Path) -> bool:
+    """``_sqlite_write_locked`` for ``detect_backend``, failures translated.
+
+    ``detect_backend`` runs for every subcommand and its only documented
+    failure type is ``DetectionError``; a probe error (unopenable path,
+    non-SQLite file) must surface as BACKEND_UNAVAILABLE, not a raw
+    ``sqlite3`` traceback out of the Click group.
+    """
+    try:
+        return _sqlite_write_locked(db_path)
+    except sqlite3.Error as exc:
+        raise DetectionError(
+            f"Cannot probe the collection lock state at {db_path}: {exc}",
+            exit_code=7,
+        ) from exc
+
+
 def _sqlite_write_locked(db_path: Path) -> bool:
     if not db_path.exists():
         return False
 
     conn: sqlite3.Connection | None = None
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=rw", uri=True, timeout=0.05)
+        # ``as_uri`` percent-encodes the path: a raw ``?``/``#``/``%`` in
+        # ``db_path`` would corrupt the URI and make the probe fail with
+        # "unable to open", which must not be read as "not locked".
+        conn = sqlite3.connect(
+            db_path.resolve().as_uri() + "?mode=rw", uri=True, timeout=0.05
+        )
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("ROLLBACK")
         return False
     except sqlite3.OperationalError as exc:
-        return "locked" in str(exc).lower() or "busy" in str(exc).lower()
+        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+            return True
+        # Fail closed: an unexpected probe error means the lock state is
+        # unknown, not that the collection is safe to write.
+        raise
     finally:
         if conn is not None:
             conn.close()

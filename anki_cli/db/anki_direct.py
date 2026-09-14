@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
 import sqlite3
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from hashlib import sha1
+from html.entities import name2codepoint
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -93,6 +95,111 @@ def queue_from_type_sql(*, due_expr: str = RESTORED_DUE_SQL) -> str:
                             CASE WHEN ({due_expr}) > {LEARN_DUE_EPOCH_THRESHOLD} THEN 1 ELSE 3 END
                         ELSE 2
                     END"""
+
+
+# rslib ``HTML_MEDIA_TAGS``: ``<img src="x.png">`` and friends contribute their
+# filename to the checksum text; every other tag is dropped afterwards.
+# Output is byte-identical to the rslib regex on its test vectors; the one
+# accepted divergence is any quote character that is not part of a balanced
+# pair inside a media tag — e.g. the unquoted ``<img alt=Bob's src="a.png">``
+# (rslib keeps "a.png", this drops the tag), likewise the unbalanced
+# ``<img alt="a src=x.png>``. The quoted form ``alt="Bob's"`` is fine, and
+# Anki's editor always quotes, so this needs hand-written HTML.
+_CHECKSUM_MEDIA_TAG_RE = re.compile(
+    r"""
+    <\b(?:img|audio|video|object|source)\b
+    (?:[^>"']|"[^"]*"|'[^']*')+?  # disjoint alternatives: a quote char is only
+                                # consumable by the quoted branch, so a src-less
+                                # tag cannot enumerate 2**n splits of its attrs
+    \b(?:src|data)\b=
+    (?:
+        "([^"]+?)"[^>]*>
+        |'([^']+?)'[^>]*>
+        |([^ >]+?)(?:\x20[^>]*>|>)
+    )
+    """,
+    re.VERBOSE | re.IGNORECASE | re.DOTALL,
+)
+
+# rslib ``HTML``: comments, style/script bodies, then any remaining tag.
+# ``<style[^>]*>`` is match-equivalent to ``<style.*?>`` (the first '>' ends the
+# tag either way) but single-parse — ``.*?`` was cubic on repeated unclosed
+# ``<style>``/``<script>`` tags.
+_CHECKSUM_HTML_TAG_RE = re.compile(
+    r"(<!--.*?-->)|(<style[^>]*>.*?</style>)|(<script[^>]*>.*?</script>)|(<.*?>)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# rslib ``decode_entities``: htmlescape::decode_html is all-or-nothing — any
+# malformed entity (bare '&', unknown name, bad numeric escape) errs and the
+# ORIGINAL text is kept, so Python's lenient ``html.unescape`` cannot be used:
+# it decodes what it can and also accepts HTML5 legacy no-semicolon forms
+# (``&nbsp``/``&amp``/``&copy``) that htmlescape rejects.
+_ENTITY_RE = re.compile(r"&(#[0-9]+|#x[0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);")
+
+
+def _decode_entities_strict(text: str) -> str:
+    """Decode entities with htmlescape semantics: all-or-nothing.
+
+    Faithfulness notes, verified against htmlescape's ``decode.rs``:
+
+    - ``&#x`` is lowercase-only upstream (``&#X41;`` → MalformedNumEscape).
+    - Numeric escapes resolving to UTF-16 surrogates (``&#xD800;``) err via
+      ``char::from_u32`` → InvalidCharacter; Python's ``chr`` would accept them
+      and then crash the UTF-8 encode downstream.
+    - Named entities use the HTML4 table (``name2codepoint``), which matches
+      htmlescape's ``NAMED_ENTITIES`` exactly (252 names, same codepoints);
+      HTML5-only names like ``&check;`` err → UnknownEntity.
+    """
+    if "&" not in text:
+        return text
+    # A '&' not part of a well-formed entity errs → keep the text as-is.
+    if "&" in _ENTITY_RE.sub("", text):
+        return text
+
+    def _one(match: re.Match[str]) -> str:
+        body = match.group(1)
+        if body[0] == "#":
+            cp = int(body[2:], 16) if body[1] == "x" else int(body[1:])
+            if 0xD800 <= cp <= 0xDFFF:
+                raise ValueError("surrogate code point")
+            return chr(cp)
+        return chr(name2codepoint[body])
+
+    try:
+        return _ENTITY_RE.sub(_one, text).replace("\xa0", " ")
+    except (KeyError, ValueError, OverflowError):
+        return text
+
+
+def _strip_html_preserving_media_filenames(text: str) -> str:
+    """Port of rslib ``strip_html_preserving_media_filenames``.
+
+    Media tags (``img``/``audio``/``video``/``object``/``source``) are replaced
+    by their ``src``/``data`` filename surrounded by spaces, remaining markup is
+    removed, and entities are decoded. ``<b>Q</b>`` therefore checksums
+    identically to ``Q``.
+    """
+
+    def _media_filename(match: re.Match[str]) -> str:
+        return " " + "".join(group or "" for group in match.groups()) + " "
+
+    # Mirrors rslib's borrowed-Cow fast path: no markup → nothing to strip.
+    stripped = text
+    if "<" in stripped:
+        stripped = _CHECKSUM_MEDIA_TAG_RE.sub(_media_filename, stripped)
+        stripped = _CHECKSUM_HTML_TAG_RE.sub("", stripped)
+    if "&" in stripped:
+        stripped = _decode_entities_strict(stripped)
+    return stripped
+
+
+class DirectWriteBlockedError(RuntimeError):
+    """Direct write refused: Anki Desktop is running or holds the collection lock.
+
+    Raised by ``_ensure_write_safe`` so callers can catch the refusal by type
+    instead of matching the message text.
+    """
 
 
 # py-fsrs 6 wants exactly 21 weights. Anki may still carry FSRS-4.5 (17) or
@@ -2980,8 +3087,17 @@ class AnkiDirectReadStore:
     def _ensure_write_safe(self) -> None:
         from anki_cli.backends.detect import _anki_process_running, _sqlite_write_locked
 
-        if _anki_process_running() or _sqlite_write_locked(self.db_path):
-            raise RuntimeError(
+        running = _anki_process_running()
+        try:
+            locked = _sqlite_write_locked(self.db_path)
+        except sqlite3.Error as exc:
+            # Fail closed, but as the typed refusal: an inconclusive probe is
+            # "blocked", not a raw sqlite3 traceback out of the write path.
+            raise DirectWriteBlockedError(
+                f"Cannot verify the collection lock state at {self.db_path}: {exc}"
+            ) from exc
+        if running or locked:
+            raise DirectWriteBlockedError(
                 "Anki Desktop appears to be running while direct write was requested. "
                 "Close Anki Desktop or use --backend ankiconnect."
             )
@@ -3004,8 +3120,13 @@ class AnkiDirectReadStore:
             candidate += 1
         return candidate
 
-    def _field_checksum(self, first_field: str) -> int:
-        digest = sha1(first_field.encode("utf-8")).hexdigest()
+    @staticmethod
+    def _field_checksum(first_field: str) -> int:
+        # Anki hashes the *text* of the first field, not its markup (rslib
+        # ``field_checksum`` over ``strip_html_preserving_media_filenames``), so
+        # CLI-written notes checksum identically to Anki-written ones.
+        stripped = _strip_html_preserving_media_filenames(first_field)
+        digest = sha1(stripped.encode("utf-8")).hexdigest()
         return int(digest[:8], 16)
 
     def _find_duplicate_note_ids(

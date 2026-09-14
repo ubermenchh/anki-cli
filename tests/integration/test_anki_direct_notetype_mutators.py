@@ -17,6 +17,8 @@ from anki_cli.proto.anki.notetypes import (
 )
 from tests.integration.conftest import (
     COL_TABLE_SQL,
+    CSUM_A,
+    CSUM_B,
     assert_col_modified,
     col_row,
     insert_col_row,
@@ -478,7 +480,7 @@ def test_remove_notetype_field_rewrites_note_field_values(
     note = _note_row(db_path, 100)
     assert note["flds"] == "a\x1fc"
     assert note["sfld"] == "a"
-    assert note["csum"] == store._field_checksum("a")
+    assert note["csum"] == CSUM_A
     assert note["mod"] == 1_700_000_000
     assert note["usn"] == -1
 
@@ -569,7 +571,7 @@ def test_remove_notetype_field_removing_first_field_recomputes_sfld_and_csum(
     note = _note_row(db_path, 100)
     assert note["flds"] == "b\x1fc"
     assert note["sfld"] == "b"
-    assert note["csum"] == store._field_checksum("b")
+    assert note["csum"] == CSUM_B
 
 
 def test_remove_notetype_field_shifts_sort_idx_and_requirement_ords(
@@ -632,7 +634,7 @@ def test_remove_notetype_field_shifts_sort_idx_and_requirement_ords(
     assert note["flds"] == "a\x1fc\x1fd"
     # sfld follows the sort field; csum always hashes the first field.
     assert note["sfld"] == "c"
-    assert note["csum"] == store._field_checksum("a")
+    assert note["csum"] == CSUM_A
 
 
 def test_remove_notetype_field_updates_sort_field_idx_when_out_of_range(

@@ -134,6 +134,46 @@ def test_forced_direct_refuses_when_db_locked(
     assert "Anki Desktop appears to be running" in str(exc_info.value)
 
 
+def test_forced_direct_unopenable_collection_raises_detection_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An unopenable collection must fail as ``DetectionError``, not sqlite3.
+
+    ``_sqlite_write_locked`` re-raises non-lock ``sqlite3.Error`` (fail closed);
+    ``_probe_write_lock`` translates that into ``DetectionError`` because
+    ``detect_backend``'s only documented failure type is ``DetectionError``.
+    A directory passes ``exists()`` but ``sqlite3.connect`` cannot open it —
+    and the ``_patch_detect_helpers`` seam can only ever return a bool, so this
+    exercises the real probe.
+    """
+    bad = tmp_path / "collection.anki2"
+    bad.mkdir()
+    monkeypatch.setattr(detect_mod, "_anki_process_running", lambda: False)
+
+    with pytest.raises(DetectionError) as exc_info:
+        detect_backend(forced_backend="direct", col_override=bad)
+
+    assert exc_info.value.exit_code == 7
+
+
+def test_auto_unopenable_collection_raises_detection_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Same as the forced path, reached via ``forced_backend="auto"`` (a config
+    ``collection_path`` pointing at an unopenable file)."""
+    bad = tmp_path / "collection.anki2"
+    bad.mkdir()
+    monkeypatch.setattr(detect_mod, "_ankiconnect_reachable", lambda url: False)
+    monkeypatch.setattr(detect_mod, "_anki_process_running", lambda: False)
+
+    with pytest.raises(DetectionError) as exc_info:
+        detect_backend(forced_backend="auto", col_override=bad)
+
+    assert exc_info.value.exit_code == 7
+
+
 def test_forced_direct_success(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
