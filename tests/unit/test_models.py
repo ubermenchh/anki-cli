@@ -73,13 +73,20 @@ def test_success_response_forbids_extra_fields() -> None:
 
 
 def test_error_info_defaults_and_instances_are_independent() -> None:
-    first = ErrorInfo(code="E1", message="one")
-    second = ErrorInfo(code="E2", message="two")
+    first = ErrorInfo(code="INVALID_INPUT", message="one")
+    second = ErrorInfo(code="ENTITY_NOT_FOUND", message="two")
 
     first.details["k"] = "v"
 
     assert second.details == {}
     assert first.details == {"k": "v"}
+
+
+def test_error_info_rejects_codes_not_in_the_enum() -> None:
+    """Every emitted code must be one SKILL.md documents (tests/unit/test_docs_sync.py)."""
+    with pytest.raises(ValidationError):
+        ErrorInfo(code="E1", message="one")  # type: ignore[arg-type]
+    assert ErrorInfo(code="INVALID_INPUT", message="x").model_dump()["code"] == "INVALID_INPUT"
 
 
 def test_error_info_rejects_non_json_value_in_details() -> None:

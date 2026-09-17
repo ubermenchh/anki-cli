@@ -259,7 +259,7 @@ def deck_delete_cmd(ctx: click.Context, deck_name: str) -> None:
             command="deck:delete",
             code="CONFIRMATION_REQUIRED",
             message="Deleting a deck requires --yes.",
-            details={"hint": "Run with --yes before the command."},
+            details={"hint": "Re-run with --yes."},
         )
         raise click.exceptions.Exit(2)
 

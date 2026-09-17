@@ -145,6 +145,96 @@ def test_invoke_command_calls_click_command(monkeypatch: pytest.MonkeyPatch) -> 
     assert calls["obj"]["backend"] == "direct"
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected_obj", "expected_deck"),
+    [
+        (["deck", "--deck", "A", "--yes"], {"yes": True}, "A"),
+        (["deck", "--yes", "--deck", "A"], {"yes": True}, "A"),
+        (["deck", "--deck", "A", "--format", "JSON"], {"format": "json"}, "A"),
+        (["deck", "--deck", "A", "--format=md", "--copy"], {"format": "md", "copy": True}, "A"),
+        # A subcommand option's value that looks like a global flag stays a value.
+        (["deck", "--deck", "--yes"], {"yes": False}, "--yes"),
+        # A trailing flag must not swallow key=value sugar that follows it.
+        (["deck", "--yes", "deck=A"], {"yes": True}, "A"),
+        # Aliases resolve before the command lookup.
+        (["d", "--deck", "A", "--yes"], {"yes": True}, "A"),
+    ],
+)
+def test_invoke_command_accepts_global_options_after_the_command(
+    monkeypatch: pytest.MonkeyPatch, argv, expected_obj, expected_deck
+) -> None:
+    """Same contract as the CLI (#26): ``--yes`` / ``--format`` may trail the
+    command; they apply to that line only."""
+    calls: dict[str, Any] = {}
+
+    @click.command("deck")
+    @click.option("--deck")
+    @click.pass_context
+    def cmd(ctx: click.Context, deck: str | None):
+        calls["deck"] = deck
+        calls["obj"] = dict(ctx.obj or {})
+
+    monkeypatch.setattr(repl_mod, "get_command", lambda name: cmd if name == "deck" else None)
+    monkeypatch.setitem(repl_mod._ALIASES, "d", "deck")
+    session_obj = {"backend": "direct", "yes": False, "format": "table", "copy": False}
+
+    repl_mod._invoke_command(session_obj, argv)
+
+    assert calls["deck"] == expected_deck
+    for key, value in expected_obj.items():
+        assert calls["obj"][key] == value, key
+    # The session object itself is untouched.
+    assert session_obj == {"backend": "direct", "yes": False, "format": "table", "copy": False}
+
+
+@pytest.mark.parametrize(
+    "argv", [["--yess", "deck", "--deck", "A"], ["--backend", "direct", "deck"]]
+)
+def test_invoke_command_rejects_unknown_leading_option(
+    monkeypatch: pytest.MonkeyPatch, capsys, argv
+) -> None:
+    """A mistyped (or session-fixed) leading option must not vanish silently
+    while the command runs without it."""
+    calls: dict[str, Any] = {}
+
+    @click.command("deck")
+    @click.option("--deck")
+    def cmd(deck: str | None):
+        calls["ran"] = True
+
+    monkeypatch.setattr(repl_mod, "get_command", lambda name: cmd if name == "deck" else None)
+
+    repl_mod._invoke_command({"yes": False}, argv)
+
+    assert calls == {}
+    assert f"No such option: {argv[0]}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["deck", "--deck", "A", "--format"], "'--format' requires an argument"),
+        (["deck", "--deck", "A", "--format", "yaml"], "Invalid value for '--format': 'yaml'"),
+    ],
+)
+def test_invoke_command_reports_bad_trailing_format(
+    monkeypatch: pytest.MonkeyPatch, capsys, argv, message
+) -> None:
+    calls: dict[str, Any] = {}
+
+    @click.command("deck")
+    @click.option("--deck")
+    def cmd(deck: str | None):
+        calls["ran"] = True
+
+    monkeypatch.setattr(repl_mod, "get_command", lambda name: cmd if name == "deck" else None)
+
+    repl_mod._invoke_command({"format": "table"}, argv)
+
+    assert calls == {}
+    assert message in capsys.readouterr().err
+
+
 def test_show_command_help_unknown_prints_error(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     monkeypatch.setattr(repl_mod, "get_command", lambda name: None)
 

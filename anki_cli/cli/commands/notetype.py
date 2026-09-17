@@ -251,7 +251,7 @@ def notetype_field_remove_cmd(ctx: click.Context, notetype_name: str, field_name
             details={
                 "notetype": normalized_name,
                 "field": normalized_field,
-                "hint": "Run with --yes before the command.",
+                "hint": "Re-run with --yes.",
             },
         )
         raise click.exceptions.Exit(2)

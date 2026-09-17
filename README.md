@@ -243,14 +243,23 @@ anki --format csv ...
 anki --format plain ...
 ```
 
+Global options (`--format`, `--backend`, `--col`, `--yes`, `--copy`, `--no-color`) may be
+written before or after the subcommand: `anki --yes note:delete --id 1` and
+`anki note:delete --id 1 --yes` are the same command.
+
+Every failure — including a mistyped option or command name — is reported through the
+same envelope, so `--format json` always yields parseable stderr. Set `ANKI_CLI_DEBUG=1`
+to append a Python traceback after an `INTERNAL_ERROR` envelope.
+
 Exit codes:
 
-- `0`: success
-- `1`: backend operation failed
-- `2`: invalid input or confirmation required
-- `3`: no Anki backend found (auto mode could not reach AnkiConnect or find a collection)
-- `4`: entity not found
-- `7`: backend unavailable
+- `0`: Success
+- `1`: Backend operation failed (including unexpected errors)
+- `2`: Invalid input, usage error, confirmation required, or unsupported operation
+- `3`: No Anki backend found (auto mode could not reach AnkiConnect or find a collection)
+- `4`: Entity not found
+- `7`: Backend unavailable or collection locked
+- `130`: Interrupted (Ctrl-C)
 
 `status` is the exception: it reports detection failures as
 `{"ok": true, "data": {"ok": false, "error": "..."}}` and still exits 0.
