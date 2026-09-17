@@ -104,11 +104,14 @@ def test_get_due_counts_deck_filter_includes_children_like_anki(tmp_path: Path) 
 def test_get_due_counts_deck_filter_escapes_like_metacharacters(tmp_path: Path) -> None:
     store = _make_store(
         tmp_path,
-        decks=[(1, "100%"), (2, "100%::Sub"), (3, "100X")],
-        cards=[(1, 1, 0, 0), (2, 2, 0, 0), (3, 3, 0, 0)],
+        decks=[(1, "100%"), (2, "100%::Sub"), (3, "100X::Sub"), (4, "100_"), (5, "100Y::Sub")],
+        cards=[(i, i, 0, 0) for i in range(1, 6)],
     )
 
+    # Unescaped ``%`` would also pull 100X::Sub and 100Y::Sub; unescaped ``_``
+    # would pull 100Y::Sub.
     assert store.get_due_counts(deck="100%")["new"] == 2
+    assert store.get_due_counts(deck="100_")["new"] == 1
 
 
 def test_get_next_due_card_prefers_learning_before_review_and_new(tmp_path: Path) -> None:

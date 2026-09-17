@@ -50,7 +50,8 @@ def _make_store(
             reps INTEGER NOT NULL DEFAULT 0,
             lapses INTEGER NOT NULL DEFAULT 0,
             flags INTEGER NOT NULL DEFAULT 0,
-            odid INTEGER NOT NULL DEFAULT 0
+            odid INTEGER NOT NULL DEFAULT 0,
+            type INTEGER NOT NULL DEFAULT 0
         );
         """
     )
@@ -58,6 +59,19 @@ def _make_store(
     conn.executemany("INSERT INTO decks (id, name) VALUES (?, ?)", decks)
     conn.executemany("INSERT INTO notes (id, tags, flds, mod) VALUES (?, ?, ?, ?)", notes)
     conn.executemany("INSERT INTO cards (id, nid, did, queue, due) VALUES (?, ?, ?, ?, ?)", cards)
+    # Default ``type`` from ``queue`` the way Anki does for an unsuspended card:
+    # new/learn/review/relearn are types 0/1/2/3; day-learn (queue 3) is type 1
+    # for a learning card; suspended/buried (queue < 0) fall back to new (0).
+    # Tests that need a specific (type, queue) pair UPDATE it afterwards.
+    conn.execute(
+        """
+        UPDATE cards SET type = CASE
+            WHEN queue IN (1, 3) THEN 1
+            WHEN queue = 2 THEN 2
+            ELSE 0
+        END
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -131,8 +145,11 @@ def test_deck_filter_matches_parent_and_children_like_anki(tmp_path: Path) -> No
     assert store.find_card_ids("deck:Language") == [1004]
     assert store.find_card_ids("-deck:Lang") == [1004]
     assert store.find_note_ids("deck:Lang") == [101, 102, 103]
-    # Case-insensitive, as deck names are unique case-insensitively in Anki.
+    # ASCII case-insensitive via SQLite LIKE (guards against a swap to = / GLOB).
     assert store.find_card_ids("deck:lang") == [1001, 1002, 1003]
+    # rslib special values.
+    assert store.find_card_ids("deck:*") == [1001, 1002, 1003, 1004]
+    assert store.find_card_ids("-deck:*") == []
 
 
 def test_deck_filter_follows_cards_visiting_a_filtered_deck(tmp_path: Path) -> None:
@@ -151,6 +168,10 @@ def test_deck_filter_follows_cards_visiting_a_filtered_deck(tmp_path: Path) -> N
 
     assert store.find_card_ids("deck:Home") == [1001]
     assert store.find_card_ids("deck:Cram") == [1001, 1002]
+    assert store.find_card_ids("deck:filtered") == [1001]
+    assert store.find_note_ids("deck:filtered") == [101]
+    with pytest.raises(SearchParseError, match="deck:current is not supported"):
+        store.find_card_ids("deck:current")
 
 
 def test_find_note_ids_supports_deck_wildcards_and_text_search(tmp_path: Path) -> None:
@@ -176,13 +197,49 @@ def test_find_card_ids_is_filters_and_due_logic(
     monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
     store = _seed_store(tmp_path)
 
-    assert store.find_card_ids("is:new") == [1001]
+    # The fixture defaults type from queue, so suspended/buried cards are type 0.
+    assert store.find_card_ids("is:new") == [1001, 1007, 1008, 1009]
+    assert store.find_card_ids("is:new -is:suspended -is:buried") == [1001]
     assert store.find_card_ids("is:learn") == [1002, 1003, 1004, 1010]
     assert store.find_card_ids("is:review") == [1005, 1006]
     assert store.find_card_ids("is:suspended") == [1007]
     # New cards are never "due" (rslib StateKind::Due); 1001 is queue 0.
     assert store.find_card_ids("is:due") == [1002, 1004, 1005]
     assert store.find_card_ids("is:due is:new") == []
+
+
+def test_is_new_and_is_review_follow_card_type_not_queue(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """rslib write_state: New/Review are card types. A suspended new card is
+    still is:new; a relearning card (type 3, queue 1) is still is:review and,
+    once its step is due, is:due; a preview-queue card (queue 4) is due too."""
+    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
+    store = _make_store(
+        tmp_path,
+        decks=[(1, "Default")],
+        notes=[(n, " t ", "a\x1fb", 0) for n in (1, 2, 3, 4, 5)],
+        cards=[
+            (1, 1, 1, -1, 0),          # suspended, type new
+            (2, 2, 1, 1, 999_000),     # relearning: type 3, queue 1, step due
+            (3, 3, 1, 2, 11),          # plain review due
+            (4, 4, 1, 4, 999_000),     # preview repeat (queue 4), due
+            (5, 5, 1, 0, 0),           # new
+        ],
+    )
+    conn = sqlite3.connect(str(store.db_path))
+    conn.execute("UPDATE cards SET type = 0 WHERE id = 1")
+    conn.execute("UPDATE cards SET type = 3 WHERE id = 2")
+    conn.execute("UPDATE cards SET type = 2 WHERE id = 4")
+    conn.commit()
+    conn.close()
+
+    assert store.find_card_ids("is:new") == [1, 5]
+    assert store.find_card_ids("is:new is:suspended") == [1]
+    assert store.find_card_ids("is:review") == [2, 3, 4]
+    assert store.find_card_ids("is:learn") == [2]
+    assert store.find_card_ids("is:due") == [2, 3, 4]
 
 
 def test_find_card_ids_combines_due_and_deck_filters(
@@ -248,16 +305,23 @@ def test_tag_filter_matches_children_and_tag_none(tmp_path: Path) -> None:
             (102, " verb::irregular ", "a\x1fb", 0),
             (103, " verbose ", "a\x1fb", 0),
             (104, "", "a\x1fb", 0),
+            (105, " adverb::irregular ", "a\x1fb", 0),  # suffix match is not a child of verb
+            (106, " ", "a\x1fb", 0),  # hand-edited blank; still untagged
         ],
-        cards=[(n + 900, n, 1, 0, 0) for n in (101, 102, 103, 104)],
+        cards=[(n + 900, n, 1, 0, 0) for n in (101, 102, 103, 104, 105, 106)],
     )
 
     assert store.find_note_ids("tag:verb") == [101, 102]
     assert store.find_note_ids("tag:verb::irregular") == [102]
+    assert store.find_note_ids("tag:adverb") == [105]
     assert store.find_note_ids("tag:verb*") == [101, 102, 103]
-    assert store.find_note_ids("tag:none") == [104]
+    assert store.find_note_ids("tag:none") == [104, 106]
     assert store.find_card_ids("tag:verb") == [1001, 1002]
-    assert store.find_card_ids("-tag:verb") == [1003, 1004]
+    assert store.find_card_ids("-tag:verb") == [1003, 1004, 1005, 1006]
+    # rslib: tag:* is every note, tagged or not; a tag with a space matches nothing.
+    assert store.find_note_ids("tag:*") == [101, 102, 103, 104, 105, 106]
+    assert store.find_note_ids("-tag:*") == []
+    assert store.find_note_ids('"tag:a b"') == []
 
 
 def test_note_prefix_is_an_alias_for_notetype(tmp_path: Path) -> None:
@@ -278,28 +342,43 @@ def test_added_uses_creation_time_and_the_scheduling_day(
     day = 86_400
     # v1 timing (no schedVer): next rollover is the next 86400 boundary.
     next_day_at = (now // day + 1) * day
+    last_rollover = next_day_at - day
     ids_ms = {
-        "today": (next_day_at - day + 1) * 1000,
+        "today": (last_rollover + 1) * 1000,
+        # Exactly on the cutoff: rslib uses ``c.id > cutoff``, so this is yesterday.
+        "on_cutoff": last_rollover * 1000,
+        # 23h ago by the wall clock but *before* the last rollover: a wall-clock
+        # ``now - 86400`` cutoff would call it added:1; Anki says added:2.
+        "late_yesterday": (now - day + 3600) * 1000,
         "yesterday": (next_day_at - 2 * day + 1) * 1000,
         "week_ago": (next_day_at - 8 * day + 1) * 1000,
     }
+    assert now - day < ids_ms["late_yesterday"] // 1000 < last_rollover
     store = _make_store(
         tmp_path,
         decks=[(1, "Default")],
-        # Edited just now: mod would say "added today" for all three.
-        notes=[(1, " t ", "a\x1fb", now), (2, " t ", "a\x1fb", now), (3, " t ", "a\x1fb", now)],
+        # Edited just now: mod would say "added today" for every note.
+        notes=[(n, " t ", "a\x1fb", now) for n in (1, 2, 3, 4, 5)],
         cards=[
             (ids_ms["today"], 1, 1, 0, 0),
-            (ids_ms["yesterday"], 2, 1, 0, 0),
-            (ids_ms["week_ago"], 3, 1, 0, 0),
+            (ids_ms["on_cutoff"], 2, 1, 0, 0),
+            (ids_ms["late_yesterday"], 3, 1, 0, 0),
+            (ids_ms["yesterday"], 4, 1, 0, 0),
+            (ids_ms["week_ago"], 5, 1, 0, 0),
         ],
     )
 
     assert store.find_card_ids("added:1") == [ids_ms["today"]]
-    assert store.find_card_ids("added:2") == sorted([ids_ms["yesterday"], ids_ms["today"]])
+    assert store.find_card_ids("added:2") == sorted(
+        [ids_ms["on_cutoff"], ids_ms["late_yesterday"], ids_ms["yesterday"], ids_ms["today"]]
+    )
     assert store.find_card_ids("added:30") == sorted(ids_ms.values())
     assert store.find_note_ids("added:1") == [1]
-    assert store.find_note_ids("added:2") == [1, 2]
+    assert store.find_note_ids("added:2") == [1, 2, 3, 4]
+    # rslib parse_added: n.max(1), negatives are a parse error.
+    assert store.find_card_ids("added:0") == store.find_card_ids("added:1")
+    with pytest.raises(SearchParseError, match="non-negative"):
+        store.find_card_ids("added:-1")
 
 
 def test_unknown_prefix_is_rejected_not_searched_as_text(tmp_path: Path) -> None:

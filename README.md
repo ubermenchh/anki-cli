@@ -102,18 +102,21 @@ The remote Anki Desktop must have AnkiConnect configured to accept non-localhost
 
 Filters follow Anki's own semantics:
 
-- `deck:NAME` — the deck and its subdecks (`deck:Lang` covers `Lang::Spanish`); supports `*` glob
+- `deck:NAME` — the deck and its subdecks (`deck:Lang` covers `Lang::Spanish`), including cards visiting a filtered deck; `deck:*` (all), `deck:filtered` (cards in filtered decks); supports `*` glob. Name matching is case-insensitive for ASCII.
 - `notetype:NAME` (or Anki's spelling `note:NAME`)
-- `tag:NAME` — the tag and its children (`tag:verb` covers `verb::irregular`); `tag:none` for untagged notes; supports `*` glob
-- `is:new`, `is:learn`, `is:review`, `is:due` (learning/review cards whose due time has passed; never new cards), `is:suspended`, `is:buried`
+- `tag:NAME` — the tag and its children (`tag:verb` covers `verb::irregular`); `tag:none` for untagged notes, `tag:*` for every note; supports `*` glob
+- `is:new` / `is:review` (by card type, so a suspended new card is still `is:new`), `is:learn`, `is:due` (learning/review cards whose due time has passed; never new cards), `is:suspended`, `is:buried`
 - `added:N` — cards created in the last N scheduling days (`added:1` = since the last rollover)
 - `flag:N`
 - `prop:ivl>N`, `prop:due>N`, `prop:reps>N`, `prop:lapses>N` (`<`, `<=`, `=`, `>=`, `>`)
 - `nid:ID`, `cid:ID`
 - bare text and quoted text (`"specific text"`); escape a literal colon as `\:`
 
-Any other `prefix:` (for example `card:`, `rated:`, `mid:`, field searches like `front:dog`) is
-rejected with `INVALID_INPUT` rather than silently searched as text.
+Any other `prefix:` (for example `card:`, `rated:`, `mid:`, `deck:current`, field searches like
+`front:dog`) is rejected with `INVALID_INPUT` rather than silently searched as text.
+
+The `--deck` option on `review`, `decks` and `deck` follows the same rule: it covers the named deck
+and its subdecks, so a parent row in `decks` includes its children's counts.
 
 Logical syntax:
 

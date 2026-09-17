@@ -387,11 +387,27 @@ def _term_to_filter(token: Token, *, query: str) -> FilterNode:
             position=token.position,
         )
 
+    if key == "deck" and value.casefold() == "current":
+        raise SearchParseError(
+            "deck:current is not supported (the CLI has no current deck); name the deck",
+            query=query,
+            position=token.position,
+        )
+
     if key in {"deck", "notetype", "tag"}:
         return FilterNode(kind=key, value=value)
 
     if key in {"nid", "cid", "added"}:
         parsed = _parse_int(value, query=query, position=token.position, label=key)
+        if key == "added":
+            # rslib parse_added: u32 (negatives are a parse error), then n.max(1).
+            if parsed < 0:
+                raise SearchParseError(
+                    "added: must be a non-negative number of days",
+                    query=query,
+                    position=token.position,
+                )
+            parsed = max(parsed, 1)
         return FilterNode(kind=key, value=str(parsed))
 
     if key == "is":
@@ -524,7 +540,7 @@ def _compile_card_filter(node: FilterNode, *, ctx: SearchContext) -> _Clause:
             return _Clause(where="1=1", params=[])
         return _Clause(
             where="n.flds LIKE ? ESCAPE '\\'",
-            params=[f"%{_escape_like(node.value)}%"],
+            params=[f"%{escape_like(node.value)}%"],
             needs_notes_join=True,
         )
 
@@ -572,7 +588,7 @@ def _compile_note_filter(node: FilterNode, *, ctx: SearchContext) -> _Clause:
             return _Clause(where="1=1", params=[])
         return _Clause(
             where="n.flds LIKE ? ESCAPE '\\'",
-            params=[f"%{_escape_like(node.value)}%"],
+            params=[f"%{escape_like(node.value)}%"],
         )
 
     if node.kind == "nid":
@@ -636,14 +652,23 @@ def _deck_clause(value: str, *, alias: str) -> tuple[str, list[SQLParam]]:
     card visiting a filtered deck, by its home deck ``odid``.
 
     ``deck:Lang`` matches ``Lang`` and ``Lang::Spanish`` but not ``Language``;
-    ``*`` globs as before.
+    ``*`` globs. rslib's special values: ``deck:*`` is every card,
+    ``deck:filtered`` is every card currently in a filtered deck. ``deck:current``
+    needs the collection's current deck, which this compiler does not know, so
+    it is rejected at parse time. Name matching is case-insensitive for ASCII
+    only (SQLite ``LIKE``); rslib folds Unicode.
     """
+    if value == "*":
+        return ("1=1", [])
+    if value.casefold() == "filtered":
+        return (f"{alias}.odid != 0", [])
     pattern = _glob_to_like(value)
     ids_subquery = (
         "SELECT id FROM decks "
         "WHERE name LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\'"
     )
     child_pattern = f"{pattern}::%"
+    # ``odid != 0`` is only an early-out (no deck has id 0); the IN handles it.
     return (
         f"({alias}.did IN ({ids_subquery}) "
         f"OR ({alias}.odid != 0 AND {alias}.odid IN ({ids_subquery})))",
@@ -656,7 +681,15 @@ def _tag_clause(value: str) -> tuple[str, list[SQLParam]]:
     ``tag:none`` is the untagged note. Tags are stored as `` a b `` with a space
     on each side, which is what the surrounding ``%`` / `` `` anchors rely on."""
     if value.casefold() == "none":
-        return ("n.tags = ''", [])
+        return ("TRIM(n.tags) = ''", [])
+    if value == "*":
+        # rslib: ``tag:*`` is every note, tagged or not.
+        return ("1=1", [])
+    if " " in value:
+        # A tag cannot contain a space, so nothing can match (rslib: false).
+        return ("1=0", [])
+    # Deviation from rslib: its glob ``*`` is ``\S*`` and cannot span into the
+    # next tag; SQL ``%`` can, so ``tag:a*d`` also matches `` ab cd ``.
     pattern = _glob_to_like(value)
     return (
         "(n.tags LIKE ? ESCAPE '\\' OR n.tags LIKE ? ESCAPE '\\')",
@@ -680,14 +713,17 @@ def _is_clause(
 ) -> tuple[str, list[SQLParam]]:
     now_sec = ctx.now_sec
     due_day_index = ctx.due_day_index
+    # rslib write_state: New / Review are card *types* (so a suspended new card
+    # is still is:new, and a relearning card is still is:review); Learn,
+    # Suspended, Buried and Due look at the queue.
     if value == "new":
-        return (f"{alias}.queue = 0", [])
+        return (f"{alias}.type = 0", [])
 
     if value == "learn":
         return (f"{alias}.queue IN (1, 3)", [])
 
     if value == "review":
-        return (f"{alias}.queue = 2", [])
+        return (f"{alias}.type IN (2, 3)", [])
 
     if value == "suspended":
         return (f"{alias}.queue = -1", [])
@@ -701,9 +737,10 @@ def _is_clause(
         # include them, and the CLI used to, which made every "is:due" count
         # and pick include the whole new queue. queue 1 (intraday learn) stores
         # an epoch; queues 2 (review) and 3 (day-learn) a day index.
+        # Queue 4 (preview repeat) holds an epoch like queue 1.
         return (
             "("
-            f"({alias}.queue = 1 AND {alias}.due <= ?) OR "
+            f"({alias}.queue IN (1, 4) AND {alias}.due <= ?) OR "
             f"({alias}.queue IN (2, 3) AND {alias}.due <= ?)"
             ")",
             [now_sec, due_day_index],
@@ -734,9 +771,6 @@ def escape_like(value: str) -> str:
     return escaped
 
 
-_escape_like = escape_like
-
-
 def _glob_to_like(value: str) -> str:
-    escaped = _escape_like(value)
+    escaped = escape_like(value)
     return escaped.replace("*", "%")

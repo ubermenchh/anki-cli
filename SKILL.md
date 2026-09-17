@@ -235,9 +235,9 @@ anki config:set --key "display.default_output" --value "json"
 
 | Filter | Example |
 |--------|---------|
-| Deck | `deck:Japanese` (includes `Japanese::*` subdecks), `deck:Japanese*` (glob) |
+| Deck | `deck:Japanese` (includes `Japanese::*` subdecks), `deck:Japanese*` (glob), `deck:filtered`, `deck:*` |
 | Notetype | `notetype:Basic` or `note:Basic` |
-| Tag | `tag:verb` (includes `verb::*` children), `tag:lang*` (glob), `tag:none` (untagged) |
+| Tag | `tag:verb` (includes `verb::*` children), `tag:lang*` (glob), `tag:none` (untagged), `tag:*` (all) |
 | State | `is:new`, `is:learn`, `is:review`, `is:due`, `is:suspended`, `is:buried` |
 | Added | `added:1` (created since the last rollover), `added:7` |
 | Flag | `flag:1` through `flag:7`, `flag:0` (no flag) |
@@ -246,9 +246,14 @@ anki config:set --key "display.default_output" --value "json"
 | Card ID | `cid:1234567890` |
 | Text | bare words or `"quoted phrase"`; `\:` for a literal colon |
 
-Semantics match Anki: `is:due` never includes new cards (use `is:new`), and `deck:`/`tag:` are
-hierarchical. Any other `prefix:` (`card:`, `rated:`, `mid:`, `front:` field search, ...) is
-rejected with `INVALID_INPUT` — do not expect it to fall back to text search.
+Semantics match Anki: `is:due` never includes new cards (use `is:new`); `is:new`/`is:review` go by
+card type (a suspended new card is still `is:new`); `deck:`/`tag:` are hierarchical and `deck:`
+also finds cards visiting a filtered deck. Any other `prefix:` (`card:`, `rated:`, `mid:`,
+`deck:current`, `front:` field search, ...) is rejected with `INVALID_INPUT` — do not expect it
+to fall back to text search.
+
+`--deck NAME` on `review`, `decks` and `deck` covers the deck **and its subdecks**; a parent row in
+`decks` therefore includes child counts, so do not sum `total_due` across rows.
 
 ### Logical Operators
 

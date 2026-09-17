@@ -2869,6 +2869,8 @@ class AnkiDirectReadStore:
         )
 
     def _today_due_index(self, now_sec: int) -> int:
+        # Only the timing tests call this now; production goes through
+        # _search_context() / _timing(). Kept as the small public-ish probe.
         with self._connect() as conn:
             return self._timing(conn, now_sec).days_elapsed
 

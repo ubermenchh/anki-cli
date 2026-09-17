@@ -207,6 +207,8 @@ def test_get_due_counts_uses_expected_queries() -> None:
 
     def fake_find_cards(query: str) -> list[int]:
         seen.append(query)
+        # endswith() would also accept the old "is:due is:new"; the ``seen``
+        # assertion below is what pins the exact query strings.
         if query.endswith("is:new"):
             return [1, 2]
         if query.endswith("is:learn"):
