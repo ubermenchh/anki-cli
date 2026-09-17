@@ -145,6 +145,43 @@ def test_invoke_command_calls_click_command(monkeypatch: pytest.MonkeyPatch) -> 
     assert calls["obj"]["backend"] == "direct"
 
 
+@pytest.mark.parametrize(
+    ("argv", "expected_obj", "expected_deck"),
+    [
+        (["deck", "--deck", "A", "--yes"], {"yes": True}, "A"),
+        (["deck", "--yes", "--deck", "A"], {"yes": True}, "A"),
+        (["deck", "--deck", "A", "--format", "JSON"], {"format": "json"}, "A"),
+        (["deck", "--deck", "A", "--format=md", "--copy"], {"format": "md", "copy": True}, "A"),
+        # A subcommand option's value that looks like a global flag stays a value.
+        (["deck", "--deck", "--yes"], {"yes": False}, "--yes"),
+    ],
+)
+def test_invoke_command_accepts_global_options_after_the_command(
+    monkeypatch: pytest.MonkeyPatch, argv, expected_obj, expected_deck
+) -> None:
+    """Same contract as the CLI (#26): ``--yes`` / ``--format`` may trail the
+    command; they apply to that line only."""
+    calls: dict[str, Any] = {}
+
+    @click.command("deck")
+    @click.option("--deck")
+    @click.pass_context
+    def cmd(ctx: click.Context, deck: str | None):
+        calls["deck"] = deck
+        calls["obj"] = dict(ctx.obj or {})
+
+    monkeypatch.setattr(repl_mod, "get_command", lambda name: cmd if name == "deck" else None)
+    session_obj = {"backend": "direct", "yes": False, "format": "table", "copy": False}
+
+    repl_mod._invoke_command(session_obj, argv)
+
+    assert calls["deck"] == expected_deck
+    for key, value in expected_obj.items():
+        assert calls["obj"][key] == value, key
+    # The session object itself is untouched.
+    assert session_obj == {"backend": "direct", "yes": False, "format": "table", "copy": False}
+
+
 def test_show_command_help_unknown_prints_error(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     monkeypatch.setattr(repl_mod, "get_command", lambda name: None)
 

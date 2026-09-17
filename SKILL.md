@@ -107,6 +107,9 @@ anki --format json --yes note:delete --id 123
 anki note:delete --id 123 --yes --format json
 ```
 
+Inside the interactive REPL (`anki` with no command) the same trailing `--yes`, `--format`,
+`--copy` and `--no-color` work per line; `--backend` / `--col` are fixed for the session.
+
 ## Command Reference
 
 ### Querying

@@ -229,6 +229,7 @@ def _hoist(argv: list[str]) -> list[str]:
         # help is for the subcommand
         (["note:delete", "--help"], ["note:delete", "--help"]),
         (["note:delete", "-h"], ["note:delete", "-h"]),
+        (["note:delete", "--version"], ["note:delete", "--version"]),
         # nothing after '--' moves
         (["note:delete", "--", "--yes"], ["note:delete", "--", "--yes"]),
         (["note:delete", "--yes", "--", "--format", "json"],

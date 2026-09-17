@@ -129,7 +129,7 @@ def hoist_group_options(
     group_options: OptionArity,
     is_command: Callable[[str], bool],
     resolve_command_options: Callable[[str], OptionArity | None],
-    keep_in_place: frozenset[str] = frozenset(_HELP_SPELLINGS),
+    keep_in_place: frozenset[str] = frozenset({*_HELP_SPELLINGS, "--version"}),
 ) -> list[str]:
     """Move group options written after the subcommand to before it (#26).
 
@@ -137,8 +137,8 @@ def hoist_group_options(
     Click only accepts a group's options before the subcommand name; every
     documented example (and every agent following them) puts ``--yes`` /
     ``--format`` last. A spelling the subcommand itself defines is left alone
-    (the subcommand wins), as are ``-h/--help`` (help for the subcommand, not
-    the group) and anything after ``--``.
+    (the subcommand wins), as are ``-h/--help`` and ``--version`` (they answer
+    for the subcommand, not the group) and anything after ``--``.
 
     Runs on argv that ``preprocess_argv`` has already normalised.
     """
@@ -194,3 +194,54 @@ def hoist_group_options(
     if not hoisted:
         return tokens
     return [*head[:-1], *hoisted, head[-1], *rest]
+
+
+def command_name_from_argv(argv: Sequence[str], *, is_command: Callable[[str], bool]) -> str | None:
+    """First token that names a registered command, skipping group options and
+    their values; ``None`` before ``--`` runs out or when there is none."""
+    for token in argv:
+        if token == "--":
+            return None
+        if not token.startswith("-") and is_command(token):
+            return token
+    return None
+
+
+def peek_output_options(
+    argv: Sequence[str], *, group_options: OptionArity
+) -> tuple[str | None, bool]:
+    """``(--format value, --no-color present)`` read straight off argv.
+
+    Used when an error fires before the group callback has built ``ctx.obj``
+    (unknown command, bad group option): the envelope should still honour the
+    format the caller asked for. Tracks option arity so ``--col --format`` reads
+    ``--format`` as ``--col``'s value, exactly as Click will. The format is
+    lowercased like the ``--format`` option (``case_sensitive=False``). Stops
+    at ``--``.
+    """
+    fmt: str | None = None
+    no_color = False
+    tokens = list(argv)
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--":
+            break
+        if token.startswith("--format="):
+            fmt = token.split("=", 1)[1]
+            i += 1
+            continue
+        if token == "--format":
+            if i + 1 < len(tokens):
+                fmt = tokens[i + 1]
+            i += 2
+            continue
+        if token == "--no-color":
+            no_color = True
+            i += 1
+            continue
+        if token.startswith("-") and token != "-":
+            i += 1 + _tokens_consumed_by(token, group_options)
+            continue
+        i += 1
+    return (fmt.lower() if fmt else None), no_color

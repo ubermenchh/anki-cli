@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 import click
@@ -29,13 +28,13 @@ from anki_cli.core.template import TemplateParseError
 from anki_cli.db.anki_direct import DirectWriteBlockedError, UnsupportedCollectionError
 from anki_cli.models.output import ErrorCode, ExitCode, JSONValue
 
-# Most specific first within a hierarchy is not required: ``classify`` walks the
-# exception's MRO and takes the first class present here, so a subclass entry
-# always wins over its base regardless of dict order.
+# Domain and stdlib exceptions only; Click's own (``UsageError``, ``Abort``)
+# and ``DetectionError`` / sqlite lock errors are handled by ``classify``
+# directly because they carry extra state. Most-specific-first ordering is
+# not required: ``classify`` walks the exception's MRO and takes the first
+# class present here, so a subclass entry always wins over its base.
 ERROR_MAP: dict[type[BaseException], tuple[ErrorCode, ExitCode]] = {
     # Input
-    click.UsageError: (ErrorCode.INVALID_INPUT, ExitCode.INVALID_INPUT),
-    click.ClickException: (ErrorCode.INVALID_INPUT, ExitCode.INVALID_INPUT),
     SearchParseError: (ErrorCode.INVALID_INPUT, ExitCode.INVALID_INPUT),
     TemplateParseError: (ErrorCode.INVALID_INPUT, ExitCode.INVALID_INPUT),
     ConfigError: (ErrorCode.INVALID_CONFIG, ExitCode.INVALID_INPUT),
@@ -50,12 +49,11 @@ ERROR_MAP: dict[type[BaseException], tuple[ErrorCode, ExitCode]] = {
     AnkiConnectError: (ErrorCode.BACKEND_OPERATION_FAILED, ExitCode.BACKEND_OPERATION_FAILED),
     ValueError: (ErrorCode.BACKEND_OPERATION_FAILED, ExitCode.BACKEND_OPERATION_FAILED),
     sqlite3.DatabaseError: (ErrorCode.BACKEND_OPERATION_FAILED, ExitCode.BACKEND_OPERATION_FAILED),
-    # User
-    click.Abort: (ErrorCode.INTERRUPTED, ExitCode.INTERRUPTED),
-    KeyboardInterrupt: (ErrorCode.INTERRUPTED, ExitCode.INTERRUPTED),
 }
 
-_LOCK_MARKERS = ("database is locked", "database table is locked", "busy")
+# SQLite's wording for SQLITE_BUSY / SQLITE_LOCKED. It never says "busy", and a
+# bare substring like that would misfile "no such table: busy_queue".
+_LOCK_MARKERS = ("database is locked", "database table is locked", "database schema is locked")
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +96,8 @@ def classify(exc: BaseException) -> ClassifiedError:
         )
 
     if isinstance(exc, (click.Abort, KeyboardInterrupt)):
+        # Click turns KeyboardInterrupt into Abort before it reaches the entry
+        # point; the tuple keeps classify() honest for direct callers.
         return ClassifiedError(ErrorCode.INTERRUPTED, ExitCode.INTERRUPTED, "Interrupted.", details)
 
     for klass in type(exc).__mro__:
@@ -120,29 +120,3 @@ def classify(exc: BaseException) -> ClassifiedError:
 def debug_tracebacks_enabled() -> bool:
     return os.environ.get("ANKI_CLI_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
-
-def peek_output_options(argv: Sequence[str]) -> tuple[str | None, bool]:
-    """``(--format value, --no-color present)`` read straight off argv.
-
-    Needed when an error fires before the group callback has built ``ctx.obj``
-    (unknown command, bad group option): the envelope should still honour the
-    format the caller asked for. Stops at ``--``.
-    """
-    fmt: str | None = None
-    no_color = False
-    tokens = list(argv)
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        if token == "--":
-            break
-        if token == "--format" and i + 1 < len(tokens):
-            fmt = tokens[i + 1]
-            i += 2
-            continue
-        if token.startswith("--format="):
-            fmt = token.split("=", 1)[1]
-        elif token == "--no-color":
-            no_color = True
-        i += 1
-    return fmt, no_color

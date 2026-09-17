@@ -11,7 +11,7 @@ type JSONValue = JSONPrimitive | Mapping[str, "JSONValue"] | Sequence["JSONValue
 
 
 class ExitCode(IntEnum):
-    """Process exit codes. The README / SKILL.md tables are generated from this."""
+    """Process exit codes; ``tests/unit/test_docs_sync.py`` pins the README/SKILL tables to it."""
 
     OK = 0
     BACKEND_OPERATION_FAILED = 1
@@ -68,7 +68,9 @@ class Meta(BaseModel):
 class ErrorInfo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    code: str
+    # Existing ``code="INVALID_INPUT"`` literals validate through the StrEnum; a
+    # new code that is not in the enum (and so not in SKILL.md) fails at emit time.
+    code: ErrorCode
     message: str
     details: dict[str, JSONValue] = Field(default_factory=dict)
 

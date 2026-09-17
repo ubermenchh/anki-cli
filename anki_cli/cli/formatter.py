@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 from anki_cli.models.output import (
+    ErrorCode,
     ErrorInfo,
     ErrorResponse,
     JSONValue,
@@ -79,7 +80,9 @@ class OutputFormatter:
     ) -> None:
         payload = ErrorResponse(
             error=ErrorInfo(
-                code=code,
+                # Str literals from the ~100 command call sites validate against
+                # the enum here; an unlisted code is a bug, not an output.
+                code=ErrorCode(code),
                 message=message,
                 details=details or {},
             ),

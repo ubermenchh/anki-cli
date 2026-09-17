@@ -55,8 +55,9 @@ def _install(monkeypatch: pytest.MonkeyPatch, *commands: click.Command, fmt: str
 
 
 def _envelope(result) -> dict[str, Any]:
-    raw = (getattr(result, "stderr", "") or result.output).strip()
-    payload = json.loads(raw)
+    # Envelopes go to stderr only; parsing stderr alone means a stray stdout
+    # line fails the test cleanly instead of as a JSONDecodeError.
+    payload = json.loads(result.stderr.strip())
     assert payload["ok"] is False
     return payload
 
@@ -94,11 +95,13 @@ def test_unknown_option_after_subcommand_is_a_json_envelope(monkeypatch, runner)
     assert payload["meta"]["backend"] == "direct"
 
 
-def test_unknown_command_is_a_json_envelope_using_argv_format(monkeypatch, runner) -> None:
-    """No ctx.obj exists yet for an unknown command; --format is read off argv."""
+@pytest.mark.parametrize("fmt", ["json", "JSON", "Json"])
+def test_unknown_command_is_a_json_envelope_using_argv_format(monkeypatch, runner, fmt) -> None:
+    """No ctx.obj exists yet for an unknown command; --format is read off argv,
+    case-insensitively like the option itself."""
     _install(monkeypatch, _raising("probe", AssertionError("not reached")))
 
-    result = runner.invoke(app_mod.main, ["--format", "json", "nope:cmd"])
+    result = runner.invoke(app_mod.main, ["--format", fmt, "nope:cmd"])
 
     payload = _envelope(result)
     assert result.exit_code == 2
@@ -136,6 +139,14 @@ def test_help_and_version_still_exit_zero_with_plain_output(monkeypatch, runner)
         assert result.exit_code == 0, (argv, result.output)
         assert not result.output.startswith("{")
 
+    # Help after the subcommand is the *subcommand's* help (not hoisted).
+    result = runner.invoke(app_mod.main, ["probe", "--help"])
+    assert "--id" in result.output
+    # --version stays put too, so it is an error for a subcommand as before.
+    result = runner.invoke(app_mod.main, ["--format", "json", "probe", "--version"])
+    assert result.exit_code == 2
+    assert "No such option: --version" in _envelope(result)["error"]["message"]
+
 
 # --- #27: exceptions escaping a command are enveloped ---------------------------
 
@@ -155,17 +166,28 @@ def test_help_and_version_still_exit_zero_with_plain_output(monkeypatch, runner)
     ],
     ids=lambda v: type(v).__name__ if isinstance(v, BaseException) else str(v),
 )
-def test_escaping_exception_becomes_envelope(monkeypatch, runner, exc, code, exit_code) -> None:
-    _install(monkeypatch, _raising("probe", exc))
+@pytest.mark.parametrize(
+    "argv",
+    [["--format", "json", "probe"], ["probe"]],
+    ids=["format-on-argv", "format-from-config"],
+)
+def test_escaping_exception_becomes_envelope(
+    monkeypatch, runner, exc, code, exit_code, argv
+) -> None:
+    """Domain exceptions carry no Click ctx; the envelope must still use the
+    format and backend the group callback resolved (the ``["probe"]`` case
+    only knows about JSON through the stubbed config)."""
+    _install(monkeypatch, _raising("probe", exc))  # fmt="json" = config says json
 
-    result = runner.invoke(app_mod.main, ["--format", "json", "probe"])
+    result = runner.invoke(app_mod.main, argv)
 
     payload = _envelope(result)
     assert result.exit_code == exit_code
     assert payload["error"]["code"] == code
     assert str(exc) in payload["error"]["message"] or code == "INTERNAL_ERROR"
     assert payload["meta"]["command"] == "probe"
-    assert "Traceback" not in (result.stderr if hasattr(result, "stderr") else result.output)
+    assert payload["meta"]["backend"] == "direct"  # resolved runtime, not the argv peek
+    assert "Traceback" not in result.stderr
 
 
 def test_internal_error_names_the_exception_type(monkeypatch, runner) -> None:
@@ -185,9 +207,8 @@ def test_debug_env_adds_traceback_after_envelope(monkeypatch, runner) -> None:
     result = runner.invoke(app_mod.main, ["--format", "json", "probe"])
 
     assert result.exit_code == 1
-    text = result.stderr if hasattr(result, "stderr") else result.output
-    assert '"code": "INTERNAL_ERROR"' in text
-    assert "Traceback (most recent call last)" in text
+    assert '"code": "INTERNAL_ERROR"' in result.stderr
+    assert "Traceback (most recent call last)" in result.stderr
 
 
 def test_keyboard_interrupt_is_exit_130(monkeypatch, runner) -> None:
@@ -215,8 +236,27 @@ def test_command_emitted_envelope_passes_through_untouched(monkeypatch, runner) 
     result = runner.invoke(app_mod.main, ["--format", "json", "probe"])
 
     assert result.exit_code == 4
-    text = result.stderr if hasattr(result, "stderr") else result.output
-    assert text.count('"ok": false') == 1
+    assert result.stderr.count('"ok": false') == 1
+
+
+def test_sys_exit_from_command_passes_through_unenveloped(monkeypatch, runner) -> None:
+    _install(monkeypatch, _raising("probe", SystemExit(3)))
+
+    result = runner.invoke(app_mod.main, ["--format", "json", "probe"])
+
+    assert result.exit_code == 3
+    assert '"ok"' not in result.stderr
+
+
+def test_group_level_usage_error_is_attributed_to_bootstrap(monkeypatch, runner) -> None:
+    """A bad *group* option value is the group's error even if a valid command
+    name appears later in argv."""
+    _install(monkeypatch, _raising("probe", AssertionError("not reached")))
+
+    result = runner.invoke(app_mod.main, ["--format", "json", "--backend", "bogus", "probe"])
+
+    payload = _envelope(result)
+    assert payload["meta"]["command"] == "probe"  # what the user was trying to run
 
 
 def test_successful_command_exit_zero(monkeypatch, runner) -> None:
@@ -280,11 +320,11 @@ def test_hoisted_option_value_is_not_swallowed_by_subcommand(monkeypatch, runner
     _install(monkeypatch, probe, fmt="table")
 
     result = runner.invoke(
-        app_mod.main, ["probe", "--query", "deck:X --yes", "--backend", "direct", "--id", "2"]
+        app_mod.main, ["probe", "--query", "--yes", "--backend", "direct", "--id", "2"]
     )
 
     assert result.exit_code == 0, result.output
-    assert seen["query"] == "deck:X --yes"  # the literal, not hoisted
+    assert seen["query"] == "--yes"  # consumed as --query's value, not hoisted
     assert seen["obj"]["yes"] is False
     assert seen["id"] == 2
 

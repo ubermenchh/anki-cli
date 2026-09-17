@@ -26,7 +26,7 @@ from rich.text import Text
 
 from anki_cli import __version__
 from anki_cli.cli.dispatcher import get_command, list_commands
-from anki_cli.cli.params import option_arity, preprocess_argv
+from anki_cli.cli.params import hoist_group_options, option_arity, preprocess_argv
 
 from .colors import (
     BLUE,
@@ -179,6 +179,38 @@ _STYLE = Style.from_dict({
 })
 
 
+# Global CLI options a REPL line may carry after the command, mirroring the
+# CLI (#26): ``note:delete --id 1 --yes``. They apply to that line only.
+# ``--backend`` / ``--col`` are fixed for the session and deliberately absent.
+_REPL_GLOBAL_OPTIONS: dict[str, int] = {
+    "--yes": 0,
+    "--copy": 0,
+    "--no-color": 0,
+    "--format": 1,
+}
+
+
+def _apply_global_options(ctx_obj: dict[str, Any], tokens: list[str]) -> dict[str, Any]:
+    """Fold hoisted global option tokens into a per-line copy of ``ctx_obj``."""
+    obj = dict(ctx_obj)
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--yes":
+            obj["yes"] = True
+        elif token == "--copy":
+            obj["copy"] = True
+        elif token == "--no-color":
+            obj["no_color"] = True
+        elif token == "--format" and i + 1 < len(tokens):
+            obj["format"] = tokens[i + 1].lower()
+            i += 1
+        elif token.startswith("--format="):
+            obj["format"] = token.split("=", 1)[1].lower()
+        i += 1
+    return obj
+
+
 def _invoke_command(ctx_obj: dict[str, Any], raw_args: list[str]) -> None:
     if not raw_args:
         return
@@ -188,6 +220,25 @@ def _invoke_command(ctx_obj: dict[str, Any], raw_args: list[str]) -> None:
         return option_arity(cmd) if cmd is not None else None
 
     args = preprocess_argv(raw_args, resolve_command_options=_options_for)
+    args = hoist_group_options(
+        args,
+        group_options=_REPL_GLOBAL_OPTIONS,
+        is_command=lambda name: get_command(_ALIASES.get(name, name)) is not None,
+        resolve_command_options=_options_for,
+    )
+    # Anything hoisted now sits before the command name; step over each
+    # option and the value tokens it consumes to find where the command starts.
+    split = 0
+    while split < len(args) and args[split].startswith("-"):
+        token = args[split]
+        consumed = 0 if "=" in token else _REPL_GLOBAL_OPTIONS.get(token, 0)
+        split += 1 + consumed
+    line_obj = _apply_global_options(ctx_obj, args[:split])
+    args = args[split:]
+    if not args:
+        click.echo("Unknown command  (try 'help')", err=True)
+        return
+
     cmd_name = _ALIASES.get(args[0], args[0])
     cmd_args = args[1:]
 
@@ -198,7 +249,7 @@ def _invoke_command(ctx_obj: dict[str, Any], raw_args: list[str]) -> None:
         )
         return
 
-    parent = click.Context(click.Group("anki"), obj=dict(ctx_obj))
+    parent = click.Context(click.Group("anki"), obj=line_obj)
     try:
         with parent:
             ctx = cmd.make_context(
