@@ -541,8 +541,9 @@ def test_add_note_checksums_stripped_first_field(
     )
 
     note = _note_row(db_path, note_id)
-    # TODO(#23): Anki stores the *stripped* sfld ("Q"); flip when fixed.
-    assert note["sfld"] == "<b>Q</b>"
+    # Anki stores the *stripped* sort field alongside the stripped checksum.
+    assert note["sfld"] == "Q"
+    assert note["flds"] == "<b>Q</b>\x1fA"  # the field itself keeps its markup
     assert note["csum"] == CSUM_Q
 
 
@@ -945,32 +946,6 @@ def test_add_note_empty_check_runs_before_duplicate_check(
         _add_basic(store, "   ", allow_duplicate=False)
 
 
-def test_add_note_computes_checksum_once(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Perf tripwire only: the dup lookup and the INSERT share one hash.
-
-    The behavioural contract (stored csum == lookup csum) is pinned by
-    ``test_add_note_allow_duplicate_inserts_second_note``; this test is safe to
-    delete if ``_field_checksum`` is ever inlined.
-    """
-    store, _ = _make_store(tmp_path)
-    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    calls: list[str] = []
-    real = store._field_checksum
-
-    def counting(first_field: str) -> int:
-        calls.append(first_field)
-        return real(first_field)
-
-    monkeypatch.setattr(store, "_field_checksum", counting)
-
-    _add_basic(store, "Q", allow_duplicate=False)
-
-    assert calls == ["Q"]
-
-
 def test_add_notes_bulk_reports_per_item_refusals_as_none(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1104,3 +1079,107 @@ def test_duplicate_note_error_message_truncates_long_id_lists() -> None:
     msg = str(err)
     assert "1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 5 more" in msg
     assert "11" not in msg.split(" and ")[0]
+
+
+# --- stripped first field: duplicates, emptiness, sfld (#23 items 2/5) ----------
+
+
+def test_add_note_duplicate_detection_ignores_markup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Anki checksums the *text* of the first field, so a CLI note whose front only
+    differs from an existing one by markup is a duplicate — and vice versa."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    first = _add_basic(store, "<b>hola</b>", allow_duplicate=True)
+    assert _note_row(db_path, first)["sfld"] == "hola"
+
+    for variant in ("hola", "<i>hola</i>", "<div>hola</div>", "hola<br>"):
+        with pytest.raises(DuplicateNoteError) as excinfo:
+            _add_basic(store, variant, allow_duplicate=False)
+        assert excinfo.value.duplicate_ids == [first]
+
+    # Entities decode before hashing too: "Q&amp;A" is "Q&A".
+    qa = _add_basic(store, "Q&amp;A", allow_duplicate=True)
+    with pytest.raises(DuplicateNoteError) as excinfo:
+        _add_basic(store, "Q&A", allow_duplicate=False)
+    assert excinfo.value.duplicate_ids == [qa]
+
+    # Different visible text is not a duplicate even with matching markup.
+    assert isinstance(_add_basic(store, "<b>adios</b>", allow_duplicate=False), int)
+
+
+def test_add_note_csum_collision_is_not_a_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """rslib ``is_duplicate`` confirms every csum hit by comparing the stripped
+    first field; a 32-bit collision alone must not refuse the note."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    # Seed a note whose stored csum equals hash("hola") but whose text differs.
+    _insert_note(db_path, note_id=500, front="something else", back="x",
+                 csum=store._field_checksum("hola"))
+
+    nid = _add_basic(store, "hola", allow_duplicate=False)
+
+    assert _note_ids(db_path) == [500, nid]
+    # And a real match with the same csum is still caught.
+    with pytest.raises(DuplicateNoteError) as excinfo:
+        _add_basic(store, "hola", allow_duplicate=False)
+    assert excinfo.value.duplicate_ids == [nid]  # 500 excluded: text differs
+
+
+@pytest.mark.parametrize(
+    "front",
+    ["<b></b>", "&nbsp;", "<span> &nbsp; </span>", "<i><br></i>"],
+    ids=["empty-bold", "nbsp", "nbsp-in-span", "br-in-italic"],
+)
+def test_add_note_first_field_empty_after_stripping_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    front: str,
+) -> None:
+    """rslib note_fields_check strips markup and decodes entities before the
+    emptiness test, so these are Empty even though card-gen's raw predicate
+    would call some of them non-empty."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+
+    with pytest.raises(EmptyNoteError):
+        _add_basic(store, front, allow_duplicate=True)
+
+    assert _note_ids(db_path) == []
+
+
+def test_add_note_media_only_first_field_is_not_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A media reference contributes its filename, so an image-only front is a
+    real note (and its sfld is the filename Anki would store)."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+
+    nid = _add_basic(store, '<img src="x.png">', allow_duplicate=False)
+
+    note = _note_row(db_path, nid)
+    assert note["sfld"] == " x.png "
+    assert note["csum"] == CSUM_IMG_X_PNG
+
+
+def test_update_note_writes_stripped_sfld(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    nid = _add_basic(store, "Q", allow_duplicate=True)
+
+    store.update_note(note_id=nid, fields={"Front": "<b>Zebra</b>&nbsp;"}, tags=None)
+
+    note = _note_row(db_path, nid)
+    assert note["flds"] == "<b>Zebra</b>&nbsp;\x1fA"
+    assert note["sfld"] == "Zebra "
+    assert note["csum"] == store._field_checksum("Zebra ")
