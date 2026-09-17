@@ -15,6 +15,7 @@ from anki_cli.cli.dispatcher import get_command, list_commands
 from anki_cli.cli.errors import classify, debug_tracebacks_enabled
 from anki_cli.cli.formatter import OutputFormatter, formatter_from_ctx
 from anki_cli.cli.params import (
+    DanglingOptionError,
     command_name_from_argv,
     hoist_group_options,
     option_arity,
@@ -77,12 +78,15 @@ class NamespaceGroup(click.Group):
         transformed = preprocess_argv(
             args, group_options=group_options, resolve_command_options=_resolve
         )
-        transformed = hoist_group_options(
-            transformed,
-            group_options=group_options,
-            is_command=lambda name: get_command(name) is not None,
-            resolve_command_options=_resolve,
-        )
+        try:
+            transformed = hoist_group_options(
+                transformed,
+                group_options=group_options,
+                is_command=_is_command,
+                resolve_command_options=_resolve,
+            )
+        except DanglingOptionError as exc:
+            raise click.UsageError(str(exc), ctx=ctx) from exc
         return super().parse_args(ctx, transformed)
 
     def main(
@@ -97,10 +101,12 @@ class NamespaceGroup(click.Group):
 
         Click's own standalone mode prints usage errors as plain text and lets
         everything else traceback. We run it non-standalone, so ``UsageError``,
-        ``Abort`` (Click's rendering of Ctrl-C) and any exception a command did
-        not handle reach us here and are rendered with the same formatter the
-        commands use. ``--format json`` therefore holds for *every* exit,
-        including "no such option" and "no such command". A command that already
+        ``Abort`` (Click's rendering of Ctrl-C — note Click echoes one bare
+        newline to stderr before raising it, so the INTERRUPTED envelope has a
+        blank first line) and any exception a command did not handle reach us
+        here and are rendered with the same formatter the commands use.
+        ``--format json`` therefore holds for *every* exit, including "no such
+        option" and "no such command". A command that already
         emitted its envelope and raised ``Exit(n)`` comes back from Click as the
         integer ``n`` and is passed through untouched.
         """
@@ -129,7 +135,17 @@ class NamespaceGroup(click.Group):
         command: str | None = None
         if ctx is not None and ctx.parent is not None and ctx.command.name:
             command = ctx.command.name  # a subcommand context
-        command = command or command_name_from_argv(argv, is_command=_is_command) or "bootstrap"
+        elif ctx is not None and ctx.invoked_subcommand:
+            # Set by Group.invoke before the callback: authoritative once the
+            # command was resolved, even though the error has only the root ctx.
+            command = ctx.invoked_subcommand
+        command = (
+            command
+            or command_name_from_argv(
+                argv, is_command=_is_command, group_options=option_arity(self)
+            )
+            or "bootstrap"
+        )
 
         if ctx is not None and ctx.obj:
             formatter = formatter_from_ctx(ctx)

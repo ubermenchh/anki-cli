@@ -43,7 +43,11 @@ from anki_cli.models.output import ErrorCode, ExitCode
         (sqlite3.OperationalError("no such table: busy_queue"),
          ErrorCode.BACKEND_OPERATION_FAILED, 1),
         (sqlite3.DatabaseError("file is not a database"), ErrorCode.BACKEND_OPERATION_FAILED, 1),
-        (KeyError("k"), ErrorCode.ENTITY_NOT_FOUND, 4),  # LookupError subclass
+        # Bare LookupError is how the backends say "not found" ...
+        (LookupError("Card not found: 7"), ErrorCode.ENTITY_NOT_FOUND, 4),
+        # ... but its stdlib subclasses are bugs, not misses.
+        (KeyError("k"), ErrorCode.INTERNAL_ERROR, 1),
+        (IndexError("list index out of range"), ErrorCode.INTERNAL_ERROR, 1),
         (DuplicateNoteError(notetype="Basic", duplicate_ids=[1]),
          ErrorCode.BACKEND_OPERATION_FAILED, 1),
         (EmptyNoteError(notetype="Basic", field_name="Front"),
@@ -85,12 +89,15 @@ def test_classify_usage_error_without_ctx_has_no_usage_detail() -> None:
     assert result.details == {}
 
 
-def test_classify_internal_error_names_type() -> None:
-    result = classify(ZeroDivisionError("division by zero"))
+@pytest.mark.parametrize(
+    "exc", [ZeroDivisionError("division by zero"), KeyError("front"), IndexError("range")]
+)
+def test_classify_internal_error_names_type(exc: Exception) -> None:
+    result = classify(exc)
     assert result.code == ErrorCode.INTERNAL_ERROR
     assert result.exit_code == ExitCode.BACKEND_OPERATION_FAILED
-    assert result.details == {"exception": "ZeroDivisionError"}
-    assert "ZeroDivisionError: division by zero" in result.message
+    assert result.details == {"exception": type(exc).__name__}
+    assert f"Unexpected error: {type(exc).__name__}" in result.message
 
 
 _GROUP = {"--format": 1, "--col": 1, "--backend": 1, "--yes": 0, "--no-color": 0}
@@ -123,9 +130,19 @@ def test_peek_output_options(argv: list[str], expected: tuple[str | None, bool])
         (["--format", "json", "probe", "--id", "1"], "probe"),
         (["probe"], "probe"),
         (["--yes"], None),
-        (["nope", "probe"], "probe"),
+        # The first positional is the command the user meant; if it is not one,
+        # this is an error about *it*, not a run of whatever follows.
+        (["nope", "probe"], None),
+        # A group option's value is not a positional, by arity.
+        (["--col", "probe", "cards:ids"], "cards:ids"),
+        (["--col", "probe"], None),
         (["--", "probe"], None),
     ],
 )
 def test_command_name_from_argv(argv: list[str], expected: str | None) -> None:
-    assert command_name_from_argv(argv, is_command=lambda n: n == "probe") == expected
+    assert (
+        command_name_from_argv(
+            argv, is_command=lambda n: n in {"probe", "cards:ids"}, group_options=_GROUP
+        )
+        == expected
+    )

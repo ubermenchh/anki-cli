@@ -12,6 +12,16 @@ OptionArity = Mapping[str, int]
 _HELP_SPELLINGS: dict[str, int] = {"-h": 0, "--help": 0}
 
 
+class DanglingOptionError(ValueError):
+    """A group option written after the subcommand has no value token left
+    (``anki note:delete --id 1 --format``). Hoisting it would make Click read
+    the *command name* as its value, so the caller reports it instead."""
+
+    def __init__(self, option: str) -> None:
+        self.option = option
+        super().__init__(f"Option '{option}' requires an argument.")
+
+
 def option_arity(command: click.Command | None) -> OptionArity:
     """Option spellings of ``command`` and how many value tokens each consumes."""
     if command is None:
@@ -179,15 +189,27 @@ def hoist_group_options(
             and spelling not in keep_in_place
         )
         if not is_group_option:
-            consumed = (
-                _tokens_consumed_by(token, command_options)
-                if token.startswith("-") and token != "-"
-                else 0
-            )
+            consumed = 0
+            if token.startswith("-") and token != "-":
+                consumed = _tokens_consumed_by(token, command_options)
+                # A spelling the subcommand does not define is a typo Click will
+                # reject; never let it swallow a group option that follows it,
+                # or the usage error loses the caller's --format.
+                if spelling not in command_options and i + 1 < len(tail):
+                    nxt = tail[i + 1]
+                    nxt_spelling = nxt.split("=", 1)[0] if nxt.startswith("--") else nxt
+                    if (
+                        nxt_spelling in group_options
+                        and nxt_spelling not in command_options
+                        and nxt_spelling not in keep_in_place
+                    ):
+                        consumed = 0
             rest.extend(tail[i : i + 1 + consumed])
             i += 1 + consumed
             continue
         consumed = _tokens_consumed_by(token, group_options)
+        if i + consumed >= len(tail):
+            raise DanglingOptionError(spelling)
         hoisted.extend(tail[i : i + 1 + consumed])
         i += 1 + consumed
 
@@ -196,14 +218,26 @@ def hoist_group_options(
     return [*head[:-1], *hoisted, head[-1], *rest]
 
 
-def command_name_from_argv(argv: Sequence[str], *, is_command: Callable[[str], bool]) -> str | None:
-    """First token that names a registered command, skipping group options and
-    their values; ``None`` before ``--`` runs out or when there is none."""
-    for token in argv:
+def command_name_from_argv(
+    argv: Sequence[str],
+    *,
+    is_command: Callable[[str], bool],
+    group_options: OptionArity,
+) -> str | None:
+    """The command the caller was trying to run: the first positional after the
+    group options (and their values, by arity). ``None`` if that positional is
+    not a registered command — ``anki nope probe`` is an error about ``nope``,
+    not a run of ``probe`` — or there is none before ``--``."""
+    tokens = list(argv)
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
         if token == "--":
             return None
-        if not token.startswith("-") and is_command(token):
-            return token
+        if token.startswith("-") and token != "-":
+            i += 1 + _tokens_consumed_by(token, group_options)
+            continue
+        return token if is_command(token) else None
     return None
 
 

@@ -26,7 +26,12 @@ from rich.text import Text
 
 from anki_cli import __version__
 from anki_cli.cli.dispatcher import get_command, list_commands
-from anki_cli.cli.params import hoist_group_options, option_arity, preprocess_argv
+from anki_cli.cli.params import (
+    DanglingOptionError,
+    hoist_group_options,
+    option_arity,
+    preprocess_argv,
+)
 
 from .colors import (
     BLUE,
@@ -188,14 +193,20 @@ _REPL_GLOBAL_OPTIONS: dict[str, int] = {
     "--no-color": 0,
     "--format": 1,
 }
+_OUTPUT_FORMATS = ("table", "json", "md", "csv", "plain")
 
 
 def _apply_global_options(ctx_obj: dict[str, Any], tokens: list[str]) -> dict[str, Any]:
-    """Fold hoisted global option tokens into a per-line copy of ``ctx_obj``."""
+    """Fold hoisted global option tokens into a per-line copy of ``ctx_obj``.
+
+    Raises ``ValueError`` for a ``--format`` value outside ``_OUTPUT_FORMATS``,
+    the same check ``set format`` applies.
+    """
     obj = dict(ctx_obj)
     i = 0
     while i < len(tokens):
         token = tokens[i]
+        fmt: str | None = None
         if token == "--yes":
             obj["yes"] = True
         elif token == "--copy":
@@ -203,10 +214,18 @@ def _apply_global_options(ctx_obj: dict[str, Any], tokens: list[str]) -> dict[st
         elif token == "--no-color":
             obj["no_color"] = True
         elif token == "--format" and i + 1 < len(tokens):
-            obj["format"] = tokens[i + 1].lower()
+            fmt = tokens[i + 1]
             i += 1
         elif token.startswith("--format="):
-            obj["format"] = token.split("=", 1)[1].lower()
+            fmt = token.split("=", 1)[1]
+        if fmt is not None:
+            if fmt.lower() not in _OUTPUT_FORMATS:
+                raise ValueError(
+                    f"Invalid value for '--format': '{fmt}' is not one of "
+                    + ", ".join(_OUTPUT_FORMATS)
+                    + "."
+                )
+            obj["format"] = fmt.lower()
         i += 1
     return obj
 
@@ -219,13 +238,21 @@ def _invoke_command(ctx_obj: dict[str, Any], raw_args: list[str]) -> None:
         cmd = get_command(_ALIASES.get(name, name))
         return option_arity(cmd) if cmd is not None else None
 
-    args = preprocess_argv(raw_args, resolve_command_options=_options_for)
-    args = hoist_group_options(
-        args,
-        group_options=_REPL_GLOBAL_OPTIONS,
-        is_command=lambda name: get_command(_ALIASES.get(name, name)) is not None,
-        resolve_command_options=_options_for,
+    # Same arity table as the CLI group so a trailing ``--yes`` never swallows a
+    # following ``key=value`` token as its value.
+    args = preprocess_argv(
+        raw_args, group_options=_REPL_GLOBAL_OPTIONS, resolve_command_options=_options_for
     )
+    try:
+        args = hoist_group_options(
+            args,
+            group_options=_REPL_GLOBAL_OPTIONS,
+            is_command=lambda name: get_command(_ALIASES.get(name, name)) is not None,
+            resolve_command_options=_options_for,
+        )
+    except DanglingOptionError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        return
     # Anything hoisted now sits before the command name; step over each
     # option and the value tokens it consumes to find where the command starts.
     split = 0
@@ -233,7 +260,11 @@ def _invoke_command(ctx_obj: dict[str, Any], raw_args: list[str]) -> None:
         token = args[split]
         consumed = 0 if "=" in token else _REPL_GLOBAL_OPTIONS.get(token, 0)
         split += 1 + consumed
-    line_obj = _apply_global_options(ctx_obj, args[:split])
+    try:
+        line_obj = _apply_global_options(ctx_obj, args[:split])
+    except ValueError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        return
     args = args[split:]
     if not args:
         click.echo("Unknown command  (try 'help')", err=True)
@@ -841,7 +872,7 @@ def run_repl(ctx_obj: dict[str, Any]) -> None:
                 or stripped.startswith(":set format ")
             ):
                 fmt = stripped.split("format", 1)[1].strip().lower()
-                if fmt in {"table", "json", "md", "csv", "plain"}:
+                if fmt in _OUTPUT_FORMATS:
                     ctx_obj["format"] = fmt
                     console.print(f"  [{DIM}]format -> {fmt}[/]")
                 else:

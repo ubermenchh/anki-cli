@@ -238,9 +238,26 @@ def _hoist(argv: list[str]) -> list[str]:
         (["--yes"], ["--yes"]),
         (["nope", "--yes"], ["nope", "--yes"]),
         (["--format", "json", "nope", "--yes"], ["--format", "json", "nope", "--yes"]),
-        # a valued group option missing its value at the end still hoists what is there
-        (["note:delete", "--id", "1", "--format"], ["--format", "note:delete", "--id", "1"]),
+        # an option the subcommand does not define is a typo Click will reject;
+        # it must not swallow a group option that follows it
+        (["cards:ids", "--bogus", "--format", "json"],
+         ["--format", "json", "cards:ids", "--bogus"]),
+        (["cards:ids", "--bogus", "value", "--yes"], ["--yes", "cards:ids", "--bogus", "value"]),
+        # ... but it still swallows an ordinary value, as Click would
+        (["cards:ids", "--bogus", "x"], ["cards:ids", "--bogus", "x"]),
     ],
 )
 def test_hoist_group_options(argv: list[str], expected: list[str]) -> None:
     assert _hoist(argv) == expected
+
+
+def test_hoist_group_options_rejects_dangling_valued_option() -> None:
+    """Hoisting a bare ``--format`` would make Click read the command name as
+    its value; refuse instead so the caller can say "requires an argument"."""
+    from anki_cli.cli.params import DanglingOptionError
+
+    with pytest.raises(DanglingOptionError, match="'--format' requires an argument") as excinfo:
+        _hoist(["note:delete", "--id", "1", "--format"])
+    assert excinfo.value.option == "--format"
+    # A flag (arity 0) at the end is fine.
+    assert _hoist(["note:delete", "--id", "1", "--yes"]) == ["--yes", "note:delete", "--id", "1"]

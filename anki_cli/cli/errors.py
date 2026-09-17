@@ -44,8 +44,13 @@ ERROR_MAP: dict[type[BaseException], tuple[ErrorCode, ExitCode]] = {
     AnkiConnectUnavailableError: (ErrorCode.BACKEND_UNAVAILABLE, ExitCode.BACKEND_UNAVAILABLE),
     UnsupportedCollectionError: (ErrorCode.BACKEND_UNAVAILABLE, ExitCode.BACKEND_UNAVAILABLE),
     DirectWriteBlockedError: (ErrorCode.COLLECTION_LOCKED, ExitCode.BACKEND_UNAVAILABLE),
-    # Operation
+    # Operation. The backends raise bare LookupError for "not found"; its two
+    # stdlib subclasses are how *bugs* surface (a missing dict key, an index
+    # past the end) and must not read as a user-facing miss. Subclass entries
+    # win the MRO walk, so these two override the base row.
     LookupError: (ErrorCode.ENTITY_NOT_FOUND, ExitCode.ENTITY_NOT_FOUND),
+    KeyError: (ErrorCode.INTERNAL_ERROR, ExitCode.BACKEND_OPERATION_FAILED),
+    IndexError: (ErrorCode.INTERNAL_ERROR, ExitCode.BACKEND_OPERATION_FAILED),
     AnkiConnectError: (ErrorCode.BACKEND_OPERATION_FAILED, ExitCode.BACKEND_OPERATION_FAILED),
     ValueError: (ErrorCode.BACKEND_OPERATION_FAILED, ExitCode.BACKEND_OPERATION_FAILED),
     sqlite3.DatabaseError: (ErrorCode.BACKEND_OPERATION_FAILED, ExitCode.BACKEND_OPERATION_FAILED),
@@ -102,9 +107,12 @@ def classify(exc: BaseException) -> ClassifiedError:
 
     for klass in type(exc).__mro__:
         mapped = ERROR_MAP.get(klass)
-        if mapped is not None:
-            code, exit_code = mapped
-            return ClassifiedError(code, exit_code, str(exc) or klass.__name__, details)
+        if mapped is None:
+            continue
+        code, exit_code = mapped
+        if code is ErrorCode.INTERNAL_ERROR:
+            break  # explicitly filed as a bug: fall through to the bug shape
+        return ClassifiedError(code, exit_code, str(exc) or klass.__name__, details)
 
     # A bug, not a user or environment error. Name the type so a report is
     # useful; the traceback is one env var away.

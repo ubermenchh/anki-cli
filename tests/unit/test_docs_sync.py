@@ -21,6 +21,7 @@ def test_skill_lists_every_error_code() -> None:
 
 def test_skill_exit_code_table_matches_enum() -> None:
     text = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    assert "### Exit Codes" in text, "SKILL.md exit-code heading moved or was renamed"
     section = text.split("### Exit Codes", 1)[1].split("###", 1)[0]
     rows = dict(re.findall(r"^\| (\d+) \| (.+?) \|$", section, flags=re.MULTILINE))
     assert {int(k) for k in rows} == {int(c) for c in ExitCode}

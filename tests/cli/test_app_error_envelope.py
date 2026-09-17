@@ -248,15 +248,74 @@ def test_sys_exit_from_command_passes_through_unenveloped(monkeypatch, runner) -
     assert '"ok"' not in result.stderr
 
 
-def test_group_level_usage_error_is_attributed_to_bootstrap(monkeypatch, runner) -> None:
-    """A bad *group* option value is the group's error even if a valid command
-    name appears later in argv."""
+def test_group_level_usage_error_is_attributed_to_the_named_command(monkeypatch, runner) -> None:
+    """A bad *group* option value fires before any command ran, but meta.command
+    still names the command the user was trying to run (read off argv)."""
     _install(monkeypatch, _raising("probe", AssertionError("not reached")))
 
     result = runner.invoke(app_mod.main, ["--format", "json", "--backend", "bogus", "probe"])
 
     payload = _envelope(result)
-    assert payload["meta"]["command"] == "probe"  # what the user was trying to run
+    assert payload["meta"]["command"] == "probe"
+
+
+def test_unknown_first_positional_is_not_attributed_to_a_later_command(monkeypatch, runner) -> None:
+    _install(monkeypatch, _raising("probe", AssertionError("not reached")))
+
+    result = runner.invoke(app_mod.main, ["--format", "json", "nope", "probe"])
+
+    payload = _envelope(result)
+    assert "No such command 'nope'" in payload["error"]["message"]
+    assert payload["meta"]["command"] == "bootstrap"
+
+
+def test_typo_option_followed_by_trailing_format_still_yields_json(monkeypatch, runner) -> None:
+    """The documented agent pattern is ``anki cmd ... --format json``; one typo in
+    front of it must not turn the usage error back into plain text."""
+    _install(monkeypatch, _raising("probe", AssertionError("not reached")), fmt="table")
+
+    result = runner.invoke(app_mod.main, ["probe", "--bogus", "--format", "json"])
+
+    payload = _envelope(result)
+    assert result.exit_code == 2
+    assert payload["error"]["code"] == "INVALID_INPUT"
+    assert "No such option: --bogus" in payload["error"]["message"]
+
+
+def test_dangling_trailing_group_option_is_a_usage_error(monkeypatch, runner) -> None:
+    """``note:delete --id 1 --format`` must not read the command name as the
+    format value."""
+    _install(monkeypatch, _raising("probe", AssertionError("not reached")))
+
+    result = runner.invoke(app_mod.main, ["--format", "json", "probe", "--id", "1", "--format"])
+
+    payload = _envelope(result)
+    assert result.exit_code == 2
+    assert payload["error"]["code"] == "INVALID_INPUT"
+    assert "'--format' requires an argument" in payload["error"]["message"]
+
+
+def test_error_inside_root_parse_does_not_reuse_previous_ctx(monkeypatch, runner) -> None:
+    """``_root_ctx`` lives on the module-level group; a failure before this
+    invocation's context exists must not render with the previous one's."""
+
+    @click.command("probe")
+    def probe() -> None:
+        click.echo("ran")
+
+    _install(monkeypatch, probe)
+    assert runner.invoke(app_mod.main, ["--format", "json", "probe"]).exit_code == 0
+
+    def boom(self, ctx, args):
+        raise RuntimeError("parse blew up")
+
+    monkeypatch.setattr(type(app_mod.main), "parse_args", boom)
+    result = runner.invoke(app_mod.main, ["--format", "json", "probe"])
+
+    payload = _envelope(result)
+    assert payload["error"]["code"] == "INTERNAL_ERROR"
+    assert payload["meta"]["backend"] == "none"  # not the seeded "direct"
+    assert payload["meta"]["command"] == "probe"
 
 
 def test_successful_command_exit_zero(monkeypatch, runner) -> None:
