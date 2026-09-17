@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import sys
+import traceback
+from collections.abc import Sequence
 from pathlib import Path
-from typing import get_args
+from typing import Any, get_args
 
 import click
 from click.core import ParameterSource
@@ -9,8 +12,9 @@ from click.core import ParameterSource
 from anki_cli import __version__
 from anki_cli.backends.detect import DetectionError, detect_backend
 from anki_cli.cli.dispatcher import get_command, list_commands
-from anki_cli.cli.formatter import formatter_from_ctx
-from anki_cli.cli.params import option_arity, preprocess_argv
+from anki_cli.cli.errors import classify, debug_tracebacks_enabled, peek_output_options
+from anki_cli.cli.formatter import OutputFormatter, formatter_from_ctx
+from anki_cli.cli.params import hoist_group_options, option_arity, preprocess_argv
 from anki_cli.config_runtime import ConfigError, resolve_runtime_config
 from anki_cli.models.config import BackendPreference, OutputFormat
 
@@ -34,18 +38,113 @@ def _is_set_on_cli(ctx: click.Context, param_name: str) -> bool:
 _BACKENDLESS = {"version", "status", "config", "config:path", "config:set"}
 
 
+def _command_name_from_argv(argv: Sequence[str]) -> str | None:
+    for token in argv:
+        if token == "--":
+            return None
+        if not token.startswith("-") and get_command(token) is not None:
+            return token
+    return None
+
+
 class NamespaceGroup(click.Group):
-    """Click group with dynamic command discovery and key=value preprocessing."""
+    """Click group with dynamic command discovery, key=value preprocessing,
+    group options accepted after the subcommand (#26), and a JSON error
+    envelope for every failure that escapes a command (#27)."""
 
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        group_options = option_arity(self)
+
+        def _resolve(name: str):
+            cmd = get_command(name)
+            return option_arity(cmd) if cmd is not None else None
+
         transformed = preprocess_argv(
-            args,
-            group_options=option_arity(self),
-            resolve_command_options=lambda name: (
-                option_arity(cmd) if (cmd := get_command(name)) is not None else None
-            ),
+            args, group_options=group_options, resolve_command_options=_resolve
+        )
+        transformed = hoist_group_options(
+            transformed,
+            group_options=group_options,
+            is_command=lambda name: get_command(name) is not None,
+            resolve_command_options=_resolve,
         )
         return super().parse_args(ctx, transformed)
+
+    def main(
+        self,
+        args: Sequence[str] | None = None,
+        prog_name: str | None = None,
+        complete_var: str | None = None,
+        standalone_mode: bool = True,
+        **extra: Any,
+    ) -> Any:
+        """Standalone entry point that never lets a failure bypass the envelope.
+
+        Click's own standalone mode prints usage errors as plain text and lets
+        everything else traceback. We run it non-standalone, so ``UsageError``,
+        ``Abort`` and any exception a command did not handle reach us here, and
+        render them with the same formatter the commands use. ``--format json``
+        therefore holds for *every* exit, including "no such option" and
+        "no such command". Errors the commands already emitted arrive as
+        ``Exit(code)`` and are passed through untouched.
+        """
+        if not standalone_mode:
+            return super().main(
+                args=args, prog_name=prog_name, complete_var=complete_var,
+                standalone_mode=False, **extra,
+            )
+
+        argv = list(args) if args is not None else sys.argv[1:]
+        exit_code = 0
+        try:
+            rv = super().main(
+                args=argv, prog_name=prog_name, complete_var=complete_var,
+                standalone_mode=False, **extra,
+            )
+            if isinstance(rv, int):
+                exit_code = rv
+        except click.exceptions.Exit as exc:
+            exit_code = exc.exit_code
+        except BaseException as exc:  # the envelope of last resort
+            if isinstance(exc, SystemExit):
+                raise
+            exit_code = self._emit_escaped_error(exc, argv)
+        sys.exit(exit_code)
+
+    @staticmethod
+    def _emit_escaped_error(exc: BaseException, argv: list[str]) -> int:
+        classified = classify(exc)
+        ctx = getattr(exc, "ctx", None)
+        command = "bootstrap"
+        if isinstance(ctx, click.Context) and ctx.obj:
+            formatter = formatter_from_ctx(ctx)
+            if ctx.command is not main and ctx.command.name:
+                command = ctx.command.name
+        else:
+            # Before the group callback ran (unknown command, bad group
+            # option) there is no ctx.obj; honour what argv asked for.
+            fmt, no_color = peek_output_options(argv)
+            formatter = OutputFormatter(
+                output_format=(fmt or "table"),
+                backend="none",
+                collection_path=None,
+                no_color=no_color,
+                copy_output=False,
+            )
+            if isinstance(ctx, click.Context) and ctx.command is not main and ctx.command.name:
+                command = ctx.command.name
+        if command == "bootstrap":
+            command = _command_name_from_argv(argv) or "bootstrap"
+        formatter.emit_error(
+            command=command,
+            code=str(classified.code),
+            message=classified.message,
+            details=classified.details,
+        )
+        if debug_tracebacks_enabled() and not isinstance(exc, (click.ClickException, click.Abort)):
+            traceback.print_exception(exc, file=sys.stderr)
+        return int(classified.exit_code)
+
 
     def list_commands(self, ctx: click.Context) -> list[str]:
         return list_commands()

@@ -286,7 +286,7 @@ def note_delete_cmd(ctx: click.Context, note_id: int) -> None:
             command="note:delete",
             code="CONFIRMATION_REQUIRED",
             message="Deleting a note requires --yes.",
-            details={"hint": "Run with --yes before the command."},
+            details={"hint": "Re-run with --yes."},
         )
         raise click.exceptions.Exit(2)
 

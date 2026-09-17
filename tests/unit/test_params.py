@@ -187,3 +187,59 @@ def test_option_arity_counts_tokens_consumed() -> None:
 )
 def test_preprocess_argv_respects_option_arity(argv: list[str], expected: list[str]) -> None:
     assert _pp(argv) == expected
+
+
+# --- hoist_group_options (#26) ---------------------------------------------------
+
+_HOIST_GROUP = {"--format": 1, "--col": 1, "--backend": 1, "--yes": 0, "--copy": 0, "--no-color": 0,
+          "-h": 0, "--help": 0, "--version": 0}
+_HOIST_COMMANDS = {"note:delete": {"--id": 1}, "cards:ids": {"--query": 1, "-q": 1},
+             "odd": {"--copy": 1}}
+
+
+def _hoist(argv: list[str]) -> list[str]:
+    from anki_cli.cli.params import hoist_group_options
+
+    return hoist_group_options(
+        argv,
+        group_options=_HOIST_GROUP,
+        is_command=lambda n: n in _HOIST_COMMANDS,
+        resolve_command_options=_HOIST_COMMANDS.get,
+    )
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        # flags and valued options, any position after the command
+        (["note:delete", "--id", "1", "--yes"], ["--yes", "note:delete", "--id", "1"]),
+        (["note:delete", "--yes", "--id", "1"], ["--yes", "note:delete", "--id", "1"]),
+        (["cards:ids", "--query", "x", "--format", "json"],
+         ["--format", "json", "cards:ids", "--query", "x"]),
+        (["cards:ids", "--format=json", "--query", "x"],
+         ["--format=json", "cards:ids", "--query", "x"]),
+        # group options already in front stay; later ones join them
+        (["--format", "json", "note:delete", "--id", "1", "--yes"],
+         ["--format", "json", "--yes", "note:delete", "--id", "1"]),
+        # a subcommand option's value that looks like a group option is not hoisted
+        (["cards:ids", "--query", "--yes"], ["cards:ids", "--query", "--yes"]),
+        (["cards:ids", "-q", "--format"], ["cards:ids", "-q", "--format"]),
+        # subcommand owns the spelling -> left alone
+        (["odd", "--copy", "there"], ["odd", "--copy", "there"]),
+        # help is for the subcommand
+        (["note:delete", "--help"], ["note:delete", "--help"]),
+        (["note:delete", "-h"], ["note:delete", "-h"]),
+        # nothing after '--' moves
+        (["note:delete", "--", "--yes"], ["note:delete", "--", "--yes"]),
+        (["note:delete", "--yes", "--", "--format", "json"],
+         ["--yes", "note:delete", "--", "--format", "json"]),
+        # no command / unknown command: untouched
+        (["--yes"], ["--yes"]),
+        (["nope", "--yes"], ["nope", "--yes"]),
+        (["--format", "json", "nope", "--yes"], ["--format", "json", "nope", "--yes"]),
+        # a valued group option missing its value at the end still hoists what is there
+        (["note:delete", "--id", "1", "--format"], ["--format", "note:delete", "--id", "1"]),
+    ],
+)
+def test_hoist_group_options(argv: list[str], expected: list[str]) -> None:
+    assert _hoist(argv) == expected

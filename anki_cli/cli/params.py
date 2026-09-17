@@ -121,3 +121,76 @@ def _looks_like_named_param(token: str) -> bool:
         return False
 
     return not any(ch.isspace() for ch in key)
+
+
+def hoist_group_options(
+    argv: Sequence[str],
+    *,
+    group_options: OptionArity,
+    is_command: Callable[[str], bool],
+    resolve_command_options: Callable[[str], OptionArity | None],
+    keep_in_place: frozenset[str] = frozenset(_HELP_SPELLINGS),
+) -> list[str]:
+    """Move group options written after the subcommand to before it (#26).
+
+    ``anki note:delete --id 1 --yes`` becomes ``anki --yes note:delete --id 1``.
+    Click only accepts a group's options before the subcommand name; every
+    documented example (and every agent following them) puts ``--yes`` /
+    ``--format`` last. A spelling the subcommand itself defines is left alone
+    (the subcommand wins), as are ``-h/--help`` (help for the subcommand, not
+    the group) and anything after ``--``.
+
+    Runs on argv that ``preprocess_argv`` has already normalised.
+    """
+    tokens = list(argv)
+    pending = 0
+    command_index: int | None = None
+    for i, token in enumerate(tokens):
+        if token == "--":
+            return tokens
+        if pending > 0:
+            pending -= 1
+            continue
+        if token.startswith("-") and token != "-":
+            pending = _tokens_consumed_by(token, group_options)
+            continue
+        if is_command(token):
+            command_index = i
+        break
+
+    if command_index is None:
+        return tokens
+
+    command_options = resolve_command_options(tokens[command_index]) or {}
+    head = tokens[: command_index + 1]
+    hoisted: list[str] = []
+    rest: list[str] = []
+    tail = tokens[command_index + 1 :]
+    i = 0
+    while i < len(tail):
+        token = tail[i]
+        if token == "--":
+            rest.extend(tail[i:])
+            break
+        spelling = token.split("=", 1)[0] if token.startswith("--") else token
+        is_group_option = (
+            spelling in group_options
+            and spelling not in command_options
+            and spelling not in keep_in_place
+        )
+        if not is_group_option:
+            consumed = (
+                _tokens_consumed_by(token, command_options)
+                if token.startswith("-") and token != "-"
+                else 0
+            )
+            rest.extend(tail[i : i + 1 + consumed])
+            i += 1 + consumed
+            continue
+        consumed = _tokens_consumed_by(token, group_options)
+        hoisted.extend(tail[i : i + 1 + consumed])
+        i += 1 + consumed
+
+    if not hoisted:
+        return tokens
+    return [*head[:-1], *hoisted, head[-1], *rest]

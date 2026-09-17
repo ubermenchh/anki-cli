@@ -80,15 +80,32 @@ Error:
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | Backend operation failed |
-| 2 | Invalid input, confirmation required, or unsupported operation |
+| 1 | Backend operation failed (including unexpected errors) |
+| 2 | Invalid input, usage error, confirmation required, or unsupported operation |
 | 3 | No Anki backend found (auto mode could not reach AnkiConnect or find a collection) |
 | 4 | Entity not found |
-| 7 | Backend unavailable |
+| 7 | Backend unavailable or collection locked |
+| 130 | Interrupted (Ctrl-C) |
 
 ### Error Codes
 
-`BACKEND_UNAVAILABLE`, `INVALID_INPUT`, `ENTITY_NOT_FOUND`, `BACKEND_OPERATION_FAILED`, `CONFIRMATION_REQUIRED`, `UNDO_EMPTY`, `TUI_NOT_AVAILABLE`, `UNSUPPORTED_BACKEND`.
+`BACKEND_UNAVAILABLE`, `COLLECTION_LOCKED`, `INVALID_INPUT`, `INVALID_CONFIG`, `ENTITY_NOT_FOUND`, `BACKEND_OPERATION_FAILED`, `CONFIRMATION_REQUIRED`, `UNDO_EMPTY`, `TUI_NOT_AVAILABLE`, `UNSUPPORTED_BACKEND`, `INTERRUPTED`, `INTERNAL_ERROR`.
+
+`INVALID_INPUT` also covers usage errors (unknown option, unknown command, missing
+required option) — these arrive as a JSON envelope, never as Click's plain-text usage
+message. `COLLECTION_LOCKED` means Anki Desktop holds the collection: close it (or wait for
+sync) and retry. `INTERNAL_ERROR` is a bug; `details.exception` names the type and
+`ANKI_CLI_DEBUG=1` adds the traceback to stderr after the envelope.
+
+### Global Options Placement
+
+`--format`, `--backend`, `--col`, `--yes`, `--copy` and `--no-color` are accepted before
+**or** after the subcommand, so both of these work:
+
+```bash
+anki --format json --yes note:delete --id 123
+anki note:delete --id 123 --yes --format json
+```
 
 ## Command Reference
 
