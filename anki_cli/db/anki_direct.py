@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha1
 from html.entities import name2codepoint
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 import betterproto
 from fsrs import Card as FSRSCard
@@ -59,6 +59,18 @@ from anki_cli.proto.anki.notetypes import (
 # (Card::restore_queue_from_type); any epoch after 2001-09-09 exceeds it and
 # no plausible day index ever will.
 LEARN_DUE_EPOCH_THRESHOLD = 1_000_000_000
+
+
+class _SchedulerStepKwargs(TypedDict, total=False):
+    """Optional step overrides for ``fsrs.Scheduler`` (PEP 692 ``**`` kwargs).
+
+    Keeping this a TypedDict lets ``ty`` check each key against the matching
+    ``Scheduler.__init__`` parameter instead of treating the unpacked values as
+    an opaque ``dict[str, list[timedelta]]``.
+    """
+
+    learning_steps: list[timedelta]
+    relearning_steps: list[timedelta]
 
 
 def is_intraday_learn_due(due: int) -> bool:
@@ -3461,7 +3473,7 @@ class AnkiDirectReadStore:
     def _fsrs_params_source(self, conn: sqlite3.Connection, deck_id: int) -> str:
         """Informational label for the result payload; never fails a review."""
         try:
-            cfg, _retention = self._deck_config_for_deck(conn, deck_id)
+            cfg, _retention, _has_row = self._deck_config_for_deck(conn, deck_id)
         except sqlite3.OperationalError as exc:
             if "no such table" in str(exc):
                 return "unknown"
@@ -3475,8 +3487,8 @@ class AnkiDirectReadStore:
 
     def _deck_config_for_deck(
         self, conn: sqlite3.Connection, deck_id: int
-    ) -> tuple[DeckConfigConfig, float | None]:
-        """The deck's options preset and its per-deck desired-retention override."""
+    ) -> tuple[DeckConfigConfig, float | None, bool]:
+        """The deck's options preset, its retention override, and whether a config row exists."""
         deck_row = conn.execute("SELECT kind FROM decks WHERE id = ?", (deck_id,)).fetchone()
         config_id = 1
         deck_retention: float | None = None
@@ -3500,48 +3512,59 @@ class AnkiDirectReadStore:
             if cfg_row is not None
             else DeckConfigConfig()
         )
-        return cfg, deck_retention
+        return cfg, deck_retention, cfg_row is not None
 
     def _build_scheduler(
         self,
         conn: sqlite3.Connection,
         deck_id: int,
     ) -> tuple[Scheduler, float, int, int]:
-        cfg, deck_retention = self._deck_config_for_deck(conn, deck_id)
+        cfg, deck_retention, has_config_row = self._deck_config_for_deck(conn, deck_id)
         params, _params_source = self._pick_fsrs_parameters(cfg)
         desired_retention = (
             deck_retention
             if deck_retention is not None
             else float(cfg.desired_retention or 0.9)
         )
-        learning_steps = self._to_timedeltas(
-            cfg.learn_steps,
-            default=[1.0, 10.0],
-            assume_minutes=True,
-        )
-        relearning_steps = self._to_timedeltas(
-            cfg.relearn_steps, default=[10.0], assume_minutes=True
-        )
         max_interval = int(cfg.maximum_review_interval or 36500)
 
+        # Repeated proto fields cannot express "unset", so a deck_config row
+        # always supplies the step lists -- including empty ones, which mean
+        # "no (re)learning steps" exactly like blanked steps in Anki. Only when
+        # the row itself is missing do py-fsrs's built-in defaults apply.
+        step_kwargs: _SchedulerStepKwargs = (
+            {
+                "learning_steps": self._to_timedeltas(
+                    cfg.learn_steps, assume_minutes=True
+                ),
+                "relearning_steps": self._to_timedeltas(
+                    cfg.relearn_steps, assume_minutes=True
+                ),
+            }
+            if has_config_row
+            else {}
+        )
         try:
             scheduler = Scheduler(
                 parameters=params,
                 desired_retention=desired_retention,
-                learning_steps=learning_steps,
-                relearning_steps=relearning_steps,
                 maximum_interval=max_interval,
+                **step_kwargs,
             )
         except ValueError:
             # Upgraded legacy weights can land just outside py-fsrs's bounds.
             scheduler = Scheduler(
                 parameters=list(FSRS6_DEFAULT_PARAMETERS),
                 desired_retention=desired_retention,
-                learning_steps=learning_steps,
-                relearning_steps=relearning_steps,
                 maximum_interval=max_interval,
+                **step_kwargs,
             )
-        return scheduler, desired_retention, len(learning_steps), len(relearning_steps)
+        return (
+            scheduler,
+            desired_retention,
+            len(scheduler.learning_steps),
+            len(scheduler.relearning_steps),
+        )
 
     def _pick_fsrs_parameters(self, cfg: DeckConfigConfig) -> tuple[list[float], str]:
         """Newest non-empty weight set on the deck config, upgraded to FSRS-6."""
@@ -3598,18 +3621,21 @@ class AnkiDirectReadStore:
         self,
         values: list[float],
         *,
-        default: list[float],
         assume_minutes: bool,
     ) -> list[timedelta]:
-        source = values or default
+        """Convert configured step values to timedeltas, keeping empty empty.
+
+        No implicit default: an empty step list is a real configuration (Anki
+        lets users blank the steps), not a missing one.
+        """
         out: list[timedelta] = []
-        for value in source:
+        for value in values:
             raw = float(value)
             if raw <= 0:
                 continue
             seconds = raw * 60.0 if assume_minutes else raw
             out.append(timedelta(seconds=max(1, round(seconds))))
-        return out if out else [timedelta(seconds=60)]
+        return out
 
     def _card_row_to_fsrs(
         self,
