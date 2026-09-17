@@ -470,7 +470,7 @@ def test_remove_notetype_field_rewrites_note_field_values(
         templates=[{"name": "Card 1", "front": "{{Front}}", "back": "{{Back}}"}],
     )
     ntid = int(_notetype_row_by_name(db_path, "Tri")["id"])
-    _insert_note(db_path, note_id=100, mid=ntid, fields=["a", "b", "c"])
+    _insert_note(db_path, note_id=100, mid=ntid, fields=["<b>a</b>", "b", "c"])
     _insert_note(db_path, note_id=101, mid=ntid, fields=["x", "y"])  # short row gets padded
     _insert_note(db_path, note_id=200, mid=ntid + 1, fields=["other", "type"])  # untouched
 
@@ -478,8 +478,8 @@ def test_remove_notetype_field_rewrites_note_field_values(
     assert result["updated_notes"] == 2
 
     note = _note_row(db_path, 100)
-    assert note["flds"] == "a\x1fc"
-    assert note["sfld"] == "a"
+    assert note["flds"] == "<b>a</b>\x1fc"
+    assert note["sfld"] == "a"  # stripped, like the checksum
     assert note["csum"] == CSUM_A
     assert note["mod"] == 1_700_000_000
     assert note["usn"] == -1
@@ -497,7 +497,7 @@ def test_remove_notetype_field_rewrites_note_field_values(
     assert nt_row["mtime_secs"] == 1_700_000_000
 
     # get_note_fields must map the remaining names onto the right values.
-    assert store.get_note_fields(note_id=100) == {"Front": "a", "Back": "c"}
+    assert store.get_note_fields(note_id=100) == {"Front": "<b>a</b>", "Back": "c"}
 
 
 def test_remove_notetype_field_matches_name_case_insensitively(

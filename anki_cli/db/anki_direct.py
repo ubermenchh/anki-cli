@@ -936,13 +936,10 @@ class AnkiDirectReadStore:
             if len(values) < field_count:
                 values.extend([""] * (field_count - len(values)))
             del values[removed_ord]
-            sfld = (
-                values[sort_idx] if 0 <= sort_idx < len(values) else (values[0] if values else "")
-            )
             updates.append(
                 (
                     "\x1f".join(values),
-                    sfld,
+                    self._sort_field_value(values, sort_idx),
                     self._field_checksum(values[0] if values else ""),
                     now_sec,
                     int(note_row["id"]),
@@ -2205,26 +2202,28 @@ class AnkiDirectReadStore:
                     raise LookupError(f"Missing field '{field_name}' for notetype '{notetype}'.")
                 ordered_values.append(str(fields[field_name]))
 
-            first_field = ordered_values[0] if ordered_values else ""
-            # rslib note_fields_check: Empty is checked before Duplicate and is
-            # not lifted by allow_duplicate. ``field_is_empty`` is the same
-            # predicate card generation uses, so "<br>" and "   " agree.
-            # TODO(#23): run this on the HTML-stripped text once #50 lands.
-            if field_is_empty(first_field):
+            # rslib note_fields_check works on the first field with markup
+            # stripped: Empty is checked before Duplicate and is not lifted by
+            # allow_duplicate, so "<br>", "&nbsp;" and "<b></b>" are all empty.
+            first_stripped = _strip_html_preserving_media_filenames(
+                ordered_values[0] if ordered_values else ""
+            )
+            if not first_stripped.strip():
                 raise EmptyNoteError(
                     notetype=notetype, field_name=field_names[0] if field_names else ""
                 )
-            csum = self._field_checksum(first_field)
+            csum = self._checksum_of_stripped(first_stripped)
 
             if not allow_duplicate:
-                dup_ids = self._find_duplicate_note_ids(conn, notetype_id=notetype_id, csum=csum)
+                dup_ids = self._find_duplicate_note_ids(
+                    conn, notetype_id=notetype_id, csum=csum, first_stripped=first_stripped
+                )
                 if dup_ids:
                     raise DuplicateNoteError(notetype=notetype, duplicate_ids=dup_ids)
 
             note_id = self._allocate_row_id(conn, "notes")
             now_sec = int(time.time())
-            sort_idx = sort_field_idx if 0 <= sort_field_idx < len(ordered_values) else 0
-            sfld = ordered_values[sort_idx] if ordered_values else ""
+            sfld = self._sort_field_value(ordered_values, sort_field_idx)
             flds = "\x1f".join(ordered_values)
             tag_text = self._format_tags(tags or [])
 
@@ -2416,7 +2415,6 @@ class AnkiDirectReadStore:
                         )
                     current_values[name_to_ord[key]] = str(value)
 
-                sfld_idx = sort_idx if 0 <= sort_idx < len(current_values) else 0
                 conn.execute(
                     """
                     UPDATE notes
@@ -2425,7 +2423,7 @@ class AnkiDirectReadStore:
                     """,
                     (
                         "\x1f".join(current_values),
-                        current_values[sfld_idx] if current_values else "",
+                        self._sort_field_value(current_values, sort_idx),
                         self._field_checksum(current_values[0] if current_values else ""),
                         now_sec,
                         note_id,
@@ -3145,9 +3143,26 @@ class AnkiDirectReadStore:
         # Anki hashes the *text* of the first field, not its markup (rslib
         # ``field_checksum`` over ``strip_html_preserving_media_filenames``), so
         # CLI-written notes checksum identically to Anki-written ones.
-        stripped = _strip_html_preserving_media_filenames(first_field)
-        digest = sha1(stripped.encode("utf-8")).hexdigest()
+        return AnkiDirectReadStore._checksum_of_stripped(
+            _strip_html_preserving_media_filenames(first_field)
+        )
+
+    @staticmethod
+    def _checksum_of_stripped(stripped_first_field: str) -> int:
+        """rslib ``field_checksum``: first 32 bits of the SHA-1 of the stripped text."""
+        digest = sha1(stripped_first_field.encode("utf-8")).hexdigest()
         return int(digest[:8], 16)
+
+    @staticmethod
+    def _sort_field_value(values: list[str], sort_idx: int) -> str:
+        """``notes.sfld`` as Anki writes it (rslib ``Note::prepare_for_update``):
+        the sort field with markup stripped, so the browser sorts ``<b>Zebra</b>``
+        under Z and Check Database has nothing to rewrite. Falls back to the
+        first field when the notetype's sort index is out of range."""
+        if not values:
+            return ""
+        idx = sort_idx if 0 <= sort_idx < len(values) else 0
+        return _strip_html_preserving_media_filenames(values[idx])
 
     def _find_duplicate_note_ids(
         self,
@@ -3155,21 +3170,29 @@ class AnkiDirectReadStore:
         *,
         notetype_id: int,
         csum: int,
+        first_stripped: str,
     ) -> list[int]:
         """Ids of existing notes Anki would flag as duplicates, ascending.
 
-        Follows rslib's ``is_duplicate``: the match is scoped to the notetype
-        (``csum`` alone collides across notetypes that share a front). The caller
-        has already rejected an empty first field. rslib additionally confirms a
-        csum hit by comparing the stripped first-field text; with a 32-bit csum
-        scoped per notetype the collision risk is negligible, so this relies on
-        the csum match (TODO(#23): add the confirm step once #50's stripper lands).
+        Follows rslib's ``is_duplicate``: candidates are looked up by ``csum``
+        scoped to the notetype (``csum`` alone collides across notetypes that
+        share a front), then each hit is confirmed by comparing its stripped
+        first field with ``first_stripped`` — the csum is only 32 bits. The
+        caller has already rejected an empty first field.
         """
         rows = conn.execute(
-            "SELECT id FROM notes WHERE csum = ? AND mid = ? ORDER BY id",
+            "SELECT id, flds FROM notes WHERE csum = ? AND mid = ? ORDER BY id",
             (csum, notetype_id),
         ).fetchall()
-        return [int(r["id"]) for r in rows]
+        matches: list[int] = []
+        for row in rows:
+            existing_first = self._split_fields(str(row["flds"] or ""))
+            existing_stripped = _strip_html_preserving_media_filenames(
+                existing_first[0] if existing_first else ""
+            )
+            if existing_stripped == first_stripped:
+                matches.append(int(row["id"]))
+        return matches
 
     def _coerce_tags(self, value: JSONValue) -> list[str]:
         if isinstance(value, list):
