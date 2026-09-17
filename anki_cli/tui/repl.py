@@ -256,9 +256,15 @@ def _invoke_command(ctx_obj: dict[str, Any], raw_args: list[str]) -> None:
     # Anything hoisted now sits before the command name; step over each
     # option and the value tokens it consumes to find where the command starts.
     split = 0
-    while split < len(args) and args[split].startswith("-"):
+    while split < len(args) and args[split].startswith("-") and args[split] != "-":
         token = args[split]
-        consumed = 0 if "=" in token else _REPL_GLOBAL_OPTIONS.get(token, 0)
+        spelling = token.split("=", 1)[0]
+        if spelling not in _REPL_GLOBAL_OPTIONS:
+            # A leading option we did not hoist: a typo or a session-fixed
+            # option like --backend. Refuse rather than silently drop it.
+            click.echo(f"Error: No such option: {spelling}", err=True)
+            return
+        consumed = 0 if "=" in token else _REPL_GLOBAL_OPTIONS[spelling]
         split += 1 + consumed
     try:
         line_obj = _apply_global_options(ctx_obj, args[:split])

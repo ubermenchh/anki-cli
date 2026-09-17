@@ -188,6 +188,29 @@ def test_invoke_command_accepts_global_options_after_the_command(
 
 
 @pytest.mark.parametrize(
+    "argv", [["--yess", "deck", "--deck", "A"], ["--backend", "direct", "deck"]]
+)
+def test_invoke_command_rejects_unknown_leading_option(
+    monkeypatch: pytest.MonkeyPatch, capsys, argv
+) -> None:
+    """A mistyped (or session-fixed) leading option must not vanish silently
+    while the command runs without it."""
+    calls: dict[str, Any] = {}
+
+    @click.command("deck")
+    @click.option("--deck")
+    def cmd(deck: str | None):
+        calls["ran"] = True
+
+    monkeypatch.setattr(repl_mod, "get_command", lambda name: cmd if name == "deck" else None)
+
+    repl_mod._invoke_command({"yes": False}, argv)
+
+    assert calls == {}
+    assert f"No such option: {argv[0]}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
     ("argv", "message"),
     [
         (["deck", "--deck", "A", "--format"], "'--format' requires an argument"),
