@@ -14,6 +14,7 @@ import anki_cli.backends.factory as factory_mod
 import anki_cli.cli.commands.review as review_cmd_mod
 from anki_cli.backends.ankiconnect import AnkiConnectProtocolError
 from anki_cli.backends.factory import BackendFactoryError
+from anki_cli.backends.protocol import BackendUnsupportedError
 from anki_cli.cli.commands.review import (
     review_answer_cmd,
     review_cmd,
@@ -106,11 +107,9 @@ def test_review_next_uses_direct_store_picker(monkeypatch) -> None:
             calls["deck"] = deck
             return {"card_id": 77, "kind": "learn_due"}
 
-    class Backend:
+    class Backend(Store):
         name = "direct"
-
-        def __init__(self) -> None:
-            self._store = Store()
+        supports_scheduler_introspection = True
 
     _patch_session(monkeypatch, Backend())
     monkeypatch.setattr(
@@ -143,11 +142,9 @@ def test_review_next_no_card_returns_none_without_render(monkeypatch) -> None:
         def get_next_due_card(self, deck: str | None = None) -> dict[str, Any]:
             return {"card_id": None, "kind": "none"}
 
-    class Backend:
+    class Backend(Store):
         name = "direct"
-
-        def __init__(self) -> None:
-            self._store = Store()
+        supports_scheduler_introspection = True
 
     _patch_session(monkeypatch, Backend())
 
@@ -168,6 +165,7 @@ def test_review_next_falls_back_to_scheduler_for_non_direct(monkeypatch) -> None
 
     class Backend:
         name = "ankiconnect"
+        supports_scheduler_introspection = False
 
     _patch_session(monkeypatch, Backend())
 
@@ -197,11 +195,9 @@ def test_review_next_operation_error_exit_1(monkeypatch) -> None:
         def get_next_due_card(self, deck: str | None = None) -> dict[str, Any]:
             return {"card_id": 1, "kind": "learn_due"}
 
-    class Backend:
+    class Backend(Store):
         name = "direct"
-
-        def __init__(self) -> None:
-            self._store = Store()
+        supports_scheduler_introspection = True
 
     _patch_session(monkeypatch, Backend())
     monkeypatch.setattr(
@@ -222,6 +218,7 @@ def test_review_next_operation_error_exit_1(monkeypatch) -> None:
 def test_review_show_no_card(monkeypatch) -> None:
     class Backend:
         name = "direct"
+        supports_scheduler_introspection = True
 
     _patch_session(monkeypatch, Backend())
     monkeypatch.setattr(
@@ -240,6 +237,7 @@ def test_review_show_no_card(monkeypatch) -> None:
 def test_review_show_success(monkeypatch) -> None:
     class Backend:
         name = "direct"
+        supports_scheduler_introspection = True
 
     _patch_session(monkeypatch, Backend())
     monkeypatch.setattr(
@@ -270,11 +268,9 @@ def test_review_preview_direct_success(monkeypatch) -> None:
         def preview_ratings(self, card_id: int) -> list[dict[str, Any]]:
             return [{"ease": 1}, {"ease": 2}]
 
-    class Backend:
+    class Backend(Store):
         name = "direct"
-
-        def __init__(self) -> None:
-            self._store = Store()
+        supports_scheduler_introspection = True
 
     _patch_session(monkeypatch, Backend())
 
@@ -289,6 +285,10 @@ def test_review_preview_direct_success(monkeypatch) -> None:
 def test_review_preview_unsupported_backend_exit_7(monkeypatch) -> None:
     class Backend:
         name = "ankiconnect"
+        supports_scheduler_introspection = False
+
+        def preview_ratings(self, card_id: int):
+            raise BackendUnsupportedError("preview_ratings", "ankiconnect")
 
     _patch_session(monkeypatch, Backend())
 
@@ -305,11 +305,9 @@ def test_review_preview_operation_error_exit_1(monkeypatch) -> None:
         def preview_ratings(self, card_id: int) -> list[dict[str, Any]]:
             raise LookupError("missing card")
 
-    class Backend:
+    class Backend(Store):
         name = "direct"
-
-        def __init__(self) -> None:
-            self._store = Store()
+        supports_scheduler_introspection = True
 
     _patch_session(monkeypatch, Backend())
 
@@ -327,12 +325,10 @@ def test_review_undo_empty_exit_2(monkeypatch) -> None:
         def restore_card_state(self, snapshot: dict[str, Any]) -> dict[str, Any]:
             raise AssertionError("should not be called")
 
-    class Backend:
+    class Backend(Store):
         name = "direct"
+        supports_scheduler_introspection = True
         collection_path = Path("/tmp/col.db")
-
-        def __init__(self) -> None:
-            self._store = Store()
 
     class FakeUndoStore:
         def pop(self, *, collection: str):
@@ -357,12 +353,10 @@ def test_review_undo_success(monkeypatch) -> None:
             calls["snapshot"] = snapshot
             return {"card_id": 123, "restored": True}
 
-    class Backend:
+    class Backend(Store):
         name = "direct"
+        supports_scheduler_introspection = True
         collection_path = Path("/tmp/col.db")
-
-        def __init__(self) -> None:
-            self._store = Store()
 
     class FakeUndoStore:
         def pop(self, *, collection: str):
@@ -402,6 +396,7 @@ def test_review_answer_success_non_direct(monkeypatch) -> None:
 
     class Backend:
         name = "ankiconnect"
+        supports_scheduler_introspection = False
 
         def answer_card(self, *, card_id: int, ease: int) -> dict[str, Any]:
             calls["card_id"] = card_id
@@ -428,12 +423,10 @@ def test_review_answer_direct_pushes_undo_snapshot(monkeypatch) -> None:
             calls["snapshot_card_id"] = card_id
             return {"id": card_id, "queue": 2}
 
-    class Backend:
+    class Backend(Store):
         name = "direct"
+        supports_scheduler_introspection = True
         collection_path = Path("/tmp/col.db")
-
-        def __init__(self) -> None:
-            self._store = Store()
 
         def answer_card(self, *, card_id: int, ease: int) -> dict[str, Any]:
             calls["answer"] = {"card_id": card_id, "ease": ease}
@@ -482,12 +475,10 @@ def test_review_answer_direct_failure_leaves_no_undo_entry(monkeypatch) -> None:
         def snapshot_card_state(self, card_id: int) -> dict[str, Any]:
             return {"id": card_id, "queue": 2}
 
-    class Backend:
+    class Backend(Store):
         name = "direct"
+        supports_scheduler_introspection = True
         collection_path = Path("/tmp/col.db")
-
-        def __init__(self) -> None:
-            self._store = Store()
 
         def answer_card(self, *, card_id: int, ease: int) -> dict[str, Any]:
             raise LookupError("missing card")
@@ -513,12 +504,10 @@ def test_review_answer_direct_undo_push_failure_still_succeeds(monkeypatch) -> N
         def snapshot_card_state(self, card_id: int) -> dict[str, Any]:
             return {"id": card_id, "queue": 2}
 
-    class Backend:
+    class Backend(Store):
         name = "direct"
+        supports_scheduler_introspection = True
         collection_path = Path("/tmp/col.db")
-
-        def __init__(self) -> None:
-            self._store = Store()
 
         def answer_card(self, *, card_id: int, ease: int) -> dict[str, Any]:
             return {
@@ -552,6 +541,7 @@ def test_review_answer_direct_undo_push_failure_still_succeeds(monkeypatch) -> N
 def test_review_answer_operation_error_exit_1(monkeypatch) -> None:
     class Backend:
         name = "ankiconnect"
+        supports_scheduler_introspection = False
 
         def answer_card(self, *, card_id: int, ease: int) -> dict[str, Any]:
             raise LookupError("missing card")
@@ -570,6 +560,7 @@ def test_review_answer_operation_error_exit_1(monkeypatch) -> None:
 def test_review_answer_protocol_error_exit_1(monkeypatch) -> None:
     class Backend:
         name = "ankiconnect"
+        supports_scheduler_introspection = False
 
         def answer_card(self, *, card_id: int, ease: int) -> dict[str, Any]:
             raise AnkiConnectProtocolError("bad protocol")
@@ -618,6 +609,7 @@ def test_review_start_unsupported_backend_exit_2(monkeypatch) -> None:
 
     class Backend:
         name = "ankiconnect"
+        supports_scheduler_introspection = False
 
     _patch_session(monkeypatch, Backend())
 
@@ -648,6 +640,7 @@ def test_review_start_success_direct_runs_app(monkeypatch) -> None:
 
     class Backend:
         name = "direct"
+        supports_scheduler_introspection = True
 
     backend = Backend()
     _patch_session(monkeypatch, backend)

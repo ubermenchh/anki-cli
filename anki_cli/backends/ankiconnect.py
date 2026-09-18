@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from anki_cli.backends.protocol import AnkiBackend, JSONValue
+from anki_cli.backends.protocol import AnkiBackend, BackendUnsupportedError, JSONValue
 
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
@@ -33,6 +33,8 @@ class AnkiConnectAPIError(AnkiConnectError):
 
 
 class AnkiConnectBackend(AnkiBackend):
+    supports_scheduler_introspection = False
+
     name = "ankiconnect"
 
     def __init__(
@@ -604,7 +606,12 @@ class AnkiConnectBackend(AnkiBackend):
         current = self._invoke("guiCurrentCard")
         current_obj = self._as_json_object(current, "guiCurrentCard")
         if "cardId" not in current_obj:
-            raise AnkiConnectAPIError("guiCurrentCard", "No current GUI card is active.")
+            raise AnkiConnectAPIError(
+                "guiCurrentCard",
+                "No current GUI card is active. AnkiConnect can only answer the card "
+                "Anki Desktop is showing: open the deck (guiDeckReview) or use the "
+                "direct backend.",
+            )
 
         current_id = self._as_int(current_obj["cardId"], "guiCurrentCard.cardId")
         if current_id != card_id:
@@ -782,6 +789,27 @@ class AnkiConnectBackend(AnkiBackend):
             "review": review_count,
             "total": new_count + learn_count + review_count,
         }
+
+    # Scheduler introspection: the direct backend reads/writes scheduler state
+    # that AnkiConnect does not expose. Reported via
+    # ``supports_scheduler_introspection`` so callers branch on the capability.
+
+    def _unsupported(self, operation: str) -> BackendUnsupportedError:
+        return BackendUnsupportedError(
+            operation, self.name, hint="Use --backend direct for this command."
+        )
+
+    def get_next_due_card(self, deck: str | None = None) -> dict[str, JSONValue]:
+        raise self._unsupported("get_next_due_card")
+
+    def preview_ratings(self, card_id: int) -> list[dict[str, JSONValue]]:
+        raise self._unsupported("preview_ratings")
+
+    def snapshot_card_state(self, card_id: int) -> dict[str, JSONValue]:
+        raise self._unsupported("snapshot_card_state")
+
+    def restore_card_state(self, snapshot: Mapping[str, Any]) -> dict[str, JSONValue]:
+        raise self._unsupported("restore_card_state")
 
     # Helpers
     def _validate_url(self, *, url: str, allow_non_localhost: bool) -> None:

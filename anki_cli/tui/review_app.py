@@ -305,6 +305,9 @@ class ReviewApp(App[None]):
     def __init__(self, *, backend: Any, deck: str | None) -> None:
         super().__init__()
         self._backend = backend
+        # Undo, preview and the scheduler-ordered picker need scheduler state
+        # only the direct backend exposes (AnkiBackend.supports_scheduler_introspection).
+        self._introspects = bool(getattr(backend, "supports_scheduler_introspection", False))
         self._deck = deck
         self._card_id: int | None = None
         self._kind: str = "none"
@@ -392,11 +395,12 @@ class ReviewApp(App[None]):
         # a failed answer cannot leave a stale undo entry.
         snapshot: dict[str, Any] | None = None
         collection = ""
-        if getattr(self._backend, "name", "") == "direct" and hasattr(self._backend, "_store"):
+        if self._introspects:
             col = getattr(self._backend, "collection_path", None)
             collection = str(col) if col is not None else ""
-            store = cast(Any, self._backend._store)
-            snapshot = cast(dict[str, Any], store.snapshot_card_state(int(self._card_id)))
+            snapshot = cast(
+                dict[str, Any], self._backend.snapshot_card_state(int(self._card_id))
+            )
 
         try:
             result = self._backend.answer_card(card_id=int(self._card_id), ease=int(ease))
@@ -426,7 +430,7 @@ class ReviewApp(App[None]):
         self._load_next()
 
     def action_undo(self) -> None:
-        if getattr(self._backend, "name", "") != "direct" or not hasattr(self._backend, "_store"):
+        if not self._introspects:
             self._set_status("undo is supported only for direct backend")
             return
 
@@ -437,9 +441,8 @@ class ReviewApp(App[None]):
             self._set_status("undo empty")
             return
 
-        store = cast(Any, self._backend._store)
         try:
-            store.restore_card_state(item.snapshot)
+            self._backend.restore_card_state(item.snapshot)
         except Exception as exc:
             self._set_status(f"undo failed: {escape(str(exc))}")
             return
@@ -456,13 +459,12 @@ class ReviewApp(App[None]):
     def action_preview(self) -> None:
         if self._card_id is None:
             return
-        if getattr(self._backend, "name", "") != "direct" or not hasattr(self._backend, "_store"):
+        if not self._introspects:
             self._set_status("preview is supported only for direct backend")
             return
 
-        store = cast(Any, self._backend._store)
         try:
-            items = store.preview_ratings(int(self._card_id))
+            items = self._backend.preview_ratings(int(self._card_id))
         except Exception as exc:
             self._set_status(f"preview failed: {escape(str(exc))}")
             return
@@ -534,12 +536,11 @@ class ReviewApp(App[None]):
         if self._card_id is None:
             return hints
 
-        if getattr(self._backend, "name", "") != "direct" or not hasattr(self._backend, "_store"):
+        if not self._introspects:
             return hints
 
-        store = cast(Any, self._backend._store)
         try:
-            items = store.preview_ratings(int(self._card_id))
+            items = self._backend.preview_ratings(int(self._card_id))
         except Exception:
             return hints
 
@@ -631,19 +632,14 @@ class ReviewApp(App[None]):
 
     def _load_next(self) -> None:
         try:
-            # Prefer the direct store picker when present.
-            if getattr(self._backend, "name", "") == "direct" and hasattr(self._backend, "_store"):
-                store = cast(Any, self._backend._store)
-                if hasattr(store, "get_next_due_card"):
-                    picked = store.get_next_due_card(self._deck)
-                    cid = picked.get("card_id") if isinstance(picked, dict) else None
-                    kind = str(picked.get("kind", "none")) if isinstance(picked, dict) else "none"
-                    self._card_id = int(cid) if isinstance(cid, int) else None
-                    self._kind = kind
-                else:
-                    self._card_id, self._kind = (
-                        pick_next_due_card_id(self._backend, deck=self._deck)
-                    )
+            # The scheduler's own ordering when the backend exposes it; the
+            # query-based picker is the approximation otherwise.
+            if self._introspects:
+                picked = self._backend.get_next_due_card(self._deck)
+                cid = picked.get("card_id") if isinstance(picked, dict) else None
+                kind = str(picked.get("kind", "none")) if isinstance(picked, dict) else "none"
+                self._card_id = int(cid) if isinstance(cid, int) else None
+                self._kind = kind
             else:
                 self._card_id, self._kind = pick_next_due_card_id(self._backend, deck=self._deck)
         except Exception as exc:

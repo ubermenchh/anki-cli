@@ -6,6 +6,7 @@ from typing import Any, cast
 import click
 
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError, AnkiConnectProtocolError
+from anki_cli.backends.protocol import BackendUnsupportedError
 from anki_cli.cli.command import CommandContext, ErrorMap, anki_command
 from anki_cli.core.render import extract_note_id, extract_ord, pick_template, render_card
 from anki_cli.core.scheduler import pick_next_due_card_id
@@ -46,11 +47,8 @@ def _parse_ease(rating: str) -> int:
     return mapping[normalized]
 
 
-def _direct_store(backend: Any) -> Any | None:
-    """The direct backend's store, or ``None`` on any other backend."""
-    if getattr(backend, "name", "") == "direct" and hasattr(backend, "_store"):
-        return backend._store
-    return None
+def _introspects(backend: Any) -> bool:
+    return bool(getattr(backend, "supports_scheduler_introspection", False))
 
 
 def _collection_of(backend: Any) -> str:
@@ -82,9 +80,10 @@ def review_next_cmd(cmd: CommandContext, deck: str | None) -> JSONValue:
         backend = cmd.backend
         card_id: int | None
         kind: str
-        store = _direct_store(backend)
-        if store is not None and hasattr(store, "get_next_due_card"):
-            picked = store.get_next_due_card(deck.strip() if deck else None)
+        if _introspects(backend):
+            # The scheduler's own ordering; the query-based picker is the
+            # approximation for backends that cannot expose it.
+            picked = backend.get_next_due_card(deck.strip() if deck else None)
             card_id = picked.get("card_id") if isinstance(picked, dict) else None
             kind = str(picked.get("kind", "none")) if isinstance(picked, dict) else "none"
         else:
@@ -121,10 +120,8 @@ def review_show_cmd(cmd: CommandContext, deck: str | None) -> JSONValue:
 def review_preview_cmd(cmd: CommandContext, card_id: int) -> JSONValue:
     """Preview scheduling outcome per rating."""
     with cmd.errors(details={"id": card_id}):
-        store = _direct_store(cmd.backend)
-        if store is None:
-            raise NotImplementedError("review:preview is supported only for direct backend.")
-        items = store.preview_ratings(int(card_id))
+        # BackendUnsupportedError (a NotImplementedError) -> BACKEND_UNAVAILABLE.
+        items = cmd.backend.preview_ratings(int(card_id))
     return {"card_id": card_id, "items": items}
 
 
@@ -138,14 +135,13 @@ def review_preview_cmd(cmd: CommandContext, card_id: int) -> JSONValue:
 def review_undo_cmd(cmd: CommandContext) -> JSONValue:
     """Undo the last review answer."""
     backend = cmd.backend
-    store = _direct_store(backend)
-    if store is None:
-        raise NotImplementedError("review:undo is supported only for direct backend.")
+    if not _introspects(backend):
+        raise BackendUnsupportedError("review:undo", backend.name, "Use --backend direct.")
 
     item = UndoStore().pop(collection=_collection_of(backend))
     if item is None:
         raise cmd.fail("UNDO_EMPTY", "No undo entries available.", exit_code=2)
-    return store.restore_card_state(item.snapshot)
+    return backend.restore_card_state(item.snapshot)
 
 
 @anki_command(
@@ -170,10 +166,9 @@ def review_answer_cmd(cmd: CommandContext, card_id: int, rating: str) -> JSONVal
         # Save undo snapshot (direct backend only). The snapshot must capture
         # pre-answer state, but it is pushed only after answer_card succeeds so
         # a failed answer cannot leave a stale undo entry.
-        store = _direct_store(backend)
         snapshot: dict[str, Any] | None = None
-        if store is not None:
-            snapshot = cast(dict[str, Any], store.snapshot_card_state(int(card_id)))
+        if _introspects(backend):
+            snapshot = cast(dict[str, Any], backend.snapshot_card_state(int(card_id)))
 
         result = backend.answer_card(card_id=int(card_id), ease=ease)
 
@@ -215,7 +210,7 @@ def review_start_cmd(cmd: CommandContext, deck: str | None) -> None:
         ) from exc
 
     backend = cmd.backend
-    if getattr(backend, "name", "") != "direct":
+    if not _introspects(backend):
         raise cmd.fail(
             "UNSUPPORTED_BACKEND",
             "review:start currently supports only direct backend.",

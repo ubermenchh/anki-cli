@@ -469,6 +469,9 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
     try:
         backend_ctx = backend_session_from_context(ctx_obj)
         backend = backend_ctx.__enter__()
+        # Undo, snapshots and the scheduler-ordered picker need state only the
+        # direct backend exposes (AnkiBackend.supports_scheduler_introspection).
+        introspects = bool(getattr(backend, "supports_scheduler_introspection", False))
     except Exception as exc:
         console.print(f"[{RED}]Error:[/] {exc}")
         return
@@ -491,19 +494,14 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
             card_id: int | None = None
             kind = "none"
 
-            if (
-                getattr(backend, "name", "") == "direct"
-                and hasattr(backend, "_store")
-            ):
-                store = cast(Any, backend._store)
-                if hasattr(store, "get_next_due_card"):
-                    picked = store.get_next_due_card(deck)
-                    cid = picked.get("card_id") if isinstance(picked, dict) else None
-                    card_id = int(cid) if isinstance(cid, int) else None
-                    kind = (
-                        str(picked.get("kind", "none"))
-                        if isinstance(picked, dict) else "none"
-                    )
+            if introspects:
+                picked = backend.get_next_due_card(deck)
+                cid = picked.get("card_id") if isinstance(picked, dict) else None
+                card_id = int(cid) if isinstance(cid, int) else None
+                kind = (
+                    str(picked.get("kind", "none"))
+                    if isinstance(picked, dict) else "none"
+                )
 
             if card_id is None:
                 from anki_cli.core.scheduler import pick_next_due_card_id
@@ -571,10 +569,7 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
                     )
                     return
                 if choice == "u":
-                    if (
-                        getattr(backend, "name", "") == "direct"
-                        and hasattr(backend, "_store")
-                    ):
+                    if introspects:
                         col = getattr(
                             backend, "collection_path", None
                         )
@@ -584,9 +579,7 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
                             console.print(f"  [{DIM}](nothing to undo)[/]")
                             continue
                         try:
-                            cast(
-                                Any, backend._store
-                            ).restore_card_state(item.snapshot)
+                            backend.restore_card_state(item.snapshot)
                             reviewed = max(0, reviewed - 1)
                             console.print(f"  [{DIM}](undone)[/]")
                         except Exception as exc:
@@ -610,15 +603,11 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
 
                 snapshot: dict[str, Any] | None = None
                 collection = ""
-                if (
-                    getattr(backend, "name", "") == "direct"
-                    and hasattr(backend, "_store")
-                ):
+                if introspects:
                     col = getattr(backend, "collection_path", None)
                     collection = str(col) if col is not None else ""
                     snapshot = cast(
-                        dict[str, Any],
-                        cast(Any, backend._store).snapshot_card_state(int(card_id)),
+                        dict[str, Any], backend.snapshot_card_state(int(card_id))
                     )
 
                 try:
