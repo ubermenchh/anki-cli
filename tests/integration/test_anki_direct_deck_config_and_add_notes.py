@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Any, cast
 
@@ -9,100 +8,14 @@ import pytest
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
-from anki_cli.proto.anki.decks import DeckCommon, DeckFiltered, DeckKindContainer, DeckNormal
-from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
+from anki_cli.proto.anki.decks import DeckFiltered, DeckKindContainer
+from tests.anki_schema import connect
+from tests.conftest import Collection, new_collection, normal_deck_kind
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE deck_config (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            mtime_secs INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            config BLOB NOT NULL
-        );
-
-        CREATE TABLE decks (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            mtime_secs INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            common BLOB NOT NULL,
-            kind BLOB NOT NULL
-        );
-
-        CREATE TABLE notetypes (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            mtime_secs INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            config BLOB NOT NULL
-        );
-
-        CREATE TABLE fields (
-            ntid INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            config BLOB NOT NULL
-        );
-
-        CREATE TABLE templates (
-            ntid INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            mtime_secs INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            config BLOB NOT NULL
-        );
-
-        CREATE TABLE notes (
-            id INTEGER PRIMARY KEY,
-            guid TEXT NOT NULL,
-            mid INTEGER NOT NULL,
-            mod INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            tags TEXT NOT NULL,
-            flds TEXT NOT NULL,
-            sfld TEXT NOT NULL,
-            csum INTEGER NOT NULL,
-            flags INTEGER NOT NULL,
-            data TEXT NOT NULL
-        );
-
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            nid INTEGER NOT NULL,
-            did INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            mod INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            type INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL,
-            ivl INTEGER NOT NULL,
-            factor INTEGER NOT NULL,
-            reps INTEGER NOT NULL,
-            lapses INTEGER NOT NULL,
-            left INTEGER NOT NULL,
-            odue INTEGER NOT NULL,
-            odid INTEGER NOT NULL,
-            flags INTEGER NOT NULL,
-            data TEXT NOT NULL
-        );
-        """
-    )
-    conn.executescript(COL_TABLE_SQL)
-    insert_col_row(conn, crt=0)
-    conn.commit()
-    conn.close()
-
-    return AnkiDirectReadStore(db_path), db_path
+    col = new_collection(tmp_path / "collection.anki2", seed=False)
+    return col.store(writable=False), col.db_path
 
 
 def _insert_deck_config(
@@ -119,24 +32,12 @@ def _insert_deck_config(
     learn_steps: list[float] | None = None,
     relearn_steps: list[float] | None = None,
 ) -> None:
-    cfg = DeckConfigConfig(
-        new_per_day=new_per_day,
-        reviews_per_day=reviews_per_day,
-        desired_retention=desired_retention,
-        maximum_review_interval=maximum_review_interval,
-        learn_steps=learn_steps or [1.0, 10.0],
-        relearn_steps=relearn_steps or [10.0],
+    Collection(db_path).insert_deck_config(
+        id=config_id, name=name, mtime_secs=mtime_secs, usn=usn,
+        new_per_day=new_per_day, reviews_per_day=reviews_per_day,
+        desired_retention=desired_retention, maximum_review_interval=maximum_review_interval,
+        learn_steps=learn_steps, relearn_steps=relearn_steps,
     )
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO deck_config (id, name, mtime_secs, usn, config)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (config_id, name, mtime_secs, usn, bytes(cfg)),
-    )
-    conn.commit()
-    conn.close()
 
 
 def _insert_deck_normal(
@@ -149,18 +50,10 @@ def _insert_deck_normal(
     mtime_secs: int = 1,
     usn: int = 0,
 ) -> None:
-    common = DeckCommon()
-    kind = DeckKindContainer(normal=DeckNormal(config_id=config_id, description=description))
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO decks (id, name, mtime_secs, usn, common, kind)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (did, name, mtime_secs, usn, bytes(common), bytes(kind)),
+    Collection(db_path).insert_deck(
+        id=did, name=name, mtime_secs=mtime_secs, usn=usn,
+        kind=normal_deck_kind(config_id=config_id, description=description),
     )
-    conn.commit()
-    conn.close()
 
 
 def _insert_deck_filtered(
@@ -171,23 +64,15 @@ def _insert_deck_filtered(
     mtime_secs: int = 1,
     usn: int = 0,
 ) -> None:
-    common = DeckCommon()
-    kind = DeckKindContainer(filtered=DeckFiltered())
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO decks (id, name, mtime_secs, usn, common, kind)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (did, name, mtime_secs, usn, bytes(common), bytes(kind)),
+    # Bare filtered deck (no search terms), as the tests always had.
+    Collection(db_path).insert_deck(
+        id=did, name=name, mtime_secs=mtime_secs, usn=usn,
+        kind=bytes(DeckKindContainer(filtered=DeckFiltered())),
     )
-    conn.commit()
-    conn.close()
 
 
 def _deck_config_row(db_path: Path, config_id: int) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute(
         "SELECT id, name, mtime_secs, usn, config FROM deck_config WHERE id = ?",
         (config_id,),
@@ -198,8 +83,7 @@ def _deck_config_row(db_path: Path, config_id: int) -> dict[str, Any]:
 
 
 def _deck_row_by_id(db_path: Path, did: int) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute(
         "SELECT id, name, mtime_secs, usn FROM decks WHERE id = ?",
         (did,),
@@ -210,15 +94,14 @@ def _deck_row_by_id(db_path: Path, did: int) -> dict[str, Any]:
 
 
 def _notes_rows(db_path: Path) -> list[dict[str, Any]]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     rows = conn.execute("SELECT id, tags, flds FROM notes ORDER BY id").fetchall()
     conn.close()
     return [dict(row) for row in rows]
 
 
 def _cards_count(db_path: Path) -> int:
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     row = conn.execute("SELECT COUNT(*) FROM cards").fetchone()
     conn.close()
     assert row is not None
@@ -334,9 +217,8 @@ def test_set_deck_config_updates_fields_and_persists(
     assert config["learn_steps"] == [1.0, 5.0, 15.0]
     assert config["relearn_steps"] == [10.0, 30.5]
 
-    row = _deck_config_row(db_path, 1)
+    row = Collection(db_path).assert_synced("deck_config", 1)
     assert row["mtime_secs"] == 1_700_000_000
-    assert row["usn"] == -1
 
     cfg = DeckConfigConfig().parse(bytes(row["config"]))
     assert int(cfg.new_per_day) == 30
@@ -400,10 +282,9 @@ def test_create_deck_alias_creates_deck(
     assert out["created"] is True
     did = int(cast(int | str, out["id"]))
 
-    row = _deck_row_by_id(db_path, did)
+    row = Collection(db_path).assert_synced("decks", did)
     assert row["name"] == "NewDeck"
     assert row["mtime_secs"] == 1_700_000_000
-    assert row["usn"] == -1
 
 
 def test_add_notes_returns_id_or_none_per_input_item(

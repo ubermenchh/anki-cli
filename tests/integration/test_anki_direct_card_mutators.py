@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -9,60 +8,22 @@ import pytest
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
 from anki_cli.proto.anki.decks import DeckFiltered, DeckKindContainer, DeckNormal
-from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
+from tests.anki_schema import connect
+from tests.conftest import COL_BASE_MOD_MS, Collection, new_collection
 
 _NORMAL_KIND = bytes(DeckKindContainer(normal=DeckNormal(config_id=1)))
 _FILTERED_KIND = bytes(DeckKindContainer(filtered=DeckFiltered(reschedule=True)))
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
-        CREATE TABLE decks (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            kind BLOB NOT NULL DEFAULT X''
-        );
-
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            did INTEGER NOT NULL,
-            type INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL,
-            ivl INTEGER NOT NULL,
-            factor INTEGER NOT NULL,
-            reps INTEGER NOT NULL,
-            lapses INTEGER NOT NULL,
-            left INTEGER NOT NULL,
-            odue INTEGER NOT NULL,
-            odid INTEGER NOT NULL,
-            data TEXT NOT NULL,
-            mod INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            flags INTEGER NOT NULL
-        );
-        """)
-    conn.executescript(COL_TABLE_SQL)
-    insert_col_row(conn, crt=0)
-    conn.executemany(
-        "INSERT INTO decks (id, name, kind) VALUES (?, ?, ?)",
-        [
-            (1, "Default", _NORMAL_KIND),
-            (2, "Target", _NORMAL_KIND),
-            (10, "Lang", _NORMAL_KIND),
-            (11, "Lang::Child", _NORMAL_KIND),
-            (12, "Other", _NORMAL_KIND),
-            (555, "Cram", _FILTERED_KIND),
-        ],
-    )
-    conn.commit()
-    conn.close()
-
-    return AnkiDirectReadStore(db_path), db_path
+    col = new_collection(tmp_path / "collection.anki2", seed=False)
+    for did, name in ((1, "Default"), (2, "Target"), (10, "Lang"), (11, "Lang::Child"),
+                      (12, "Other")):
+        col.insert_deck(id=did, name=name, kind=_NORMAL_KIND)
+    col.insert_deck(id=555, name="Cram", kind=_FILTERED_KIND)
+    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
+    col.insert_note(id=1000, fields=["Q", "A"])
+    return col.store(writable=False), col.db_path
 
 
 def _insert_card(
@@ -85,41 +46,20 @@ def _insert_card(
     usn: int = 0,
     flags: int = 0,
 ) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO cards (
-            id, did, type, queue, due, ivl, factor, reps, lapses, left,
-            odue, odid, data, mod, usn, flags
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            card_id,
-            did,
-            card_type,
-            queue,
-            due,
-            ivl,
-            factor,
-            reps,
-            lapses,
-            left,
-            odue,
-            odid,
-            data,
-            mod,
-            usn,
-            flags,
-        ),
+    Collection(db_path).insert_card(
+        id=card_id, nid=1000, did=did, type=card_type, queue=queue, due=due, ivl=ivl,
+        factor=factor, reps=reps, lapses=lapses, left=left, odue=odue, odid=odid, data=data,
+        mod=mod, usn=usn, flags=flags,
     )
-    conn.commit()
-    conn.close()
+
+
+def _assert_col_synced(db_path: Path) -> None:
+    """A landed write moves col.mod so sync scans for usn = -1 rows (#47)."""
+    assert Collection(db_path).col()["mod"] > COL_BASE_MOD_MS
 
 
 def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute(
         """
         SELECT
@@ -158,6 +98,7 @@ def test_move_cards_updates_existing_ids_only(
     assert row30["mod"] == 1_000_000
     assert row10["usn"] == -1
     assert row30["usn"] == -1
+    _assert_col_synced(db_path)
 
 
 def test_move_cards_unknown_deck_raises_lookup_error(
@@ -208,6 +149,7 @@ def test_set_card_flag_updates_existing_ids_only(
     assert row2["mod"] == 1_000_000
     assert row1["usn"] == -1
     assert row2["usn"] == -1
+    _assert_col_synced(db_path)
 
 
 def test_bury_then_unbury_all_restores_queue_by_type(
@@ -231,6 +173,7 @@ def test_bury_then_unbury_all_restores_queue_by_type(
     assert _card_row(db_path, 2)["queue"] == -2
 
     unburied = store.unbury_cards()
+    _assert_col_synced(db_path)
     assert unburied == {"unburied": 4, "scope": "all"}
 
     assert _card_row(db_path, 1)["queue"] == 0
@@ -306,6 +249,7 @@ def test_reschedule_cards_sets_review_state_and_due(
     assert row5["mod"] == 1_000_000
     assert row1["usn"] == -1
     assert row5["usn"] == -1
+    _assert_col_synced(db_path)
 
 
 def test_reschedule_cards_negative_days_raises(tmp_path: Path) -> None:
@@ -400,6 +344,7 @@ def test_reset_cards_reinitializes_state_and_assigns_new_due_sequence(
     assert row30["mod"] == 1_000_000
     assert row10["usn"] == -1
     assert row30["usn"] == -1
+    _assert_col_synced(db_path)
 
     # Existing new card remains unchanged.
     assert row1["queue"] == 0
@@ -407,13 +352,14 @@ def test_reset_cards_reinitializes_state_and_assigns_new_due_sequence(
 
 
 def test_card_mutator_noop_cases_return_empty_results(tmp_path: Path) -> None:
-    store, _db_path = _make_store(tmp_path)
+    store, db_path = _make_store(tmp_path)
 
     assert store.move_cards(card_ids=[], deck="Target") == {"moved": 0, "card_ids": []}
     assert store.set_card_flag(card_ids=[], flag=1) == {"updated": 0, "card_ids": []}
     assert store.bury_cards(card_ids=[]) == {"buried": 0, "card_ids": []}
     assert store.reschedule_cards(card_ids=[], days=2) == {"rescheduled": 0, "card_ids": []}
     assert store.reset_cards(card_ids=[]) == {"reset": 0, "card_ids": []}
+    Collection(db_path).assert_untouched()  # no-ops write nothing
 
 
 # --- filtered-deck awareness (#20) --------------------------------------------
@@ -430,6 +376,7 @@ def test_reset_cards_sends_a_filtered_deck_card_home(
     _insert_card(db_path, card_id=2, did=12, card_type=2, queue=2, due=19_900)
 
     store.reset_cards(card_ids=[1, 2])
+    _assert_col_synced(db_path)
 
     home = _card_row(db_path, 1)
     assert (home["did"], home["odid"], home["odue"]) == (10, 0, 0)
@@ -448,6 +395,7 @@ def test_reschedule_cards_sends_a_filtered_deck_card_home(
     _insert_card(db_path, card_id=1, did=555, card_type=2, queue=2, due=-5, odid=10, odue=19_700)
 
     store.reschedule_cards(card_ids=[1], days=3)
+    _assert_col_synced(db_path)
 
     row = _card_row(db_path, 1)
     assert (row["did"], row["odid"], row["odue"]) == (10, 0, 0)
@@ -470,6 +418,7 @@ def test_move_cards_out_of_filtered_deck_restores_schedule(
     _insert_card(db_path, card_id=3, did=10, card_type=2, queue=2, due=19_800)
 
     store.move_cards(card_ids=[1, 2, 3], deck="Target")
+    _assert_col_synced(db_path)
 
     review = _card_row(db_path, 1)
     assert (review["did"], review["due"], review["queue"], review["odid"]) == (2, 19_700, 2, 0)
@@ -505,5 +454,6 @@ def test_move_cards_into_a_filtered_deck_is_refused(
 
     with pytest.raises(ValueError, match="filtered deck"):
         store.move_cards(card_ids=[1], deck="Cram")
+    Collection(db_path).assert_untouched()
 
     assert _card_row(db_path, 1)["did"] == 10

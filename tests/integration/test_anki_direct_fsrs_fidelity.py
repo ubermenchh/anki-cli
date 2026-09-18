@@ -25,80 +25,46 @@ from anki_cli.db.anki_direct import (
     REVLOG_KIND_LEARNING,
     REVLOG_KIND_RELEARNING,
     REVLOG_KIND_REVIEW,
-    AnkiDirectReadStore,
     clamp_fsrs_parameters,
     fsrs_fuzz_seed,
     upgrade_fsrs_parameters,
 )
 from anki_cli.db.timing import sched_timing_today_v1
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
-from anki_cli.proto.anki.decks import DeckKindContainer, DeckNormal
-from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
+from tests.anki_schema import connect
+from tests.conftest import Collection, new_collection
 
 CRT = 1_700_000_000
 NOW = CRT + 100 * 86400 + 3600  # one hour into scheduling day 100 (v1 timing)
 
 
 def _make_store(tmp_path: Path, *, deck_config: DeckConfigConfig | None = None):
-    db_path = tmp_path / "collection.anki2"
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
-        CREATE TABLE decks (id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind BLOB NOT NULL);
-        CREATE TABLE deck_config (id INTEGER PRIMARY KEY, name TEXT NOT NULL, config BLOB NOT NULL);
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY, nid INTEGER NOT NULL DEFAULT 1, did INTEGER NOT NULL DEFAULT 1,
-            ord INTEGER NOT NULL DEFAULT 0, mod INTEGER NOT NULL DEFAULT 0,
-            usn INTEGER NOT NULL DEFAULT 0, type INTEGER NOT NULL, queue INTEGER NOT NULL,
-            due INTEGER NOT NULL, ivl INTEGER NOT NULL DEFAULT 0,
-            factor INTEGER NOT NULL DEFAULT 0, reps INTEGER NOT NULL DEFAULT 0,
-            lapses INTEGER NOT NULL DEFAULT 0, left INTEGER NOT NULL DEFAULT 0,
-            odue INTEGER NOT NULL DEFAULT 0, odid INTEGER NOT NULL DEFAULT 0,
-            flags INTEGER NOT NULL DEFAULT 0, data TEXT NOT NULL DEFAULT ''
-        );
-        CREATE TABLE revlog (
-            id INTEGER PRIMARY KEY, cid INTEGER NOT NULL, usn INTEGER NOT NULL,
-            ease INTEGER NOT NULL, ivl INTEGER NOT NULL, lastIvl INTEGER NOT NULL,
-            factor INTEGER NOT NULL, time INTEGER NOT NULL, type INTEGER NOT NULL
-        );
-        """)
-    conn.executescript(COL_TABLE_SQL)
-    insert_col_row(conn, crt=CRT)
-    conn.execute(
-        "INSERT INTO decks VALUES (1, 'Default', ?)",
-        (bytes(DeckKindContainer(normal=DeckNormal(config_id=1))),),
-    )
+    col = new_collection(tmp_path / "collection.anki2", crt=CRT, seed=False)
+    col.insert_deck(id=1, name="Default")
     cfg = deck_config or DeckConfigConfig(
         learn_steps=[1.0, 10.0, 60.0], relearn_steps=[10.0, 30.0], desired_retention=0.9
     )
-    conn.execute("INSERT INTO deck_config VALUES (1, 'Default', ?)", (bytes(cfg),))
-    conn.commit()
-    conn.close()
-    store = AnkiDirectReadStore(db_path)
-    store._ensure_write_safe = lambda: None  # type: ignore[method-assign]
-    return store, db_path
+    col.insert_deck_config(id=1, name="Default", config=bytes(cfg))
+    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
+    col.insert_note(id=1, fields=["Q", "A"])
+    return col.store(), col.db_path  # writable: these are all scheduler write paths
 
 
 def _insert_card(db_path: Path, **cols: object) -> None:
-    conn = sqlite3.connect(str(db_path))
-    keys = ", ".join(cols)
-    marks = ", ".join("?" for _ in cols)
-    conn.execute(f"INSERT INTO cards ({keys}) VALUES ({marks})", tuple(cols.values()))
-    conn.commit()
-    conn.close()
+    """Old-style keyword columns; ``nid=1`` (the seeded note), ``mod=0`` and
+    ``data=""`` were this file's DEFAULTs and are kept."""
+    defaults: dict[str, object] = {"nid": 1, "mod": 0, "data": ""}
+    Collection(db_path).insert_card(**{**defaults, **cols})  # type: ignore[arg-type]
 
 
 def _insert_revlog(db_path: Path, *, rid: int, cid: int, ease: int, type_: int) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO revlog VALUES (?, ?, 0, ?, 1, 0, 2500, 0, ?)", (rid, cid, ease, type_)
+    Collection(db_path).insert_revlog(
+        id=rid, cid=cid, ease=ease, type=type_, usn=0, ivl=1, lastIvl=0, factor=2500, time=0
     )
-    conn.commit()
-    conn.close()
 
 
 def _row(db_path: Path, cid: int) -> sqlite3.Row:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute("SELECT * FROM cards WHERE id = ?", (cid,)).fetchone()
     conn.close()
     assert row is not None
@@ -106,8 +72,7 @@ def _row(db_path: Path, cid: int) -> sqlite3.Row:
 
 
 def _revlog(db_path: Path, cid: int) -> list[dict]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     rows = conn.execute("SELECT * FROM revlog WHERE cid = ? ORDER BY id", (cid,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
