@@ -35,6 +35,7 @@ class _SchedulerStepKwargs(TypedDict, total=False):
     learning_steps: list[timedelta]
     relearning_steps: list[timedelta]
 
+
 class _FsrsReviewSetup(NamedTuple):
     """What ``_prepare_fsrs_review`` hands to ``answer_card`` / ``preview_ratings``."""
 
@@ -45,7 +46,6 @@ class _FsrsReviewSetup(NamedTuple):
     learn_step_count: int
     relearn_step_count: int
     params_source: str
-
 
 
 # py-fsrs 6 wants exactly 21 weights. Anki may still carry FSRS-4.5 (17) or

@@ -7,7 +7,7 @@ from __future__ import annotations
 import sqlite3
 import time
 
-from anki_cli.db.codec import _strip_html_preserving_media_filenames
+from anki_cli.db.codec import strip_html_preserving_media_filenames
 from anki_cli.db.deck_lookup import DeckLookupMixin
 from anki_cli.db.errors import DuplicateNoteError, EmptyNoteError, NoteRejectedError
 from anki_cli.db.notetypes import NotetypesMixin
@@ -125,7 +125,7 @@ class NotesMixin(NotetypesMixin, DeckLookupMixin):
             # rslib note_fields_check works on the first field with markup
             # stripped: Empty is checked before Duplicate and is not lifted by
             # allow_duplicate, so "<br>", "&nbsp;" and "<b></b>" are all empty.
-            first_stripped = _strip_html_preserving_media_filenames(
+            first_stripped = strip_html_preserving_media_filenames(
                 ordered_values[0] if ordered_values else ""
             )
             if not first_stripped.strip():
@@ -565,7 +565,7 @@ class NotesMixin(NotetypesMixin, DeckLookupMixin):
         matches: list[int] = []
         for row in rows:
             existing_first = self._split_fields(str(row["flds"] or ""))
-            existing_stripped = _strip_html_preserving_media_filenames(
+            existing_stripped = strip_html_preserving_media_filenames(
                 existing_first[0] if existing_first else ""
             )
             if existing_stripped == first_stripped:

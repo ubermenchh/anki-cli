@@ -5,12 +5,12 @@ are checked, not assumed)::
 
     CodecMixin
       ConnectionMixin          open, write txn, ids, timing, col bookkeeping
-        DeckLookupMixin        name -> id, subtree filter, deck options (deck_lookup.py)
-          NotetypesMixin       notetypes (+ flds rewrites, scm bump)
+        NotetypesMixin         notetypes (+ flds rewrites, scm bump)
+        DeckLookupMixin        name -> id, subtree filter, deck options
           CardsMixin           cards, due counts, queue mutators, revlog
             DecksMixin         decks public API (needs due counts)
             SchedulingMixin    FSRS answer/preview/snapshot
-          NotesMixin           notes + tags (needs notetypes, deck lookup)
+          NotesMixin           notes + tags (also extends NotetypesMixin)
 """
 
 from __future__ import annotations

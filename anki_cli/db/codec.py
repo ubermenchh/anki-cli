@@ -100,7 +100,7 @@ def _decode_entities_strict(text: str) -> str:
         return text
 
 
-def _strip_html_preserving_media_filenames(text: str) -> str:
+def strip_html_preserving_media_filenames(text: str) -> str:
     """Port of rslib ``strip_html_preserving_media_filenames``.
 
     Media tags (``img``/``audio``/``video``/``object``/``source``) are replaced
@@ -190,7 +190,7 @@ class CodecMixin:
         # ``field_checksum`` over ``strip_html_preserving_media_filenames``), so
         # CLI-written notes checksum identically to Anki-written ones.
         return CodecMixin._checksum_of_stripped(
-            _strip_html_preserving_media_filenames(first_field)
+            strip_html_preserving_media_filenames(first_field)
         )
 
     @staticmethod
@@ -208,7 +208,7 @@ class CodecMixin:
         if not values:
             return ""
         idx = sort_idx if 0 <= sort_idx < len(values) else 0
-        return _strip_html_preserving_media_filenames(values[idx])
+        return strip_html_preserving_media_filenames(values[idx])
 
     def _coerce_tags(self, value: JSONValue) -> list[str]:
         if isinstance(value, list):

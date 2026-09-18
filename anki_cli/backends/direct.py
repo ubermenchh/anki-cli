@@ -18,6 +18,7 @@ class DirectBackend(AnkiDirectStore, AnkiBackend):
     name = "direct"
     supports_scheduler_introspection = True
 
-    @property
-    def collection_path(self) -> Path:
-        return self.db_path
+    def __init__(self, collection_path: Path) -> None:
+        super().__init__(collection_path)
+        # Plain attribute, as the protocol declares it (AnkiConnect sets None).
+        self.collection_path: Path | None = self.db_path
