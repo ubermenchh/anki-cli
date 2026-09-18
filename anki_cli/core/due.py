@@ -87,24 +87,31 @@ def decode_left(left_raw: int) -> dict[str, int]:
 
 
 def due_sort_key(due_info: dict[str, JSONValue] | None, *, fallback: int) -> tuple[int, int]:
-    """Order cards by "when is it actually due".
+    """Order cards by "what would Anki show first", the same on both backends.
 
-    Returns ``(bucket, value)``: epoch-comparable cards (``epoch_secs`` known)
-    in bucket 0 by epoch; day-index cards without an epoch in bucket 1 by day
-    index; new-card positions in bucket 2; anything else in bucket 3 by the raw
-    value. Within one bucket the units agree, which is what a raw ``min(due)``
-    across queues could not guarantee (an intraday epoch ~1.7e9 always lost to
-    a day index ~2e4).
+    Returns ``(bucket, value)``. Buckets follow Anki's own queue order —
+    intraday learning ahead of everything (Anki v3 shows learning steps as
+    they fall due and interleaves day-learn with reviews), then day-indexed
+    cards (review and day-learn) by day, then new cards by position, then
+    anything undecoded by its raw value. Within a bucket the units agree,
+    which a raw ``min(due)`` across queues could not guarantee (an intraday
+    epoch ~1.7e9 always lost to a day index ~2e4).
+
+    Ranking by *kind* rather than by whichever unit happens to be available
+    is what keeps the two backends in step: the direct backend knows the
+    epoch of a day-index card, AnkiConnect does not, and if that decided the
+    bucket the same collection would pick different cards per backend.
     """
     if not isinstance(due_info, dict):
         return (3, fallback)
+    kind = due_info.get("kind")
     epoch = due_info.get("epoch_secs")
-    if isinstance(epoch, int):
-        return (0, epoch)
     day = due_info.get("day_index")
+    pos = due_info.get("position")
+    if kind == "learn_epoch_secs" and isinstance(epoch, int):
+        return (0, epoch)
     if isinstance(day, int):
         return (1, day)
-    pos = due_info.get("position")
     if isinstance(pos, int):
         return (2, pos)
     raw = due_info.get("raw")

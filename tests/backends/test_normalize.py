@@ -75,10 +75,12 @@ def test_normalize_card_due_info_matches_direct_decoding_without_timing(
     assert card["due_info"] == expected
 
 
-def test_normalize_card_tolerates_missing_keys() -> None:
+def test_normalize_card_defaults_optional_keys_but_the_backend_owns_not_found() -> None:
+    """The normaliser fills gaps so a partial row still validates; deciding that
+    a row means "no such card" (AnkiConnect returns ``{}``) is the backend's job
+    — see test_ankiconnect_deck_notetype_paths for that."""
     card = normalize_card({"cardId": 7})
     assert card["note"] == 0 and card["fields"] == [] and card["notetype_name"] == ""
-    assert card["due_info"] == {"kind": "new_position", "raw": 0, "position": 0}
     Card.model_validate(card)
 
 

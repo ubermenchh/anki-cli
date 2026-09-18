@@ -262,7 +262,14 @@ class AnkiConnectBackend(AnkiBackend):
         return {str(name): self._as_int(mid, "model id") for name, mid in model_map.items()}
 
     def get_notetypes(self) -> list[dict[str, JSONValue]]:
-        ids = self._model_ids()
+        try:
+            ids: dict[str, int | None] = dict(self._model_ids())
+        except AnkiConnectAPIError:
+            # Older AnkiConnect without modelNamesAndIds: names only, id None.
+            names = self._invoke("modelNames")
+            if not isinstance(names, list):
+                raise AnkiConnectProtocolError("modelNames must return a list.") from None
+            ids = {str(n): None for n in names}
         output: list[dict[str, JSONValue]] = []
 
         for name in sorted(ids, key=str.lower):
@@ -300,7 +307,9 @@ class AnkiConnectBackend(AnkiBackend):
         }
         try:
             result["id"] = self._model_ids().get(name)
-        except AnkiConnectError:
+        except AnkiConnectAPIError:
+            # Older AnkiConnect without modelNamesAndIds; a dropped connection
+            # (AnkiConnectUnavailableError) still propagates.
             result["id"] = None
 
         kind = "normal"
@@ -574,8 +583,13 @@ class AnkiConnectBackend(AnkiBackend):
         result = self._invoke("notesInfo", notes=[note_id])
         if not isinstance(result, list) or not result:
             raise AnkiConnectProtocolError("notesInfo returned no rows.")
-        first = result[0]
-        return normalize_note(self._as_json_object(first, "notesInfo row"))
+        first = self._as_json_object(result[0], "notesInfo row")
+        if "noteId" not in first:
+            # AnkiConnect answers an unknown id with {} rather than an error, so
+            # the request/response lists line up. Report it like the direct
+            # backend does instead of normalising an empty row into a note.
+            raise LookupError(f"Note not found: {note_id}")
+        return normalize_note(first)
 
     def get_note_fields(self, note_id: int, fields: list[str] | None = None) -> dict[str, str]:
         note = self.get_note(note_id)
@@ -605,8 +619,10 @@ class AnkiConnectBackend(AnkiBackend):
         result = self._invoke("cardsInfo", cards=[card_id])
         if not isinstance(result, list) or not result:
             raise AnkiConnectProtocolError("cardsInfo returned no rows.")
-        first = result[0]
-        return normalize_card(self._as_json_object(first, "cardsInfo row"))
+        first = self._as_json_object(result[0], "cardsInfo row")
+        if "cardId" not in first:
+            raise LookupError(f"Card not found: {card_id}")  # see get_note
+        return normalize_card(first)
 
     def answer_card(self, card_id: int, ease: int) -> dict[str, JSONValue]:
         if ease not in {1, 2, 3, 4}:

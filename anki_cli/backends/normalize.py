@@ -5,10 +5,11 @@ returns its own vocabulary — ``modelName`` for the notetype, ``noteId`` for a
 note's id, ``fields`` as ``{name: {value, order}}`` — so an agent parsing
 ``--format json`` had to know which backend it was talking to.
 
-Every function here is **additive**: it adds the canonical keys and leaves the
-AnkiConnect ones in place (``modelName``, ``question``, ``answer``, ``css``,
-``nextReviews`` …), so nothing that read the old shape breaks. Pure functions
-over plain dicts; no HTTP.
+Every function here is additive — it adds the canonical keys and leaves the
+AnkiConnect ones in place (``modelName``, ``noteId``, ``question``, ``answer``,
+``css``, ``nextReviews`` …) — with one exception: ``fields`` is *replaced*,
+from ``{name: {value, order}}`` to the canonical list of values, with the names
+alongside in ``field_names``. Pure functions over plain dicts; no HTTP.
 """
 
 from __future__ import annotations
@@ -45,8 +46,11 @@ def ordered_fields(raw_fields: Any) -> tuple[list[str], list[str]]:
     for idx, (name, spec) in enumerate(cast(Mapping[str, Any], raw_fields).items()):
         if isinstance(spec, Mapping):
             spec_map = cast(Mapping[str, Any], spec)
+            # AnkiConnect always sets ``order``; the insertion index is only a
+            # fallback for hand-built dicts and would misorder a mixed input.
             order = _int(spec_map.get("order"), idx)
-            value = _str(spec_map.get("value"))
+            raw_value = spec_map.get("value")
+            value = "" if raw_value is None else str(raw_value)
         else:
             order, value = idx, str(spec)
         entries.append((order, str(name), value))

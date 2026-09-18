@@ -120,3 +120,20 @@ def test_ankiconnect_decks_are_canonical(monkeypatch) -> None:
     for deck in (*ac.get_decks(), ac.get_deck("Default")):
         Deck.model_validate(deck)
     assert ac.get_deck("Default")["kind"] == "unknown"  # honest, not guessed
+
+
+def test_unknown_id_is_not_found_on_both_backends(tmp_path, monkeypatch) -> None:
+    """AnkiConnect returns ``{}`` for an id Anki does not know; before this fix
+    the normaliser turned that into a card with ``cardId: 0`` and exit 0."""
+    store = _direct(tmp_path)
+    ac = _ankiconnect(monkeypatch)
+    monkeypatch.setattr(
+        ac, "_invoke",
+        lambda action, **p: [{}] if action in {"cardsInfo", "notesInfo"} else None,
+    )
+
+    for backend in (store, ac):
+        with pytest.raises(LookupError, match="Card not found"):
+            backend.get_card(424242)
+        with pytest.raises(LookupError, match="Note not found"):
+            backend.get_note(424242)

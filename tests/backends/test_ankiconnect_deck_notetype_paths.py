@@ -316,6 +316,27 @@ def test_get_notetypes_requires_model_map(
         backend.get_notetypes()
 
 
+def test_get_notetypes_degrades_to_names_only_on_old_ankiconnect(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_invoke(action: str, **params: Any) -> Any:
+        if action == "modelNamesAndIds":
+            raise AnkiConnectAPIError("modelNamesAndIds", "unsupported action")
+        if action == "modelNames":
+            return ["Basic"]
+        if action == "modelFieldNames":
+            return ["Front"]
+        if action == "modelTemplates":
+            return {"Card 1": {}}
+        raise AssertionError(action)
+
+    monkeypatch.setattr(backend, "_invoke", fake_invoke)
+
+    out = backend.get_notetypes()
+    assert [(n["name"], n["id"]) for n in out] == [("Basic", None)]
+
+
 def test_get_notetype_cloze_and_styling_fallback(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
@@ -553,10 +574,14 @@ def test_note_and_card_read_delete_wrappers(
                 return [{"noteId": 1, "modelName": "Basic", "tags": ["t"], "mod": 5,
                          "fields": {"Back": {"value": "A", "order": 1},
                                     "Front": {"value": "Q", "order": 0}}}]
+            if params["notes"] == [998]:
+                return [{}]
             return []
         if action == "findCards":
             return [9]
         if action == "cardsInfo":
+            if params["cards"] == [998]:
+                return [{}]
             if params["cards"] == [7]:
                 return [{"cardId": 7, "note": 1, "deckName": "D", "modelName": "Basic",
                          "type": 2, "queue": 2, "due": 40, "interval": 3, "factor": 2500,
@@ -578,6 +603,10 @@ def test_note_and_card_read_delete_wrappers(
     assert note["tags"] == ["t"] and note["mod"] == 5
     with pytest.raises(AnkiConnectProtocolError, match="notesInfo returned no rows"):
         backend.get_note(999)
+    # AnkiConnect answers an unknown id with {} (not an error); that must be
+    # ENTITY_NOT_FOUND like the direct backend, not a note with id 0.
+    with pytest.raises(LookupError, match="Note not found: 998"):
+        backend.get_note(998)
 
     assert backend.find_cards("deck:Default") == [9]
     card = backend.get_card(7)
@@ -589,6 +618,8 @@ def test_note_and_card_read_delete_wrappers(
     assert card["tags"] == []  # cardsInfo has no tags; canonical key still present
     with pytest.raises(AnkiConnectProtocolError, match="cardsInfo returned no rows"):
         backend.get_card(999)
+    with pytest.raises(LookupError, match="Card not found: 998"):
+        backend.get_card(998)
 
 
 def test_card_operation_wrappers_and_tag_noops(
