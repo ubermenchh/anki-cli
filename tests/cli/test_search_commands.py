@@ -70,6 +70,7 @@ def test_search_cmd_success(monkeypatch) -> None:
     assert payload["data"] == {
         "query": "deck:Default",
         "count": 2,
+        "total": 2,
         "items": [{"id": 101, "queue": 2}, {"id": 102, "queue": 2}],
     }
     assert calls["query"] == "deck:Default"
@@ -155,6 +156,7 @@ def test_cards_cmd_is_the_detail_lister_and_search_is_an_alias(monkeypatch) -> N
         assert payload["data"] == {
             "query": "deck:X",
             "count": 2,
+            "total": 2,
             "items": [{"cardId": 1}, {"cardId": 2}],
         }
 
@@ -184,3 +186,35 @@ def test_cards_is_not_a_tui_and_browse_is() -> None:
     assert get_command("browse") is browse_cmd
     assert get_command("search").hidden is True
     assert get_command("cards").hidden is False
+
+
+def test_cards_cmd_limits_detail_fetches_and_reports_total(monkeypatch) -> None:
+    """An unbounded `cards` on a big collection is one get_card per card; the
+    default limit caps that and says so in meta.warnings, `total` keeps the
+    real match count, and --limit 0 lifts the cap."""
+    from anki_cli.cli.commands.search import cards_cmd
+
+    fetched: list[int] = []
+
+    class Backend:
+        def find_cards(self, query: str) -> list[int]:
+            return list(range(1, 6))
+
+        def get_card(self, cid: int) -> dict[str, Any]:
+            fetched.append(cid)
+            return {"cardId": cid}
+
+    _patch_session(monkeypatch, Backend())
+    runner = CliRunner()
+
+    payload = _success_payload(runner.invoke(cards_cmd, ["--limit", "2"], obj=_base_obj()))
+    assert payload["data"]["count"] == 2
+    assert payload["data"]["total"] == 5
+    assert fetched == [1, 2]
+    assert any("showing the first 2" in w for w in payload["meta"]["warnings"])
+
+    fetched.clear()
+    payload = _success_payload(runner.invoke(cards_cmd, ["--limit", "0"], obj=_base_obj()))
+    assert payload["data"]["count"] == 5
+    assert fetched == [1, 2, 3, 4, 5]
+    assert payload["meta"]["warnings"] == []

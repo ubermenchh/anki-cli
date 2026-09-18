@@ -231,6 +231,59 @@ def _apply_global_options(ctx_obj: dict[str, Any], tokens: list[str]) -> dict[st
     return obj
 
 
+# Commands whose scope is a search query rather than a --deck option.
+_QUERY_COMMANDS = frozenset({"cards", "cards:ids", "notes", "search"})
+
+
+def _apply_deck_context(parts: list[str], *, resolved: str, deck: str) -> list[str]:
+    """Scope ``parts`` to the REPL's ``use <deck>`` context, unless the line
+    already names a deck (``--deck`` or a ``deck:`` search term)."""
+    if "--deck" in parts or any(p.startswith("--deck=") for p in parts):
+        return parts
+    deck_term = f'deck:"{deck}"'
+    if resolved in _QUERY_COMMANDS:
+        for i, token in enumerate(parts):
+            if token in ("--query", "-q") and i + 1 < len(parts):
+                if "deck:" in parts[i + 1]:
+                    return parts
+                return [*parts[: i + 1], f"{deck_term} {parts[i + 1]}".strip(), *parts[i + 2 :]]
+            if token.startswith("--query="):
+                value = token.split("=", 1)[1]
+                if "deck:" in value:
+                    return parts
+                return [*parts[:i], f"--query={deck_term} {value}".strip(), *parts[i + 1 :]]
+        return [*parts, "--query", deck_term]
+    cmd = get_command(resolved)
+    if cmd is not None and any(
+        isinstance(p, click.Option) and "--deck" in p.opts for p in cmd.params
+    ):
+        return [*parts, "--deck", deck]
+    return parts
+
+
+def _prepare_line(parts: list[str], *, deck_context: str | None) -> list[str]:
+    """REPL-only sugar applied before dispatch.
+
+    * Query commands take a bare search as their positional, like the old TUI
+      line did: ``c is:due`` == ``cards --query is:due``.
+    * The ``use <deck>`` context is folded in — as ``--deck`` for commands that
+      take one, into ``--query`` for the query commands (the browser did this
+      before it was renamed to ``browse``).
+    """
+    if not parts:
+        return parts
+    resolved = _ALIASES.get(parts[0], parts[0])
+    if (
+        resolved in _QUERY_COMMANDS
+        and len(parts) >= 2
+        and not any(p.startswith("-") for p in parts[1:])
+    ):
+        parts = [parts[0], "--query", " ".join(parts[1:])]
+    if deck_context:
+        parts = _apply_deck_context(parts, resolved=resolved, deck=deck_context)
+    return parts
+
+
 def _invoke_command(ctx_obj: dict[str, Any], raw_args: list[str]) -> None:
     if not raw_args:
         return
@@ -940,23 +993,7 @@ def run_repl(ctx_obj: dict[str, Any]) -> None:
                 console.print(f"[{RED}]Parse error:[/] {exc}")
                 continue
 
-            # Inject --deck from context if command supports it
-            # and user didn't explicitly provide one
-            if (
-                deck_context
-                and "--deck" not in parts
-                and len(parts) >= 1
-            ):
-                resolved = _ALIASES.get(parts[0], parts[0])
-                cmd = get_command(resolved)
-                if cmd is not None:
-                    deck_params = [
-                        p for p in cmd.params
-                        if isinstance(p, click.Option)
-                        and "--deck" in p.opts
-                    ]
-                    if deck_params:
-                        parts.extend(["--deck", deck_context])
+            parts = _prepare_line(parts, deck_context=deck_context)
 
             last_command = stripped
 

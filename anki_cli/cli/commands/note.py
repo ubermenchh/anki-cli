@@ -56,6 +56,11 @@ def _emit_invalid_query(
     raise click.exceptions.Exit(2) from error
 
 
+# Keys a note:bulk item may not use as field names: they read like AnkiConnect's
+# per-note deck/notetype, which the CLI takes from its options instead.
+_BULK_RESERVED_KEYS = frozenset({"deck", "deckName", "notetype", "modelName", "options"})
+
+
 def _parse_tags(raw: str | None) -> list[str]:
     if not raw:
         return []
@@ -360,7 +365,27 @@ def note_bulk_cmd(
 
         # Two shapes are accepted: {"fields": {...}, "tags": [...]} and the flat
         # {"Front": "Q", "Back": "A", "tags": [...]} that SKILL.md documents.
-        tags = item.get("tags", [])
+        tags = item.get("tags") or []
+        if not isinstance(tags, (list, str)):
+            formatter.emit_error(
+                command="note:bulk",
+                code="INVALID_INPUT",
+                message=f"Item {idx}: 'tags' must be a list or a string.",
+            )
+            raise click.exceptions.Exit(2)
+        reserved = _BULK_RESERVED_KEYS & item.keys()
+        if reserved:
+            # Per-item deck/notetype would be silently dropped (both backends
+            # only read the notetype's own field names); refuse instead.
+            formatter.emit_error(
+                command="note:bulk",
+                code="INVALID_INPUT",
+                message=(
+                    f"Item {idx}: {sorted(reserved)} are not fields; the deck and "
+                    "notetype come from --deck / --notetype."
+                ),
+            )
+            raise click.exceptions.Exit(2)
         if "fields" in item:
             fields = item["fields"]
             if not isinstance(fields, dict):

@@ -51,7 +51,7 @@ anki tags
 Query cards and notes:
 
 ```bash
-anki cards --query "deck:Default is:due"       # full card details
+anki cards --query "deck:Default is:due"       # full card details (first 1000; --limit 0 for all)
 anki cards:ids --query "deck:Default is:due"   # ids only
 anki notes --query "tag:verb"                  # note ids
 anki browse --query "tag:verb"                 # interactive TUI

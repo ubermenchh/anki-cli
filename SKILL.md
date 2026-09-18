@@ -116,13 +116,16 @@ Inside the interactive REPL (`anki` with no command) the same trailing `--yes`, 
 ### Querying
 
 ```bash
-anki cards --query "deck:Japanese is:due"      # full details: {query, count, items: [card...]}
+anki cards --query "deck:Japanese is:due"      # full details: {query, count, total, items}
 anki cards:ids --query "deck:Japanese is:due"  # ids only: {query, count, ids}
 anki notes --query "tag:verb"                  # note ids: {query, count, ids}
 ```
 
-`cards` with no `--query` lists every card. `browse` is the interactive TUI; never call it
-from a script. `search` is a hidden alias of `cards`.
+`cards` returns details for at most `--limit` cards (default 1000; `0` = all) and reports
+the real match count in `total`, with a `meta.warnings` entry when truncated. Use
+`cards:ids` for the complete id list. `cards` with no `--query` matches every card.
+`browse` is the interactive TUI; never call it from a script. `search` is a hidden alias
+of `cards`.
 
 ### Inspecting Entities
 

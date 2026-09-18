@@ -137,7 +137,8 @@ class OutputFormatter:
         out: list[dict[str, Any]] = []
         for row in rows:
             name = str(row["name"])
-            leaf = name.rsplit("::", 1)[-1] if "::" in name else name
+            parts = [p for p in name.split("::") if p]
+            leaf = parts[-1] if parts else name
             out.append({**row, "name": f"{'  ' * int(row['level'])}{leaf}"})
         return out, [c for c in columns if c != "level"]
 

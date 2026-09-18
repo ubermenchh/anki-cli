@@ -155,6 +155,7 @@ def _raise_exit3(**kwargs: Any):
         ["config"],
         ["config:path"],
         ["config:set", "--key", "display.color", "--value", "false"],
+        ["commands"],
     ],
 )
 def test_backend_free_commands_skip_detection(monkeypatch, tmp_path: Path, argv) -> None:

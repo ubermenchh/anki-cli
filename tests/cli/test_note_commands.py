@@ -541,7 +541,7 @@ def test_note_bulk_accepts_flat_items_as_documented(monkeypatch: pytest.MonkeyPa
             self, notes: list[dict[str, Any]], *, allow_duplicate: bool = False
         ) -> list[int | None]:
             captured["notes"] = notes
-            return [1, 2, 3]
+            return [1, 2, 3, 4]
 
     _patch_session(monkeypatch, Backend())
 
@@ -550,6 +550,7 @@ def test_note_bulk_accepts_flat_items_as_documented(monkeypatch: pytest.MonkeyPa
             {"Front": "Q1", "Back": "A1"},
             {"Front": "Q2", "Back": "A2", "tags": ["t"]},
             {"fields": {"Front": "Q3", "Back": "A3"}, "tags": "x y"},
+            {"Front": "Q4", "Back": "A4", "tags": None},  # null tags == no tags
         ]
     )
     result = CliRunner().invoke(
@@ -561,8 +562,9 @@ def test_note_bulk_accepts_flat_items_as_documented(monkeypatch: pytest.MonkeyPa
         {"Front": "Q1", "Back": "A1"},
         {"Front": "Q2", "Back": "A2"},
         {"Front": "Q3", "Back": "A3"},
+        {"Front": "Q4", "Back": "A4"},
     ]
-    assert [n["tags"] for n in captured["notes"]] == [[], ["t"], "x y"]
+    assert [n["tags"] for n in captured["notes"]] == [[], ["t"], "x y", []]
 
 
 @pytest.mark.parametrize(
@@ -570,6 +572,10 @@ def test_note_bulk_accepts_flat_items_as_documented(monkeypatch: pytest.MonkeyPa
     [
         ({"tags": ["only"]}, "has no fields"),
         ({"fields": "not-an-object"}, "'fields' must be an object"),
+        # A per-item deck would be silently dropped by both backends; refuse.
+        ({"Front": "Q", "Back": "A", "deckName": "Spanish"}, "['deckName'] are not fields"),
+        ({"Front": "Q", "deck": "X", "notetype": "Y"}, "['deck', 'notetype'] are not fields"),
+        ({"Front": "Q", "tags": 7}, "'tags' must be a list or a string"),
     ],
 )
 def test_note_bulk_rejects_fieldless_items(monkeypatch: pytest.MonkeyPatch, item, message) -> None:
