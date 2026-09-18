@@ -253,9 +253,20 @@ anki review                          # due counts
 anki review:next --deck "Japanese"   # next due card (question only)
 anki review:show --deck "Japanese"   # next card with answer
 anki review:answer --id <card_id> --rating good   # answer: again|hard|good|easy
-anki review:preview --id <card_id>   # scheduling preview per rating
-anki review:undo                     # undo last answer (direct backend only)
+anki review:preview --id <card_id>   # scheduling preview per rating (direct only)
+anki review:undo                     # undo last answer (direct only)
 ```
+
+Backend differences that matter here:
+
+- `review:preview`, `review:undo` and `review:start` need scheduler state only the direct
+  backend exposes. On AnkiConnect they fail with `BACKEND_UNAVAILABLE` (exit 7) and a
+  message pointing at `--backend direct`; `review:start` reports `UNSUPPORTED_BACKEND`.
+- `review:next` uses the scheduler's own ordering on direct; on AnkiConnect it approximates
+  with `is:learn is:due`, `is:review is:due`, `is:new` in that order.
+- `review:answer` means different things: direct answers **any** card via the local FSRS
+  scheduler; AnkiConnect can only answer the card Anki Desktop is currently showing, and
+  fails otherwise.
 
 ### Configuration
 

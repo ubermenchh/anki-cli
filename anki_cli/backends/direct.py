@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from anki_cli.backends.protocol import AnkiBackend, JSONValue
 from anki_cli.db.anki_direct import AnkiDirectReadStore
@@ -14,6 +16,7 @@ class DirectBackend(AnkiBackend):
     """
 
     name = "direct"
+    supports_scheduler_introspection = True
 
     def __init__(self, collection_path: Path) -> None:
         resolved = collection_path.expanduser().resolve()
@@ -138,6 +141,20 @@ class DirectBackend(AnkiBackend):
 
     def get_due_counts(self, deck: str | None = None) -> dict[str, int]:
         return self._store.get_due_counts(deck)
+
+    # ---- scheduler introspection ----
+
+    def get_next_due_card(self, deck: str | None = None) -> dict[str, JSONValue]:
+        return self._store.get_next_due_card(deck)
+
+    def preview_ratings(self, card_id: int) -> list[dict[str, JSONValue]]:
+        return self._store.preview_ratings(card_id)
+
+    def snapshot_card_state(self, card_id: int) -> dict[str, JSONValue]:
+        return self._store.snapshot_card_state(card_id)
+
+    def restore_card_state(self, snapshot: Mapping[str, Any]) -> dict[str, JSONValue]:
+        return self._store.restore_card_state(snapshot)
 
     def get_tag_counts(self) -> list[dict[str, JSONValue]]:
         return self._store.get_tag_counts()

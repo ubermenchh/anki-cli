@@ -414,11 +414,9 @@ def test_action_rate_failed_answer_leaves_no_undo_entry(tmp_path) -> None:
         def snapshot_card_state(self, card_id: int) -> dict[str, Any]:
             return {"id": card_id}
 
-    class Backend:
+    class Backend(Store):
         name = "direct"
-
-        def __init__(self) -> None:
-            self._store = Store()
+        supports_scheduler_introspection = True
 
         def answer_card(self, *, card_id: int, ease: int) -> None:
             raise RuntimeError("boom")
@@ -447,16 +445,14 @@ def test_action_rate_successful_answer_pushes_undo(tmp_path) -> None:
         def snapshot_card_state(self, card_id: int) -> dict[str, Any]:
             return {"id": card_id, "queue": self.queue}
 
-    class Backend:
+    class Backend(Store):
         name = "direct"
-
-        def __init__(self) -> None:
-            self._store = Store()
+        supports_scheduler_introspection = True
 
         def answer_card(self, *, card_id: int, ease: int) -> dict[str, Any]:
             # Simulate the reschedule: a snapshot taken after this call would
             # observe the post-answer queue, not the pre-answer one.
-            self._store.queue = 9
+            self.queue = 9
             return {"card_id": card_id, "ease": ease, "revlog_id": 777}
 
     app = review_mod.ReviewApp(backend=Backend(), deck=None)
@@ -481,11 +477,9 @@ def test_action_rate_undo_push_failure_still_counts_answer(tmp_path) -> None:
         def snapshot_card_state(self, card_id: int) -> dict[str, Any]:
             return {"id": card_id, "queue": 2}
 
-    class Backend:
+    class Backend(Store):
         name = "direct"
-
-        def __init__(self) -> None:
-            self._store = Store()
+        supports_scheduler_introspection = True
 
         def answer_card(self, *, card_id: int, ease: int) -> dict[str, Any]:
             return {"card_id": card_id, "ease": ease, "revlog_id": 777}

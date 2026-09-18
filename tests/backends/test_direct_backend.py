@@ -196,6 +196,12 @@ def test_init_sets_name_and_resolved_collection_path(
         ("get_tags", "get_tags", (), {}, (), {}),
         ("get_due_counts", "get_due_counts", (), {}, (None,), {}),
         ("get_due_counts", "get_due_counts", ("DeckA",), {}, ("DeckA",), {}),
+        # scheduler introspection (#30): now on the Protocol, delegated like the rest
+        ("get_next_due_card", "get_next_due_card", (), {}, (None,), {}),
+        ("get_next_due_card", "get_next_due_card", ("DeckA",), {}, ("DeckA",), {}),
+        ("preview_ratings", "preview_ratings", (7,), {}, (7,), {}),
+        ("snapshot_card_state", "snapshot_card_state", (7,), {}, (7,), {}),
+        ("restore_card_state", "restore_card_state", ({"id": 7},), {}, ({"id": 7},), {}),
         ("get_tag_counts", "get_tag_counts", (), {}, (), {}),
         (
             "rename_tag",
