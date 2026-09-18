@@ -103,10 +103,12 @@ def test_extract_field_values_ankiconnect_mapping_by_order() -> None:
     assert browse_mod._extract_front_back(card) == ("Q", "A")
 
 
-def test_format_browser_row_uses_model_name_and_mapping_fields() -> None:
+def test_format_browser_row_uses_canonical_keys_and_accepts_mapping_fields() -> None:
+    """Both backends emit ``notetype_name`` and a ``fields`` list (#30); the raw
+    AnkiConnect ``fields`` mapping is still accepted for hand-built cards."""
     card: dict[str, Any] = {
         "deckName": "Default",
-        "modelName": "Basic",
+        "notetype_name": "Basic",
         "fields": {
             "Front": {"value": "<b>Hello</b> world", "order": 0},
             "Back": {"value": "Back side", "order": 1},

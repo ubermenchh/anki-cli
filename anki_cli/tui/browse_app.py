@@ -165,30 +165,15 @@ def _format_interval_short(card: Mapping[str, Any]) -> str:
     return f"{ivl}d"
 
 def _extract_field_values(card: Mapping[str, Any]) -> list[str]:
+    """Field values in notetype order. Both backends emit ``fields`` as a list
+    (#30); the raw AnkiConnect mapping is still accepted for hand-built dicts."""
     fields = card.get("fields")
-
     if isinstance(fields, (list, tuple)):
         return [str(v) for v in fields]
-
     if isinstance(fields, Mapping):
-        ordered: list[tuple[int, str]] = []
-        unordered: list[str] = []
+        from anki_cli.backends.normalize import ordered_fields
 
-        for item in fields.values():
-            if isinstance(item, Mapping):
-                raw_value = item.get("value")
-                value = str(raw_value) if raw_value is not None else ""
-                order = item.get("order")
-                if isinstance(order, int):
-                    ordered.append((order, value))
-                else:
-                    unordered.append(str(value))
-            else:
-                unordered.append(str(item))
-
-        ordered.sort(key=lambda pair: pair[0])
-        return [value for _, value in ordered] + unordered
-
+        return ordered_fields(fields)[1]
     return []
 
 
@@ -210,7 +195,7 @@ def _extract_note_id_from_card(card: Mapping[str, Any]) -> int | None:
 def _format_browser_row(card: Mapping[str, Any]) -> tuple[Text | str, ...]:
     deck = Text(_truncate(str(card.get("deckName", "")), 16), style=CYAN)
 
-    notetype = _truncate(str(card.get("notetype_name") or card.get("modelName") or "-"), 10)
+    notetype = _truncate(str(card.get("notetype_name") or "-"), 10)
     notetype_lower = notetype.lower()
     if "cloze" in notetype_lower:
         type_style = PURPLE

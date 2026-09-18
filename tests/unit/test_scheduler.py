@@ -146,3 +146,41 @@ def test_pick_next_due_applies_deck_prefix_to_queries() -> None:
     assert backend.find_calls == [
         'deck:"Japanese::Core" is:learn is:due',
     ]
+
+
+def test_pick_next_due_compares_decoded_units_not_raw_due() -> None:
+    """The ``is:learn is:due`` set mixes an intraday card (``due`` = epoch,
+    ~1.7e9) with a day-learn card (``due`` = day index, ~2e4). Raw ``min(due)``
+    always chose the day-learn card. ``due_sort_key`` ranks by *kind* like
+    Anki's queue — intraday learning first — so both backends pick the same
+    card whether or not the day-learn card's epoch is known (direct knows it,
+    AnkiConnect does not)."""
+    now = 1_700_000_000
+    day_learn_direct = {"id": 1, "due": 40, "due_info": {"kind": "learn_day_index", "raw": 40,
+                                                          "day_index": 40,
+                                                          "epoch_secs": now - 3600}}
+    day_learn_ac = {"id": 1, "due": 40, "due_info": {"kind": "learn_day_index", "raw": 40,
+                                                      "day_index": 40}}
+    intraday = {"id": 2, "due": now, "due_info": {"kind": "learn_epoch_secs", "raw": now,
+                                                  "epoch_secs": now}}
+
+    for day_learn in (day_learn_direct, day_learn_ac):
+        backend = FakeBackend(
+            query_to_ids={"is:learn is:due": [1, 2]},
+            card_due_map={1: day_learn, 2: intraday},
+        )
+        # Same answer on both backends, and never the raw-due winner (1).
+        assert pick_next_due_card_id(backend) == (2, "learn_due")
+
+
+def test_pick_next_due_orders_reviews_by_day_index_and_new_by_position() -> None:
+    backend = FakeBackend(
+        query_to_ids={"is:learn is:due": [], "is:review is:due": [1, 2], "is:new": []},
+        card_due_map={
+            1: {"id": 1, "due": 50, "due_info": {"kind": "review_day_index", "raw": 50,
+                                                 "day_index": 50}},
+            2: {"id": 2, "due": 30, "due_info": {"kind": "review_day_index", "raw": 30,
+                                                 "day_index": 30}},
+        },
+    )
+    assert pick_next_due_card_id(backend) == (2, "review_due")  # most overdue first

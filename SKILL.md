@@ -111,6 +111,59 @@ anki note:delete --id 123 --yes --format json
 Inside the interactive REPL (`anki` with no command) the same trailing `--yes`, `--format`,
 `--copy` and `--no-color` work per line; `--backend` / `--col` are fixed for the session.
 
+### Object Shapes
+
+Both backends return the **same keys** for cards, notes, decks and notetypes (defined in
+`anki_cli/models/entities.py`). Parse these; do not branch on `meta.backend`. A backend may
+add keys (AnkiConnect keeps its own `modelName`, `question`, `answer`, `css`, `nextReviews`)
+but never omits a canonical one.
+
+**Card** (`card`, `cards` items, `review:next`/`review:show` `rendered` is separate):
+
+| Key | Type | Notes |
+|-----|------|-------|
+| `cardId` | int | |
+| `note` | int | the note's id |
+| `deckName`, `notetype_name` | str | |
+| `ord`, `type`, `queue`, `due`, `interval`, `factor`, `reps`, `lapses`, `left` | int | raw Anki columns |
+| `fields` | list[str] | field **values** in notetype order |
+| `field_names` | list[str] | names matching `fields` (AnkiConnect; direct: see `note`) |
+| `tags` | list[str] | empty on AnkiConnect (`cardsInfo` has no tags — read the note) |
+| `due_info` | object | `due` decoded — see below |
+| `left_info` | object | `{raw, today_remaining, until_graduation}` |
+| `deckId`, `notetype_id`, `flags`, `data_parsed` | | direct only |
+
+`due_info` tells you what `due` means for this card, which the raw column does not:
+
+| `kind` | extra keys | meaning |
+|--------|------------|---------|
+| `new_position` | `position` | new card; `due` is a queue position |
+| `learn_epoch_secs` | `epoch_secs` | intraday learning; `due` is a unix time |
+| `learn_day_index` | `day_index` (+ `epoch_secs`, `days_from_today` on direct) | day-learn; `due` is days since collection creation |
+| `review_day_index` | `day_index` (+ `epoch_secs`, `days_from_today` on direct) | review |
+| `raw` | `queue`, `type` | unrecognised |
+
+`epoch_secs` for the day-index kinds needs the collection's rollover timing, which only the
+direct backend has. Compare cards by `due_info`, never by raw `due` across queues.
+
+**Note** (`note`): `id`, `mod`, `tags` (list), `fields` (list of values in notetype order).
+Plus `mid` (direct), or `notetype_name` + `field_names` (AnkiConnect). Use `note:fields` for a
+`{name: value}` map on either backend.
+
+**Deck** (`decks` items, `deck`): `id`, `name`, `kind` (`normal` | `filtered` | `unknown` —
+AnkiConnect cannot tell, so it says `unknown`), `due_counts` (on `deck`). Direct adds
+`stats`, `config`, `next_due`.
+
+**Notetype** (`notetype`): `id` (may be `null` on old AnkiConnect), `name`, `kind`
+(`normal` | `cloze`), `fields` (names), `templates` (`{name: {Front, Back, ord}}`),
+`styling` (`{css}`). Direct adds `sort_field_idx`, `requirements`.
+
+**Migration from earlier releases (AnkiConnect backend only)**: `get_card`/`get_note`
+used to pass AnkiConnect's raw rows through. Read `notetype_name` instead of `modelName`,
+`note["id"]` instead of `noteId`, and `fields` is now a **list of values** (the old
+`{name: {value, order}}` map is gone — use `field_names` for names, or `note:fields`). The
+old keys `modelName`/`noteId` are still present as aliases for now.
+
 ## Command Reference
 
 ### Querying

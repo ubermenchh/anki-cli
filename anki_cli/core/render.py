@@ -52,8 +52,8 @@ class CardRender:
 
 
 def extract_note_id(card: Mapping[str, Any]) -> int | None:
-    """The note id under whichever key this backend used (direct: ``note``;
-    AnkiConnect: ``note`` too, older shapes ``nid``/``noteId``/``note_id``)."""
+    """The card's note id. Both backends emit ``note`` (#30); the other spellings
+    are accepted for callers that hand-build a card dict."""
     for key in ("note", "nid", "noteId", "note_id"):
         value = card.get(key)
         if isinstance(value, int):
@@ -87,18 +87,19 @@ def pick_template(templates: Mapping[str, Any], ord_: int) -> tuple[str, Mapping
 
 
 def resolve_notetype_name(backend: Any, card: Mapping[str, Any], note_id: int) -> str | None:
-    """Direct puts ``notetype_name`` on the card; AnkiConnect puts ``modelName``
-    on the note; as a last resort match the note's ``mid`` against the notetype
-    list (the one place the old ``cards.py`` copy went further than the others)."""
+    """Both backends put ``notetype_name`` on the card (#30). The note is only
+    consulted for a hand-built card dict without it, and the ``mid`` scan for a
+    note without a name (direct notes carry ``mid`` only)."""
     raw = card.get("notetype_name")
     if isinstance(raw, str) and raw.strip():
         return raw.strip()
     note_obj = backend.get_note(note_id)
     if not isinstance(note_obj, Mapping):
         return None
-    model = note_obj.get("modelName")
-    if isinstance(model, str) and model.strip():
-        return model.strip()
+    for key in ("notetype_name", "modelName"):
+        model = note_obj.get(key)
+        if isinstance(model, str) and model.strip():
+            return model.strip()
     mid = note_obj.get("mid")
     if isinstance(mid, int):
         for nt in backend.get_notetypes():
