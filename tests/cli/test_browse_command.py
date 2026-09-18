@@ -11,7 +11,7 @@ from click.testing import CliRunner
 
 import anki_cli.cli.commands.browse as browse_cmd_mod
 from anki_cli.backends.factory import BackendFactoryError
-from anki_cli.cli.commands.browse import cards_cmd
+from anki_cli.cli.commands.browse import browse_cmd
 from anki_cli.cli.dispatcher import get_command
 
 
@@ -41,11 +41,11 @@ def _patch_browse_module(monkeypatch: pytest.MonkeyPatch, app_cls: type[Any]) ->
     monkeypatch.setitem(sys.modules, "anki_cli.tui.browse_app", module)
 
 
-def test_cards_command_is_registered() -> None:
-    assert get_command("cards") is not None
+def test_browse_command_is_registered() -> None:
+    assert get_command("browse") is not None
 
 
-def test_cards_cmd_success_launches_browse_app(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_browse_cmd_success_launches_browse_app(monkeypatch: pytest.MonkeyPatch) -> None:
     run_called = {"count": 0}
 
     class FakeApp:
@@ -63,12 +63,12 @@ def test_cards_cmd_success_launches_browse_app(monkeypatch: pytest.MonkeyPatch) 
     _patch_browse_module(monkeypatch, FakeApp)
 
     runner = CliRunner()
-    result = runner.invoke(cards_cmd, ["--query", "deck:Test"], obj=_base_obj())
+    result = runner.invoke(browse_cmd, ["--query", "deck:Test"], obj=_base_obj())
     assert result.exit_code == 0
     assert run_called["count"] == 1
 
 
-def test_cards_cmd_import_error_emits_tui_not_available(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_browse_cmd_import_error_emits_tui_not_available(monkeypatch: pytest.MonkeyPatch) -> None:
     import builtins
 
     monkeypatch.delitem(sys.modules, "anki_cli.tui.browse_app", raising=False)
@@ -83,7 +83,7 @@ def test_cards_cmd_import_error_emits_tui_not_available(monkeypatch: pytest.Monk
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
     runner = CliRunner()
-    result = runner.invoke(cards_cmd, ["--query", ""], obj=_base_obj())
+    result = runner.invoke(browse_cmd, ["--query", ""], obj=_base_obj())
     assert result.exit_code == 2
     payload = json.loads(result.output)
     assert payload["ok"] is False
@@ -91,7 +91,7 @@ def test_cards_cmd_import_error_emits_tui_not_available(monkeypatch: pytest.Monk
     assert "hint" in payload["error"]["details"]
 
 
-def test_cards_cmd_backend_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_browse_cmd_backend_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeApp:
         def __init__(self, *, backend: Any, query: str = "") -> None:
             pass
@@ -107,7 +107,7 @@ def test_cards_cmd_backend_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(browse_cmd_mod, "backend_session_from_context", failing_session)
 
     runner = CliRunner()
-    result = runner.invoke(cards_cmd, ["--query", ""], obj=_base_obj(backend="direct"))
+    result = runner.invoke(browse_cmd, ["--query", ""], obj=_base_obj(backend="direct"))
     assert result.exit_code == 7
     payload = json.loads(result.output)
     assert payload["ok"] is False

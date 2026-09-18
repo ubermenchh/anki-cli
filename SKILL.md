@@ -55,7 +55,8 @@ Success:
 }
 ```
 
-`meta.warnings` is a list of non-fatal notices. Today it is populated by
+`meta.warnings` is the only channel for non-fatal notices; nothing is written to stderr
+on success, so stderr is always either empty or one error envelope. Today it is populated by
 `notetype:field:add`, `notetype:field:remove` and `notetype:template:add` on the
 direct backend, because those change the notetype schema and Anki will demand a
 one-way full sync (upload) on the next sync. The same commands also return
@@ -115,10 +116,16 @@ Inside the interactive REPL (`anki` with no command) the same trailing `--yes`, 
 ### Querying
 
 ```bash
-anki cards --query "deck:Japanese is:due"
-anki notes --query "tag:verb"
-anki search --query "(tag:verb OR tag:noun) -is:suspended"
+anki cards --query "deck:Japanese is:due"      # full details: {query, count, total, items}
+anki cards:ids --query "deck:Japanese is:due"  # ids only: {query, count, ids}
+anki notes --query "tag:verb"                  # note ids: {query, count, ids}
 ```
+
+`cards` returns details for at most `--limit` cards (default 1000; `0` = all) and reports
+the real match count in `total`, with a `meta.warnings` entry when truncated. Use
+`cards:ids` for the complete id list. `cards` with no `--query` matches every card.
+`browse` is the interactive TUI; never call it from a script. `search` is a hidden alias
+of `cards`.
 
 ### Inspecting Entities
 
@@ -126,9 +133,13 @@ anki search --query "(tag:verb OR tag:noun) -is:suspended"
 anki card --id <card_id>
 anki note --id <note_id>
 anki deck --deck "Default"
-anki notetype --name "Basic"
+anki notetype --notetype "Basic"
 anki tag --tag "verb"
 ```
+
+Options are named the same way everywhere: `--deck`, `--notetype`, `--tag`, `--id`,
+`--query`; `--field` is repeatable. Run `anki commands --format json` for the full list of
+commands and options (generated from the CLI, so it is never out of date).
 
 ### Listing
 
@@ -172,7 +183,9 @@ Accepts JSON array from stdin or a file:
 anki note:bulk --deck "Default" --notetype "Basic" --file notes.json
 ```
 
-JSON format: `[{"Front": "Q1", "Back": "A1"}, {"Front": "Q2", "Back": "A2"}]`
+Each item is either the flat form `{"Front": "Q1", "Back": "A1", "tags": ["x"]}` (every key
+except `tags` is a field) or `{"fields": {"Front": "Q1", "Back": "A1"}, "tags": ["x"]}`.
+`tags` is optional and may be a list or a space/comma-separated string.
 
 ### Editing Notes
 
@@ -215,7 +228,7 @@ anki tag:rename --from "old" --to "new"
 ### Decks
 
 ```bash
-anki deck:create --name "Japanese::Vocab"
+anki deck:create --deck "Japanese::Vocab"
 anki deck:rename --from "Old Name" --to "New Name"
 anki deck:config --deck "Default"
 anki deck:config:set --deck "Default" --new-per-day 20 --reviews-per-day 200
@@ -224,7 +237,7 @@ anki deck:config:set --deck "Default" --new-per-day 20 --reviews-per-day 200
 ### Notetypes
 
 ```bash
-anki notetype:create --name "MyType" --field "Front" --field "Back"
+anki notetype:create --notetype "MyType" --field "Front" --field "Back"
 anki notetype:field:add --notetype "Basic" --field "Extra"
 anki --yes notetype:field:remove --notetype "Basic" --field "Extra"   # deletes the field from every note
 anki notetype:template:add --notetype "MyType" --template "Card 1" --front "{{Front}}" --back "{{Back}}"
@@ -330,7 +343,7 @@ allow_non_localhost = true
 ### Create a deck and populate it
 
 ```bash
-anki deck:create --name "Spanish::Vocab"
+anki deck:create --deck "Spanish::Vocab"
 anki note:add --deck "Spanish::Vocab" --notetype "Basic" --Front "hola" --Back "hello"
 anki note:add --deck "Spanish::Vocab" --notetype "Basic" --Front "gracias" --Back "thank you"
 ```

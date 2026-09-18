@@ -12,11 +12,11 @@ from anki_cli.cli.dispatcher import register_command
 from anki_cli.cli.formatter import formatter_from_ctx
 
 
-@click.command("cards")
+@click.command("browse")
 @click.option("--query", default="", help="Anki search query")
 @click.pass_context
-def cards_cmd(ctx: click.Context, query: str) -> None:
-    """Browse cards interactively (TUI)."""
+def browse_cmd(ctx: click.Context, query: str) -> None:
+    """Browse cards interactively (TUI). For JSON, use ``cards``."""
     obj: dict[str, Any] = ctx.obj or {}
     formatter = formatter_from_ctx(ctx)
 
@@ -24,7 +24,7 @@ def cards_cmd(ctx: click.Context, query: str) -> None:
         from anki_cli.tui.browse_app import BrowseApp
     except Exception as exc:
         formatter.emit_error(
-            command="cards",
+            command="browse",
             code="TUI_NOT_AVAILABLE",
             message=f"Textual is not installed/available: {exc}",
             details={"hint": "Run: uv sync --extra tui"},
@@ -37,7 +37,7 @@ def cards_cmd(ctx: click.Context, query: str) -> None:
             app.run()
     except (BackendFactoryError, NotImplementedError) as exc:
         formatter.emit_error(
-            command="cards",
+            command="browse",
             code="BACKEND_UNAVAILABLE",
             message=str(exc),
             details={"backend": str(obj.get("backend", "unknown"))},
@@ -45,4 +45,4 @@ def cards_cmd(ctx: click.Context, query: str) -> None:
         raise click.exceptions.Exit(7) from exc
 
 
-register_command("cards", cards_cmd)
+register_command("browse", browse_cmd)

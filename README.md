@@ -51,9 +51,10 @@ anki tags
 Query cards and notes:
 
 ```bash
-anki cards --query "deck:Default is:due"
-anki notes --query "tag:verb"
-anki search --query "(tag:verb OR tag:noun) -is:suspended"
+anki cards --query "deck:Default is:due"       # full card details (first 1000; --limit 0 for all)
+anki cards:ids --query "deck:Default is:due"   # ids only
+anki notes --query "tag:verb"                  # note ids
+anki browse --query "tag:verb"                 # interactive TUI
 ```
 
 Inspect individual objects:
@@ -62,7 +63,7 @@ Inspect individual objects:
 anki card --id 1234567890
 anki note --id 1234567890
 anki deck --deck "Default"
-anki notetype --name "Basic"
+anki notetype --notetype "Basic"
 ```
 
 ## Backend Modes
@@ -163,7 +164,8 @@ anki cards --query "(tag:a OR tag:b) is:new"
 ### Cards
 
 ```bash
-anki cards --query "deck:Default"
+anki cards --query "deck:Default"          # details for every match
+anki cards:ids --query "deck:Default"      # ids only
 anki card --id 123
 anki card:suspend --query "is:due"
 anki card:unsuspend --id 123
@@ -200,15 +202,15 @@ also works on `note:bulk`, where refused items otherwise come back as `null` ids
 
 ```bash
 anki deck --deck "Default"
-anki deck:create --name "Japanese::Vocab"
+anki deck:create --deck "Japanese::Vocab"
 anki deck:rename --from "Old" --to "New"
 anki deck:delete --deck "Temporary" --yes
 anki deck:config --deck "Default"
 anki deck:config:set --deck "Default" --new-per-day 20 --reviews-per-day 200
 
 anki notetypes
-anki notetype --name "Basic"
-anki notetype:create --name "MyType" --field "Front" --field "Back"
+anki notetype --notetype "Basic"
+anki notetype:create --notetype "MyType" --field "Front" --field "Back"
 anki notetype:field:add --notetype "Basic" --field "Extra"
 anki --yes notetype:field:remove --notetype "Basic" --field "Extra"   # deletes the field from every note
 anki notetype:css --notetype "Basic" --set ".card { font-size: 18px; }"
@@ -242,6 +244,11 @@ anki --format md ...
 anki --format csv ...
 anki --format plain ...
 ```
+
+Every command names its target the same way: `--deck`, `--notetype`, `--tag`, `--id`,
+`--query`; `--field` is repeatable. Older spellings (`deck:create --name`,
+`notetype:create --name`, `tag:add --tags`, `note:fields --fields a,b`) still work as
+aliases. `anki commands --format json` lists every command, option, exit and error code.
 
 Global options (`--format`, `--backend`, `--col`, `--yes`, `--copy`, `--no-color`) may be
 written before or after the subcommand: `anki --yes note:delete --id 1` and

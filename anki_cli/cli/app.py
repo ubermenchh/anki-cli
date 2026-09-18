@@ -42,7 +42,7 @@ def _is_set_on_cli(ctx: click.Context, param_name: str) -> bool:
 # itself inside the command so it can report failure as data. The REPL
 # (invoked_subcommand=None) is NOT here: it must detect up front, degrading
 # to a warning + backend="none" when detection fails instead of exiting.
-_BACKENDLESS = {"version", "status", "config", "config:path", "config:set"}
+_BACKENDLESS = {"version", "status", "config", "config:path", "config:set", "commands"}
 
 
 class NamespaceGroup(click.Group):

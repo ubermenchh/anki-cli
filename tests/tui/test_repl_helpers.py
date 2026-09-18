@@ -242,3 +242,57 @@ def test_show_command_help_unknown_prints_error(monkeypatch: pytest.MonkeyPatch,
 
     captured = capsys.readouterr()
     assert "Unknown command: missing" in captured.err
+
+
+# --- deck context for query commands (#28 follow-up) --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("parts", "resolved", "expected"),
+    [
+        # query commands: fold the deck into --query
+        (["c"], "cards", ["c", "--query", 'deck:"Japanese"']),
+        (["cards", "--query", "is:due"], "cards", ["cards", "--query", 'deck:"Japanese" is:due']),
+        (["notes", "--query=tag:x"], "notes", ["notes", '--query=deck:"Japanese" tag:x']),
+        # an explicit deck: term wins
+        (["c", "--query", "deck:Other"], "cards", ["c", "--query", "deck:Other"]),
+        # --deck commands keep the old behaviour; commands with neither are untouched
+        (["review:next"], "review:next", ["review:next", "--deck", "Japanese"]),
+        (["review:next", "--deck", "X"], "review:next", ["review:next", "--deck", "X"]),
+        (["version"], "version", ["version"]),
+    ],
+)
+def test_apply_deck_context(monkeypatch: pytest.MonkeyPatch, parts, resolved, expected) -> None:
+    @click.command("review:next")
+    @click.option("--deck")
+    def review_next(deck): ...
+
+    @click.command("version")
+    def version(): ...
+
+    monkeypatch.setattr(
+        repl_mod, "get_command", lambda n: {"review:next": review_next, "version": version}.get(n)
+    )
+
+    assert repl_mod._apply_deck_context(parts, resolved=resolved, deck="Japanese") == expected
+
+
+@pytest.mark.parametrize(
+    ("parts", "deck", "expected"),
+    [
+        (["c", "is:due"], None, ["c", "--query", "is:due"]),
+        (["c", "tag:verb", "is:due"], None, ["c", "--query", "tag:verb is:due"]),
+        (["ci", "is:new"], None, ["ci", "--query", "is:new"]),
+        # already option-style: untouched
+        (["c", "--query", "is:due"], None, ["c", "--query", "is:due"]),
+        (["c", "--limit", "5"], None, ["c", "--limit", "5"]),
+        # a non-query command keeps its positionals
+        (["use", "Japanese"], None, ["use", "Japanese"]),
+        # bare query + deck context compose
+        (["c", "is:due"], "Japanese", ["c", "--query", 'deck:"Japanese" is:due']),
+        ([], "Japanese", []),
+    ],
+)
+def test_prepare_line(monkeypatch: pytest.MonkeyPatch, parts, deck, expected) -> None:
+    monkeypatch.setattr(repl_mod, "get_command", lambda n: None)
+    assert repl_mod._prepare_line(parts, deck_context=deck) == expected

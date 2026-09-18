@@ -531,6 +531,91 @@ def test_note_commands_are_registered() -> None:
     assert get_command("note:fields") is not None
 
 
+def test_note_bulk_accepts_flat_items_as_documented(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SKILL.md documents ``[{"Front": "Q1", "Back": "A1"}]``; that shape used to
+    fail with INVALID_INPUT. Both shapes normalize to the same payload (#28)."""
+    captured: dict[str, Any] = {}
+
+    class Backend:
+        def add_notes(
+            self, notes: list[dict[str, Any]], *, allow_duplicate: bool = False
+        ) -> list[int | None]:
+            captured["notes"] = notes
+            return [1, 2, 3, 4]
+
+    _patch_session(monkeypatch, Backend())
+
+    payload_in = json.dumps(
+        [
+            {"Front": "Q1", "Back": "A1"},
+            {"Front": "Q2", "Back": "A2", "tags": ["t"]},
+            {"fields": {"Front": "Q3", "Back": "A3"}, "tags": "x y"},
+            {"Front": "Q4", "Back": "A4", "tags": None},  # null tags == no tags
+        ]
+    )
+    result = CliRunner().invoke(
+        note_bulk_cmd, ["--deck", "D", "--notetype", "Basic"], input=payload_in, obj=_base_obj()
+    )
+
+    _success_payload(result)
+    assert [n["fields"] for n in captured["notes"]] == [
+        {"Front": "Q1", "Back": "A1"},
+        {"Front": "Q2", "Back": "A2"},
+        {"Front": "Q3", "Back": "A3"},
+        {"Front": "Q4", "Back": "A4"},
+    ]
+    assert [n["tags"] for n in captured["notes"]] == [[], ["t"], "x y", []]
+
+
+@pytest.mark.parametrize(
+    ("item", "message"),
+    [
+        ({"tags": ["only"]}, "has no fields"),
+        ({"fields": "not-an-object"}, "'fields' must be an object"),
+        # A per-item deck would be silently dropped by both backends; refuse.
+        ({"Front": "Q", "Back": "A", "deckName": "Spanish"}, "['deckName'] are not fields"),
+        ({"Front": "Q", "deck": "X", "notetype": "Y"}, "['deck', 'notetype'] are not fields"),
+        ({"Front": "Q", "tags": 7}, "'tags' must be a list or a string"),
+    ],
+)
+def test_note_bulk_rejects_fieldless_items(monkeypatch: pytest.MonkeyPatch, item, message) -> None:
+    class Backend:
+        def add_notes(self, notes: list[dict[str, Any]], **kw: Any) -> list[int | None]:
+            raise AssertionError("should not be called")
+
+    _patch_session(monkeypatch, Backend())
+    result = CliRunner().invoke(
+        note_bulk_cmd,
+        ["--deck", "D", "--notetype", "Basic"],
+        input=json.dumps([item]),
+        obj=_base_obj(),
+    )
+
+    payload = _error_payload(result)
+    assert result.exit_code == 2
+    assert payload["error"]["code"] == "INVALID_INPUT"
+    assert message in payload["error"]["message"]
+
+
+def test_note_fields_accepts_repeatable_field_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class Backend:
+        def get_note_fields(
+            self, *, note_id: int, fields: list[str] | None = None
+        ) -> dict[str, str]:
+            captured["fields"] = fields
+            return {"Front": "Q", "Back": "A"}
+
+    _patch_session(monkeypatch, Backend())
+    result = CliRunner().invoke(
+        note_fields_cmd, ["--id", "7", "--field", "Front", "--field", "Back"], obj=_base_obj()
+    )
+
+    _success_payload(result)
+    assert captured["fields"] == ["Front", "Back"]
+
+
 def test_note_bulk_allow_duplicate_flag_reaches_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 

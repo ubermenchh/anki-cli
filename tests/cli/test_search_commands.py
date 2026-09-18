@@ -70,6 +70,7 @@ def test_search_cmd_success(monkeypatch) -> None:
     assert payload["data"] == {
         "query": "deck:Default",
         "count": 2,
+        "total": 2,
         "items": [{"id": 101, "queue": 2}, {"id": 102, "queue": 2}],
     }
     assert calls["query"] == "deck:Default"
@@ -130,3 +131,90 @@ def test_search_cmd_invalid_query_ankiconnect_error_exit_2(monkeypatch) -> None:
     assert result.exit_code == 2
     assert payload["error"]["code"] == "INVALID_INPUT"
     assert payload["error"]["details"]["query"] == "bad("
+
+
+# --- #28: `cards` is the JSON detail lister; `search` is its hidden alias --------------
+
+
+def test_cards_cmd_is_the_detail_lister_and_search_is_an_alias(monkeypatch) -> None:
+    from anki_cli.cli.commands.search import cards_cmd
+
+    class Backend:
+        def find_cards(self, query: str) -> list[int]:
+            return [1, 2]
+
+        def get_card(self, cid: int) -> dict[str, Any]:
+            return {"cardId": cid}
+
+    _patch_session(monkeypatch, Backend())
+    runner = CliRunner()
+
+    for cmd, name in ((cards_cmd, "cards"), (search_cmd, "search")):
+        result = runner.invoke(cmd, ["--query", "deck:X"], obj=_base_obj())
+        payload = _success_payload(result)
+        assert payload["meta"]["command"] == name
+        assert payload["data"] == {
+            "query": "deck:X",
+            "count": 2,
+            "total": 2,
+            "items": [{"cardId": 1}, {"cardId": 2}],
+        }
+
+
+def test_cards_cmd_query_is_optional(monkeypatch) -> None:
+    from anki_cli.cli.commands.search import cards_cmd
+
+    seen: list[str] = []
+
+    class Backend:
+        def find_cards(self, query: str) -> list[int]:
+            seen.append(query)
+            return []
+
+    _patch_session(monkeypatch, Backend())
+    result = CliRunner().invoke(cards_cmd, [], obj=_base_obj())
+
+    _success_payload(result)
+    assert seen == [""]
+
+
+def test_cards_is_not_a_tui_and_browse_is() -> None:
+    from anki_cli.cli.commands.browse import browse_cmd
+
+    assert get_command("cards") is not None
+    assert get_command("cards").callback is not browse_cmd.callback
+    assert get_command("browse") is browse_cmd
+    assert get_command("search").hidden is True
+    assert get_command("cards").hidden is False
+
+
+def test_cards_cmd_limits_detail_fetches_and_reports_total(monkeypatch) -> None:
+    """An unbounded `cards` on a big collection is one get_card per card; the
+    default limit caps that and says so in meta.warnings, `total` keeps the
+    real match count, and --limit 0 lifts the cap."""
+    from anki_cli.cli.commands.search import cards_cmd
+
+    fetched: list[int] = []
+
+    class Backend:
+        def find_cards(self, query: str) -> list[int]:
+            return list(range(1, 6))
+
+        def get_card(self, cid: int) -> dict[str, Any]:
+            fetched.append(cid)
+            return {"cardId": cid}
+
+    _patch_session(monkeypatch, Backend())
+    runner = CliRunner()
+
+    payload = _success_payload(runner.invoke(cards_cmd, ["--limit", "2"], obj=_base_obj()))
+    assert payload["data"]["count"] == 2
+    assert payload["data"]["total"] == 5
+    assert fetched == [1, 2]
+    assert any("showing the first 2" in w for w in payload["meta"]["warnings"])
+
+    fetched.clear()
+    payload = _success_payload(runner.invoke(cards_cmd, ["--limit", "0"], obj=_base_obj()))
+    assert payload["data"]["count"] == 5
+    assert fetched == [1, 2, 3, 4, 5]
+    assert payload["meta"]["warnings"] == []

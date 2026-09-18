@@ -56,6 +56,11 @@ def _emit_invalid_query(
     raise click.exceptions.Exit(2) from error
 
 
+# Keys a note:bulk item may not use as field names: they read like AnkiConnect's
+# per-note deck/notetype, which the CLI takes from its options instead.
+_BULK_RESERVED_KEYS = frozenset({"deck", "deckName", "notetype", "modelName", "options"})
+
+
 def _parse_tags(raw: str | None) -> list[str]:
     if not raw:
         return []
@@ -358,16 +363,51 @@ def note_bulk_cmd(
             )
             raise click.exceptions.Exit(2)
 
-        fields = item.get("fields")
-        if not isinstance(fields, dict):
+        # Two shapes are accepted: {"fields": {...}, "tags": [...]} and the flat
+        # {"Front": "Q", "Back": "A", "tags": [...]} that SKILL.md documents.
+        tags = item.get("tags") or []
+        if not isinstance(tags, (list, str)):
             formatter.emit_error(
                 command="note:bulk",
                 code="INVALID_INPUT",
-                message=f"Item {idx} is missing a 'fields' object.",
+                message=f"Item {idx}: 'tags' must be a list or a string.",
             )
             raise click.exceptions.Exit(2)
+        reserved = _BULK_RESERVED_KEYS & item.keys()
+        if reserved:
+            # Per-item deck/notetype would be silently dropped (both backends
+            # only read the notetype's own field names); refuse instead.
+            formatter.emit_error(
+                command="note:bulk",
+                code="INVALID_INPUT",
+                message=(
+                    f"Item {idx}: {sorted(reserved)} are not fields; the deck and "
+                    "notetype come from --deck / --notetype."
+                ),
+            )
+            raise click.exceptions.Exit(2)
+        if "fields" in item:
+            fields = item["fields"]
+            if not isinstance(fields, dict):
+                formatter.emit_error(
+                    command="note:bulk",
+                    code="INVALID_INPUT",
+                    message=f"Item {idx}: 'fields' must be an object.",
+                )
+                raise click.exceptions.Exit(2)
+        else:
+            fields = {k: v for k, v in item.items() if k != "tags"}
+            if not fields:
+                formatter.emit_error(
+                    command="note:bulk",
+                    code="INVALID_INPUT",
+                    message=(
+                        f"Item {idx} has no fields. Use {{\"Front\": ..., \"Back\": ...}} "
+                        "or {\"fields\": {...}, \"tags\": [...]}."
+                    ),
+                )
+                raise click.exceptions.Exit(2)
 
-        tags = item.get("tags", [])
         notes_payload.append(
             {
                 "deck": deck,
@@ -410,9 +450,13 @@ def note_bulk_cmd(
 @click.command("note:fields")
 @click.option("--id", "note_id", required=True, type=int, help="Note ID")
 @click.option("--fields", default="", help="Comma-separated field names")
+@click.option("--field", "field_list", multiple=True, help="Field name (repeatable)")
 @click.pass_context
-def note_fields_cmd(ctx: click.Context, note_id: int, fields: str) -> None:
+def note_fields_cmd(
+    ctx: click.Context, note_id: int, fields: str, field_list: tuple[str, ...]
+) -> None:
     """Show field values for a note."""
+    fields = ",".join([*field_list, fields]) if field_list else fields
     obj: dict[str, Any] = ctx.obj or {}
     formatter = formatter_from_ctx(ctx)
     selected: list[str] | None = None

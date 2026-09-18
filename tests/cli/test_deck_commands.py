@@ -100,7 +100,12 @@ def test_decks_cmd_json_mode_success(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
 
 
-def test_decks_cmd_table_mode_builds_indented_names(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_decks_cmd_emits_one_canonical_shape_regardless_of_format(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#28: ``data`` used to differ between --format table and everything else
+    (``total`` vs ``total_due``, pre-indented ``name``). Indentation is now the
+    table renderer's job; the data is the same for every format."""
     class Backend:
         def get_decks(self) -> list[dict[str, Any]]:
             return [
@@ -141,13 +146,39 @@ def test_decks_cmd_table_mode_builds_indented_names(monkeypatch: pytest.MonkeyPa
 
     assert result.exit_code == 0
     assert cap.command == "decks"
-    assert cap.data == {
+    expected = {
         "count": 2,
         "items": [
-            {"name": "Root", "new": 1, "learn": 0, "review": 0, "total": 1},
-            {"name": "  B", "new": 0, "learn": 2, "review": 3, "total": 5},
+            {"id": 1, "name": "Root", "new": 1, "learn": 0, "review": 0, "total_due": 1,
+             "level": 0},
+            {"id": 2, "name": "A::B", "new": 0, "learn": 2, "review": 3, "total_due": 5,
+             "level": 1},
         ],
     }
+    assert cap.data == expected
+
+    result = runner.invoke(decks_cmd, [], obj=_base_obj(format="json"))
+    assert result.exit_code == 0
+    assert cap.data == expected
+
+
+def test_table_renderer_indents_deck_hierarchy_without_touching_data() -> None:
+    from anki_cli.cli.formatter import OutputFormatter
+
+    fmt = OutputFormatter(
+        output_format="table", backend="direct", collection_path=None,
+        no_color=True, copy_output=False,
+    )
+    rows = [
+        {"name": "Root", "level": 0, "total_due": 1},
+        {"name": "Root::A::B", "level": 2, "total_due": 5},
+    ]
+    rendered = fmt._render_table({"items": rows})
+
+    assert "    B" in rendered  # leaf, indented two per level
+    assert "Root::A::B" not in rendered
+    assert "level" not in rendered.splitlines()[0]
+    assert rows[1]["name"] == "Root::A::B"  # input untouched
 
 
 def test_decks_cmd_backend_unavailable_exit_7(monkeypatch: pytest.MonkeyPatch) -> None:
