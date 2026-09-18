@@ -401,3 +401,13 @@ def test_get_revlog_empty_returns_empty_list(tmp_path: Path) -> None:
     store, _db_path = _make_store(tmp_path)
 
     assert store.get_revlog(123456) == []
+
+
+def test_get_note_numeric_sort_field_is_returned_as_text(tmp_path: Path) -> None:
+    """Anki declares ``sfld integer`` so numeric sort fields sort numerically;
+    the old per-file fixtures said ``TEXT`` and could never see SQLite hand an
+    int back. The API type is str regardless of the note's content."""
+    store, db_path = _make_store(tmp_path)
+    Collection(db_path).insert_note(id=7, fields=["42", "A"])
+
+    assert store.get_note(7)["sfld"] == "42"

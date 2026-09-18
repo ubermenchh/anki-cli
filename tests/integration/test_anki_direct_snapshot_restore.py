@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -10,37 +9,26 @@ import pytest
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
 from tests.anki_schema import connect
-from tests.conftest import new_collection
+from tests.conftest import new_collection, seed_review_card
 
 
 def _make_store_with_cards_revlog(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
     """Bare schema-18 collection with review card 100 already flagged ``usn=7``
     (so a restore that re-flags it is observable)."""
     col = new_collection(tmp_path / "collection.anki2", seed=False)
-    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
-    col.insert_note(id=1000, fields=["Q", "A"])
-    col.insert_card(
-        id=100, nid=1000, did=1, type=2, queue=2, due=30, ivl=15, factor=2500, reps=20,
-        lapses=1, flags=3, data='{"x":1}', mod=111, usn=7,
-    )
+    seed_review_card(col, ivl=15, usn=7, data='{"x":1}')
     return col.store(writable=False), col.db_path
 
 
 def _make_answer_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
-    """Same card as test_anki_direct_answer_card's fixture (ivl 10, usn 0)."""
+    """The same card test_anki_direct_answer_card seeds (ivl 10, usn 0)."""
     col = new_collection(tmp_path / "collection.anki2", seed=False)
-    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
-    col.insert_note(id=1000, fields=["Q", "A"])
-    col.insert_card(
-        id=100, nid=1000, did=1, mod=111, usn=0, type=2, queue=2, due=30, ivl=10,
-        factor=2500, reps=20, lapses=1, flags=3,
-    )
+    seed_review_card(col)
     return col.store(writable=False), col.db_path
 
 
 def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
     conn = connect(str(db_path))
-    conn.row_factory = sqlite3.Row
     row = conn.execute(
         """
         SELECT id, did, ord, type, queue, due, ivl, factor,
@@ -57,7 +45,6 @@ def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
 
 def _revlog_rows(db_path: Path) -> list[dict[str, Any]]:
     conn = connect(str(db_path))
-    conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT id, cid, usn, ease, ivl, lastIvl, factor, time, type FROM revlog ORDER BY id"
     ).fetchall()

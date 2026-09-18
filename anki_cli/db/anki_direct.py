@@ -1153,7 +1153,9 @@ class AnkiDirectReadStore:
             "usn": int(row["usn"]),
             "tags": self._parse_tags(raw_tags),
             "fields": self._split_fields(raw_fields),
-            "sfld": row["sfld"],
+            # Anki declares ``sfld integer`` so numeric sort fields sort numerically;
+            # SQLite's affinity then hands back an int for "42". The API is text.
+            "sfld": str(row["sfld"]) if row["sfld"] is not None else "",
             "csum": int(row["csum"]),
             "flags": int(row["flags"]),
             "data": str(row["data"] or ""),

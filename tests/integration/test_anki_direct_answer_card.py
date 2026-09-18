@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,32 +11,24 @@ import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
 from anki_cli.proto.anki.decks import DeckFiltered, DeckKindContainer
 from tests.anki_schema import connect
-from tests.conftest import Collection, new_collection
+from tests.conftest import Collection, new_collection, seed_review_card
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
     """Bare schema-18 collection (no deck_config row — tests assert the FSRS
     fallback when it is absent) with one review card, id 100, in deck 1."""
     col = new_collection(tmp_path / "collection.anki2", seed=False)
-    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
-    col.insert_note(id=1000, fields=["Q", "A"])
-    col.insert_card(
-        id=100, nid=1000, did=1, mod=111, usn=0, type=2, queue=2, due=30, ivl=10,
-        factor=2500, reps=20, lapses=1, flags=3,
-    )
+    seed_review_card(col)
     return col.store(writable=False), col.db_path
 
 
 def _assert_card_synced(db_path: Path, card_id: int = 100) -> dict[str, Any]:
     """usn flagged, card mod moved off the seeded 111, col.mod moved (#47)."""
-    row = Collection(db_path).assert_synced("cards", card_id)
-    assert row["mod"] > 111
-    return row
+    return Collection(db_path).assert_synced("cards", card_id, baseline=111)
 
 
 def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
     conn = connect(str(db_path))
-    conn.row_factory = sqlite3.Row
     row = conn.execute(
         """
         SELECT id, did, odid, odue, ord, type, queue, due, ivl, factor,
@@ -54,7 +45,6 @@ def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
 
 def _revlog_rows(db_path: Path) -> list[dict[str, Any]]:
     conn = connect(str(db_path))
-    conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT id, cid, usn, ease, ivl, lastIvl, factor, time, type FROM revlog ORDER BY id"
     ).fetchall()

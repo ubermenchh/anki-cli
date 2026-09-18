@@ -35,24 +35,39 @@ EXPECTED_COLUMNS = {
 }
 
 
+# Every index Anki creates, and whether it is UNIQUE. ``idx_decks_name`` being
+# unique on a ``COLLATE unicase`` column is what makes "Default"/"default" collide.
+EXPECTED_INDEXES = {
+    "idx_cards_odid": False, "idx_decks_name": True, "idx_fields_name_ntid": True,
+    "idx_graves_pending": False, "idx_notes_mid": False, "idx_notetypes_name": True,
+    "idx_notetypes_usn": False, "idx_templates_name_ntid": True, "idx_templates_usn": False,
+    "ix_cards_nid": False, "ix_cards_sched": False, "ix_cards_usn": False,
+    "ix_notes_csum": False, "ix_notes_usn": False, "ix_revlog_cid": False,
+    "ix_revlog_usn": False,
+}
+
+
 def test_fixture_has_every_anki_table_and_column(bare_collection: Collection) -> None:
     conn = bare_collection.connect()
     try:
         tables = {r["name"] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'"
-        )}
-        assert set(TABLES) <= tables
+        )} - {"sqlite_sequence"}
+        # Exactly Anki's tables: nothing missing, nothing extra.
+        assert tables == set(TABLES) == set(EXPECTED_COLUMNS)
         for table, columns in EXPECTED_COLUMNS.items():
             info = conn.execute(f"PRAGMA table_info({table})").fetchall()
             assert [r["name"] for r in info] == columns, table
             # Anki declares every column NOT NULL except tags.config.
             nullable = [r["name"] for r in info if not r["notnull"] and r["pk"] == 0]
             assert nullable == (["config"] if table == "tags" else []), (table, nullable)
-        indexes = {r["name"] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL"
-        )}
-        assert {"ix_cards_nid", "ix_cards_sched", "ix_notes_csum", "idx_decks_name",
-                "ix_revlog_cid"} <= indexes
+        indexes = {
+            r["name"]: r["sql"].upper().startswith("CREATE UNIQUE")
+            for r in conn.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL"
+            )
+        }
+        assert indexes == EXPECTED_INDEXES
     finally:
         conn.close()
 
@@ -114,3 +129,12 @@ def test_assert_synced_catches_each_missing_bookkeeping_step(collection: Collect
     collection.execute("UPDATE col SET mod = ?", (COL_BASE_MOD_MS,))
     with pytest.raises(AssertionError, match=r"col\.mod"):
         collection.assert_synced("notes", nid)
+
+
+def test_insert_note_rejects_tags_anki_would_never_write(bare_collection: Collection) -> None:
+    with pytest.raises(ValueError, match="Anki-style"):
+        bare_collection.insert_note(id=1, fields=["Q"], tags="alpha")
+    # Anki-style string, list, empty, and a hand-edited blank are all fine.
+    for tags in (" alpha beta ", ["a", "b"], [], "", " "):
+        bare_collection.execute("DELETE FROM notes")
+        bare_collection.insert_note(id=1, fields=["Q"], tags=tags)

@@ -275,12 +275,18 @@ class Collection:
         flags: int = 0,
         data: str = "",
     ) -> int:
-        """``tags`` may be a list or Anki's `` a b `` string. ``csum`` defaults
-        to 0 on purpose: tests that assert a checksum use the CSUM_* oracle
-        literals, never a value derived from the CLI's own hash."""
-        tag_text = f" {' '.join(tags)} " if isinstance(tags, list) and tags else (
-            tags if isinstance(tags, str) else ""
-        )
+        """``tags`` may be a list or Anki's `` a b `` string (surrounding spaces —
+        ``tag:`` search matches ``'% x %'``, so a bare ``"alpha"`` is a note Anki
+        never writes and is rejected). ``sfld`` defaults to the raw first field;
+        pass it for a markup-bearing field (Anki stores the stripped text, #64).
+        ``csum`` defaults to 0 on purpose: tests that assert a checksum use the
+        CSUM_* oracle literals, never a value derived from the CLI's own hash."""
+        if isinstance(tags, list):
+            tag_text = f" {' '.join(tags)} " if tags else ""
+        elif tags.strip() and not (tags.startswith(" ") and tags.endswith(" ")):
+            raise ValueError(f"tags must be Anki-style ' a b ' or a list, got {tags!r}")
+        else:
+            tag_text = tags
         self._insert(
             "notes",
             {
@@ -394,15 +400,19 @@ class Collection:
 
     # -- sync bookkeeping ----------------------------------------------------------------
 
-    def assert_synced(self, table: str, id: int, *, key: str = "id") -> dict[str, Any]:
+    def assert_synced(
+        self, table: str, id: int, *, key: str = "id", baseline: int = BASE_MOD
+    ) -> dict[str, Any]:
         """The write landed the way Anki's sync needs: the row is flagged for
-        upload (``usn = -1``), its timestamp moved off the fixture baseline, and
-        ``col.mod`` moved so the next sync scans for ``usn = -1`` rows at all
-        (#47). Returns the row for further assertions."""
+        upload (``usn = -1``), its timestamp moved past ``baseline`` (the value
+        the test seeded; default the builders' ``BASE_MOD``), and ``col.mod``
+        moved so the next sync scans for ``usn = -1`` rows at all (#47).
+        Returns the row for further assertions."""
         row = self.row(table, id, key=key)
         assert row["usn"] == -1, f"{table} {id}: usn={row['usn']}, expected -1"
         stamp = "mtime_secs" if "mtime_secs" in row else "mod"
-        assert row[stamp] > BASE_MOD, f"{table} {id}: {stamp}={row[stamp]} did not move"
+        assert stamp in row, f"{table} has no mod/mtime_secs column to check"
+        assert row[stamp] > baseline, f"{table} {id}: {stamp}={row[stamp]} did not move"
         assert self.col()["mod"] > COL_BASE_MOD_MS, "col.mod did not move"
         return row
 
@@ -412,10 +422,24 @@ class Collection:
         assert col["scm"] > COL_BASE_SCM_MS, "col.scm did not move (full sync not requested)"
 
     def assert_untouched(self) -> None:
-        """A refused write must leave no trace: ``col.mod`` still at baseline."""
+        """A refused write must leave no trace: ``col.mod`` still at baseline.
+
+        Precondition: the test's *setup* must not have gone through a store
+        mutator (that already moves ``col.mod``); seed with the builders."""
         col = self.col()
         assert col["mod"] == COL_BASE_MOD_MS, f"col.mod moved to {col['mod']}"
         assert col["scm"] == COL_BASE_SCM_MS, f"col.scm moved to {col['scm']}"
+
+
+def seed_review_card(col: Collection, *, ivl: int = 10, usn: int = 0, data: str = "{}") -> int:
+    """The review card several scheduler tests share: id 100 in deck 1, due day
+    30, factor 2500, 20 reps, 1 lapse, flags 3, seeded ``mod=111``."""
+    col.insert_notetype(id=DEFAULT_NOTETYPE_ID, name="Basic", fields=["Front", "Back"])
+    col.insert_note(id=1000, fields=["Q", "A"])
+    return col.insert_card(
+        id=100, nid=1000, did=DEFAULT_DECK_ID, mod=111, usn=usn, type=2, queue=2, due=30,
+        ivl=ivl, factor=2500, reps=20, lapses=1, flags=3, data=data,
+    )
 
 
 def new_collection(path: Path, *, crt: int = 0, seed: bool = True) -> Collection:
