@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sys
 import types
-from contextlib import contextmanager
 from typing import Any
 
 import pytest
@@ -13,26 +12,8 @@ import anki_cli.backends.factory as factory_mod
 from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.cli.commands.browse import browse_cmd
 from anki_cli.cli.dispatcher import get_command
-
-
-def _base_obj(**overrides: Any) -> dict[str, Any]:
-    base: dict[str, Any] = {
-        "format": "json",
-        "backend": "direct",
-        "collection_path": None,
-        "no_color": True,
-        "copy": False,
-    }
-    base.update(overrides)
-    return base
-
-
-def _patch_session(monkeypatch: pytest.MonkeyPatch, backend: Any) -> None:
-    @contextmanager
-    def fake_session(obj: dict[str, Any]):
-        yield backend
-
-    monkeypatch.setattr(factory_mod, "backend_session_from_context", fake_session)
+from tests.cli.conftest import base_obj as _base_obj
+from tests.cli.conftest import patch_session as _patch_session
 
 
 def _patch_browse_module(monkeypatch: pytest.MonkeyPatch, app_cls: type[Any]) -> None:
