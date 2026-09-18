@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Any, cast
 
@@ -8,56 +7,18 @@ import pytest
 
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
-from tests.integration.conftest import (
-    COL_TABLE_SQL,
-    assert_col_modified,
-    assert_col_untouched,
-    col_row,
-    insert_col_row,
-)
+from tests.anki_schema import connect
+from tests.conftest import Collection, new_collection
+from tests.integration.conftest import assert_col_modified, assert_col_untouched, col_row
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE notes (
-            id INTEGER PRIMARY KEY,
-            tags TEXT NOT NULL,
-            mod INTEGER NOT NULL,
-            usn INTEGER NOT NULL
-        );
-
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            type INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL DEFAULT 0,
-            odue INTEGER NOT NULL DEFAULT 0,
-            mod INTEGER NOT NULL,
-            usn INTEGER NOT NULL
-        );
-        """
-    )
-    conn.executescript(COL_TABLE_SQL)
-    insert_col_row(conn, crt=0)
-    conn.commit()
-    conn.close()
-
-    return AnkiDirectReadStore(db_path), db_path
+    col = new_collection(tmp_path / "collection.anki2", seed=False)
+    return col.store(writable=False), col.db_path
 
 
 def _insert_note(db_path: Path, *, note_id: int, tags: str, mod: int = 1, usn: int = 0) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO notes (id, tags, mod, usn) VALUES (?, ?, ?, ?)",
-        (note_id, tags, mod, usn),
-    )
-    conn.commit()
-    conn.close()
+    Collection(db_path).insert_note(id=note_id, fields=["Q", "A"], tags=tags, mod=mod, usn=usn)
 
 
 def _insert_card(
@@ -71,18 +32,13 @@ def _insert_card(
     mod: int = 1,
     usn: int = 0,
 ) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO cards (id, type, queue, due, odue, mod, usn) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (card_id, card_type, queue, due, odue, mod, usn),
+    Collection(db_path).insert_card(
+        id=card_id, nid=1000, type=card_type, queue=queue, due=due, odue=odue, mod=mod, usn=usn
     )
-    conn.commit()
-    conn.close()
 
 
 def _note_row(db_path: Path, note_id: int) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute(
         "SELECT id, tags, mod, usn FROM notes WHERE id = ?",
         (note_id,),
@@ -93,8 +49,7 @@ def _note_row(db_path: Path, note_id: int) -> dict[str, Any]:
 
 
 def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute(
         "SELECT id, type, queue, due, mod, usn FROM cards WHERE id = ?",
         (card_id,),

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,62 +9,17 @@ import pytest
 
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
+from tests.conftest import Collection, new_collection
 
 
 def _make_store(tmp_path: Path, *, col_crt: int = 0) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
-        CREATE TABLE col (
-            crt INTEGER NOT NULL
-        );
-
-        CREATE TABLE decks (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            kind BLOB NOT NULL
-        );
-
-        CREATE TABLE revlog (
-            id INTEGER PRIMARY KEY,
-            cid INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            ease INTEGER NOT NULL,
-            ivl INTEGER NOT NULL,
-            lastIvl INTEGER NOT NULL,
-            factor INTEGER NOT NULL,
-            time INTEGER NOT NULL,
-            type INTEGER NOT NULL
-        );
-
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            nid INTEGER NOT NULL,
-            did INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            mod INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            type INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL,
-            ivl INTEGER NOT NULL,
-            factor INTEGER NOT NULL,
-            reps INTEGER NOT NULL,
-            lapses INTEGER NOT NULL,
-            left INTEGER NOT NULL,
-            odue INTEGER NOT NULL,
-            odid INTEGER NOT NULL,
-            flags INTEGER NOT NULL,
-            data TEXT NOT NULL
-        );
-        """)
-    conn.execute("INSERT INTO col (crt) VALUES (?)", (col_crt,))
-    conn.commit()
-    conn.close()
-
-    return AnkiDirectReadStore(db_path), db_path
+    """Bare schema-18 collection: no deck_config row, so preview uses the FSRS
+    defaults exactly as the old fixture did."""
+    col = new_collection(tmp_path / "collection.anki2", crt=col_crt, seed=False)
+    col.insert_deck(id=1, name="Default")
+    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
+    col.insert_note(id=1000, fields=["Q", "A"])
+    return col.store(writable=False), col.db_path
 
 
 def _insert_card(
@@ -82,38 +36,10 @@ def _insert_card(
     odue: int = 0,
     odid: int = 0,
 ) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO cards (
-            id, nid, did, ord, mod, usn, type, queue, due, ivl, factor, reps,
-            lapses, left, odue, odid, flags, data
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            card_id,
-            1000,  # nid
-            did,
-            0,  # ord
-            mod,
-            0,  # usn
-            card_type,
-            queue,
-            due,
-            ivl,
-            factor,
-            1,  # reps
-            0,  # lapses
-            0,  # left
-            odue,
-            odid,
-            0,  # flags
-            "{}",
-        ),
+    Collection(db_path).insert_card(
+        id=card_id, nid=1000, did=did, mod=mod, type=card_type, queue=queue, due=due, ivl=ivl,
+        factor=factor, reps=1, odue=odue, odid=odid,
     )
-    conn.commit()
-    conn.close()
 
 
 def test_preview_ratings_missing_card_raises_lookup_error(tmp_path: Path) -> None:
@@ -325,13 +251,10 @@ def test_preview_ratings_refuses_a_card_in_a_preview_filtered_deck(tmp_path: Pat
     from anki_cli.proto.anki.decks import DeckFiltered, DeckKindContainer
 
     store, db_path = _make_store(tmp_path)
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO decks (id, name, kind) VALUES (555, 'Preview', ?)",
-        (bytes(DeckKindContainer(filtered=DeckFiltered(reschedule=False))),),
+    Collection(db_path).insert_deck(
+        id=555, name="Preview",
+        kind=bytes(DeckKindContainer(filtered=DeckFiltered(reschedule=False))),
     )
-    conn.commit()
-    conn.close()
     _insert_card(db_path, card_id=100, did=555, odid=1, odue=5, due=-7)
 
     with pytest.raises(ValueError, match="preview"):

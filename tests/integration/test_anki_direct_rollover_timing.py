@@ -8,7 +8,6 @@ result reaches the public read/write paths.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from pathlib import Path
 
@@ -16,7 +15,7 @@ import pytest
 
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
-from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
+from tests.conftest import Collection, new_collection
 
 EST_WEST = 5 * 60
 # Issue #21 reproduction values: crt 2023-11-14 04:00 EST, now 2023-11-15 01:00 EST.
@@ -31,51 +30,23 @@ def _make_store(
     config: dict[str, object] | None = None,
     with_config_table: bool = True,
 ) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.anki2"
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
-        CREATE TABLE decks (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            did INTEGER NOT NULL DEFAULT 1,
-            type INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL,
-            ivl INTEGER NOT NULL DEFAULT 0,
-            mod INTEGER NOT NULL DEFAULT 0,
-            usn INTEGER NOT NULL DEFAULT 0
-        );
-        """)
+    """``with_config_table=False`` drops Anki's ``config`` table after building
+    the real schema: not an Anki shape, but the store tolerates it (v1 fallback)
+    and one test pins that."""
+    col = new_collection(tmp_path / "collection.anki2", crt=crt, seed=False)
+    col.insert_deck(id=1, name="Default")
+    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
+    col.insert_note(id=1000, fields=["Q", "A"])
     if with_config_table:
-        conn.executescript("""
-            CREATE TABLE config (
-                KEY text NOT NULL PRIMARY KEY,
-                usn integer NOT NULL,
-                mtime_secs integer NOT NULL,
-                val blob NOT NULL
-            ) without rowid;
-            """)
         for key, value in (config or {}).items():
-            conn.execute(
-                "INSERT INTO config (key, usn, mtime_secs, val) VALUES (?, 0, 0, ?)",
-                (key, json.dumps(value).encode("utf-8")),
-            )
-    conn.executescript(COL_TABLE_SQL)
-    insert_col_row(conn, crt=crt)
-    conn.execute("INSERT INTO decks (id, name) VALUES (1, 'Default')")
-    conn.commit()
-    conn.close()
-    return AnkiDirectReadStore(db_path), db_path
+            col.set_config(key, value)
+    else:
+        col.execute("DROP TABLE config")
+    return col.store(writable=False), col.db_path
 
 
 def _insert_card(db_path: Path, *, card_id: int, type_: int, queue: int, due: int) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO cards (id, type, queue, due) VALUES (?, ?, ?, ?)",
-        (card_id, type_, queue, due),
-    )
-    conn.commit()
-    conn.close()
+    Collection(db_path).insert_card(id=card_id, nid=1000, type=type_, queue=queue, due=due, mod=0)
 
 
 @pytest.fixture

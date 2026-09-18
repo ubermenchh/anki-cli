@@ -22,7 +22,8 @@ from anki_cli.db.anki_direct import (
     queue_from_type_sql,
 )
 from anki_cli.db.timing import SchedTiming, sched_timing_today_v1
-from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
+from tests.anki_schema import connect
+from tests.conftest import Collection, new_collection
 
 CRT = 1_700_000_000  # 2023-11-14T22:13:20Z
 
@@ -37,43 +38,21 @@ def _day_start(idx: int) -> int:
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
-        CREATE TABLE decks (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            did INTEGER NOT NULL DEFAULT 1,
-            type INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL,
-            left INTEGER NOT NULL DEFAULT 0,
-            data TEXT NOT NULL DEFAULT '',
-            mod INTEGER NOT NULL DEFAULT 0,
-            usn INTEGER NOT NULL DEFAULT 0
-        );
-        """)
-    conn.executescript(COL_TABLE_SQL)
-    insert_col_row(conn, crt=CRT)
-    conn.execute("INSERT INTO decks (id, name) VALUES (1, 'Default')")
-    conn.commit()
-    conn.close()
-    return AnkiDirectReadStore(db_path), db_path
+    col = new_collection(tmp_path / "collection.anki2", crt=CRT, seed=False)
+    col.insert_deck(id=1, name="Default")
+    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
+    col.insert_note(id=1000, fields=["Q", "A"])
+    return col.store(writable=False), col.db_path
 
 
 def _insert_card(db_path: Path, *, card_id: int, type_: int, queue: int, due: int) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO cards (id, type, queue, due) VALUES (?, ?, ?, ?)",
-        (card_id, type_, queue, due),
+    Collection(db_path).insert_card(
+        id=card_id, nid=1000, type=type_, queue=queue, due=due, data="", mod=0
     )
-    conn.commit()
-    conn.close()
 
 
 def _card_row(db_path: Path, card_id: int) -> sqlite3.Row:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
     conn.close()
     assert row is not None
