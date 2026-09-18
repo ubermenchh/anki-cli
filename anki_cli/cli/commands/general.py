@@ -77,3 +77,55 @@ def status_cmd(ctx: click.Context) -> None:
 
 register_command("version", version_cmd)
 register_command("status", status_cmd)
+
+
+@click.command("commands")
+@click.pass_context
+def commands_cmd(ctx: click.Context) -> None:
+    """Machine-readable command reference: every command, its options, and the
+    error / exit codes — generated from the registry so it cannot drift (#28)."""
+    from anki_cli.cli.dispatcher import get_command, list_commands
+    from anki_cli.models.output import EXIT_CODE_MEANINGS, ErrorCode, ExitCode
+
+    items: list[dict[str, Any]] = []
+    for name in list_commands():
+        cmd = get_command(name)
+        if cmd is None:
+            continue
+        options: list[dict[str, Any]] = []
+        for param in cmd.params:
+            if not isinstance(param, click.Option):
+                continue
+            options.append(
+                {
+                    "spellings": [*param.opts, *param.secondary_opts],
+                    "required": bool(param.required),
+                    "flag": bool(param.is_flag),
+                    "multiple": bool(param.multiple),
+                    "type": param.type.name,
+                    "help": param.help or "",
+                }
+            )
+        items.append(
+            {
+                "name": name,
+                "hidden": bool(cmd.hidden),
+                "help": (cmd.help or "").strip(),
+                "options": options,
+            }
+        )
+
+    formatter = formatter_from_ctx(ctx)
+    formatter.emit_success(
+        command="commands",
+        data={
+            "count": len(items),
+            "items": items,
+            "global_options": ["--format", "--backend", "--col", "--yes", "--copy", "--no-color"],
+            "exit_codes": {str(int(c)): EXIT_CODE_MEANINGS[c] for c in ExitCode},
+            "error_codes": [str(c) for c in ErrorCode],
+        },
+    )
+
+
+register_command("commands", commands_cmd)

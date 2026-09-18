@@ -122,6 +122,25 @@ class OutputFormatter:
             return dumped
         return data
 
+    @staticmethod
+    def _indent_hierarchy(
+        rows: list[dict[str, Any]], columns: list[str]
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Presentation for ``A::B`` hierarchies (``decks``): when every row has
+        an int ``level`` and a ``name``, show the leaf indented by level and
+        drop the ``level`` column. The data itself is unchanged for other
+        formats — this is table-only rendering (#28)."""
+        if not rows or not all(
+            isinstance(r.get("level"), int) and isinstance(r.get("name"), str) for r in rows
+        ):
+            return rows, columns
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            name = str(row["name"])
+            leaf = name.rsplit("::", 1)[-1] if "::" in name else name
+            out.append({**row, "name": f"{'  ' * int(row['level'])}{leaf}"})
+        return out, [c for c in columns if c != "level"]
+
     def _render_data(self, data: JSONValue) -> str:
         if self.output_format == "table":
             return self._render_table(data)
@@ -137,6 +156,7 @@ class OutputFormatter:
         rows, columns = self._coerce_rows(data)
         if not rows:
             return "(no data)"
+        rows, columns = self._indent_hierarchy(rows, columns)
 
         display_columns: list[str] = []
         for col in columns:

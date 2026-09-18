@@ -116,7 +116,7 @@ def notetype_cmd(ctx: click.Context, notetype_name: str) -> None:
 
 
 @click.command("notetype:create")
-@click.option("--name", "notetype_name", required=True, help="New notetype name")
+@click.option("--notetype", "--name", "notetype_name", required=True, help="New notetype name")
 @click.option(
     "--kind",
     type=click.Choice(["normal", "cloze"], case_sensitive=False),

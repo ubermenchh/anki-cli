@@ -81,6 +81,7 @@ _ALIASES: dict[str, str] = {
     "nb": "note:bulk",
     "nt": "notetypes",
     "c": "cards",
+    "b": "browse",
     "ci": "cards:ids",
     "t": "tags",
     "s": "search",
@@ -906,9 +907,9 @@ def run_repl(ctx_obj: dict[str, Any]) -> None:
                     last_command = stripped
                     continue
 
-            # cards / c  → launch TUI browse app
+            # browse / b  → launch TUI browse app
             resolved_cmd = _ALIASES.get(stripped.split()[0], stripped.split()[0])
-            if resolved_cmd == "cards":
+            if resolved_cmd == "browse":
                 parts = stripped.split(None, 1)
                 query = parts[1].strip() if len(parts) > 1 else ""
                 if deck_context and "deck:" not in query:

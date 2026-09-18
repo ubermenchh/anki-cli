@@ -361,6 +361,7 @@ def review_answer_cmd(ctx: click.Context, card_id: int, rating: str) -> None:
     """Answer a card (again/hard/good/easy)."""
     obj: dict[str, Any] = ctx.obj or {}
     formatter = formatter_from_ctx(ctx)
+    warnings: list[str] = []
 
     try:
         ease = _parse_ease(rating)
@@ -405,10 +406,7 @@ def review_answer_cmd(ctx: click.Context, card_id: int, rating: str) -> None:
                 try:
                     UndoStore().push(undo_item)
                 except OSError as exc:
-                    click.echo(
-                        f"warning: answer saved but undo entry not written: {exc}",
-                        err=True,
-                    )
+                    warnings.append(f"answer saved but undo entry not written: {exc}")
     except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_unavailable(ctx=ctx, command="review:answer", obj=obj, error=exc)
     except (AnkiConnectAPIError, AnkiConnectProtocolError, LookupError) as exc:
@@ -420,7 +418,7 @@ def review_answer_cmd(ctx: click.Context, card_id: int, rating: str) -> None:
         )
         raise click.exceptions.Exit(1) from exc
 
-    formatter.emit_success(command="review:answer", data=result)
+    formatter.emit_success(command="review:answer", data=result, warnings=warnings)
 
 @click.command("review:start")
 @click.option("--deck", default=None, help="Optional deck filter")

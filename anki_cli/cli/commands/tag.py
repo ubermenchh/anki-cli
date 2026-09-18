@@ -125,7 +125,7 @@ def tag_cmd(ctx: click.Context, tag_name: str) -> None:
 @click.command("tag:add")
 @click.option("--id", "note_id", type=int, default=None, help="Single note ID")
 @click.option("--query", default=None, help="Query selecting notes")
-@click.option("--tag", "tag_name", required=True, help="Tag to add")
+@click.option("--tag", "--tags", "tag_name", required=True, help="Tag(s), space/comma separated")
 @click.pass_context
 def tag_add_cmd(
     ctx: click.Context,
@@ -176,7 +176,7 @@ def tag_add_cmd(
 @click.command("tag:remove")
 @click.option("--id", "note_id", type=int, default=None, help="Single note ID")
 @click.option("--query", default=None, help="Query selecting notes")
-@click.option("--tag", "tag_name", required=True, help="Tag to remove")
+@click.option("--tag", "--tags", "tag_name", required=True, help="Tag(s), space/comma separated")
 @click.pass_context
 def tag_remove_cmd(
     ctx: click.Context,

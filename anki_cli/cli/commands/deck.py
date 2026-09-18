@@ -61,39 +61,28 @@ def decks_cmd(ctx: click.Context) -> None:
     """List all decks with due counts."""
     obj: dict[str, Any] = ctx.obj or {}
     formatter = formatter_from_ctx(ctx)
-    table_mode = str(obj.get("format", "table")).lower() == "table"
 
     try:
         with backend_session_from_context(obj) as backend:
             decks = backend.get_decks()
+            # One canonical shape for every --format (#28). The table renderer
+            # indents ``name`` by ``level`` itself; data never changes with format.
             items: list[dict[str, JSONValue]] = []
             for deck in decks:
                 deck_name = str(deck.get("name", "")).replace("\x1f", "::")
                 due = backend.get_due_counts(deck=deck_name)
                 parts = [part for part in deck_name.split("::") if part]
-                level = max(0, len(parts) - 1)
-                leaf = parts[-1] if parts else deck_name
-
-                if table_mode:
-                    display_name = f"{'  ' * level}{leaf}"
-                    item: dict[str, JSONValue] = {
-                        "name": display_name,
-                        "new": due.get("new", 0),
-                        "learn": due.get("learn", 0),
-                        "review": due.get("review", 0),
-                        "total": due.get("total", 0),
-                    }
-                else:
-                    item = {
+                items.append(
+                    {
                         **deck,
                         "name": deck_name,
                         "new": due.get("new", 0),
                         "learn": due.get("learn", 0),
                         "review": due.get("review", 0),
                         "total_due": due.get("total", 0),
-                        "level": level,
+                        "level": max(0, len(parts) - 1),
                     }
-                items.append(item)
+                )
     except (BackendFactoryError, NotImplementedError) as exc:
         _emit_backend_error(ctx=ctx, command="decks", obj=obj, error=exc, exit_code=7)
 
@@ -141,7 +130,7 @@ def deck_cmd(ctx: click.Context, deck_name: str) -> None:
 
 
 @click.command("deck:create")
-@click.option("--name", required=True, help="Deck name, e.g. Japanese::Vocab")
+@click.option("--deck", "--name", "name", required=True, help="Deck name, e.g. Japanese::Vocab")
 @click.pass_context
 def deck_create_cmd(ctx: click.Context, name: str) -> None:
     """Create a new deck (supports A::B hierarchy)."""

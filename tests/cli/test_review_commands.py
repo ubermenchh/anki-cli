@@ -543,7 +543,9 @@ def test_review_answer_direct_undo_push_failure_still_succeeds(monkeypatch) -> N
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["data"]["answered"] is True
-    assert "undo entry not written" in result.stderr
+    # Structured, not free-text stderr (#28 item 6).
+    assert any("undo entry not written" in w for w in payload["meta"]["warnings"])
+    assert result.stderr == ""
 
 
 def test_review_answer_operation_error_exit_1(monkeypatch) -> None:

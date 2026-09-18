@@ -52,11 +52,7 @@ def _emit_invalid_query(
     raise click.exceptions.Exit(2) from error
 
 
-@click.command("search")
-@click.option("--query", required=True, help="Anki search query")
-@click.pass_context
-def search_cmd(ctx: click.Context, query: str) -> None:
-    """Search cards with full details."""
+def _run_card_search(ctx: click.Context, *, command: str, query: str) -> None:
     obj: dict[str, Any] = ctx.obj or {}
     formatter = formatter_from_ctx(ctx)
 
@@ -67,14 +63,34 @@ def search_cmd(ctx: click.Context, query: str) -> None:
             for cid in card_ids:
                 cards.append(backend.get_card(cid))
     except BackendFactoryError as exc:
-        _emit_backend_unavailable(ctx=ctx, command="search", obj=obj, error=exc)
+        _emit_backend_unavailable(ctx=ctx, command=command, obj=obj, error=exc)
     except (SearchParseError, AnkiConnectAPIError) as exc:
-        _emit_invalid_query(ctx=ctx, command="search", query=query, error=exc)
+        _emit_invalid_query(ctx=ctx, command=command, query=query, error=exc)
 
     formatter.emit_success(
-        command="search",
+        command=command,
         data={"query": query, "count": len(cards), "items": cards},
     )
 
 
+@click.command("cards")
+@click.option("--query", default="", help="Anki search query (empty = every card)")
+@click.pass_context
+def cards_cmd(ctx: click.Context, query: str) -> None:
+    """List cards matching a query, with full details.
+
+    ``cards:ids`` returns ids only; ``browse`` opens the interactive TUI.
+    """
+    _run_card_search(ctx, command="cards", query=query)
+
+
+@click.command("search", hidden=True)
+@click.option("--query", required=True, help="Anki search query")
+@click.pass_context
+def search_cmd(ctx: click.Context, query: str) -> None:
+    """Alias of ``cards`` (kept for existing scripts)."""
+    _run_card_search(ctx, command="search", query=query)
+
+
+register_command("cards", cards_cmd)
 register_command("search", search_cmd)

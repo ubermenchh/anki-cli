@@ -358,16 +358,31 @@ def note_bulk_cmd(
             )
             raise click.exceptions.Exit(2)
 
-        fields = item.get("fields")
-        if not isinstance(fields, dict):
-            formatter.emit_error(
-                command="note:bulk",
-                code="INVALID_INPUT",
-                message=f"Item {idx} is missing a 'fields' object.",
-            )
-            raise click.exceptions.Exit(2)
-
+        # Two shapes are accepted: {"fields": {...}, "tags": [...]} and the flat
+        # {"Front": "Q", "Back": "A", "tags": [...]} that SKILL.md documents.
         tags = item.get("tags", [])
+        if "fields" in item:
+            fields = item["fields"]
+            if not isinstance(fields, dict):
+                formatter.emit_error(
+                    command="note:bulk",
+                    code="INVALID_INPUT",
+                    message=f"Item {idx}: 'fields' must be an object.",
+                )
+                raise click.exceptions.Exit(2)
+        else:
+            fields = {k: v for k, v in item.items() if k != "tags"}
+            if not fields:
+                formatter.emit_error(
+                    command="note:bulk",
+                    code="INVALID_INPUT",
+                    message=(
+                        f"Item {idx} has no fields. Use {{\"Front\": ..., \"Back\": ...}} "
+                        "or {\"fields\": {...}, \"tags\": [...]}."
+                    ),
+                )
+                raise click.exceptions.Exit(2)
+
         notes_payload.append(
             {
                 "deck": deck,
@@ -410,9 +425,13 @@ def note_bulk_cmd(
 @click.command("note:fields")
 @click.option("--id", "note_id", required=True, type=int, help="Note ID")
 @click.option("--fields", default="", help="Comma-separated field names")
+@click.option("--field", "field_list", multiple=True, help="Field name (repeatable)")
 @click.pass_context
-def note_fields_cmd(ctx: click.Context, note_id: int, fields: str) -> None:
+def note_fields_cmd(
+    ctx: click.Context, note_id: int, fields: str, field_list: tuple[str, ...]
+) -> None:
     """Show field values for a note."""
+    fields = ",".join([*field_list, fields]) if field_list else fields
     obj: dict[str, Any] = ctx.obj or {}
     formatter = formatter_from_ctx(ctx)
     selected: list[str] | None = None
