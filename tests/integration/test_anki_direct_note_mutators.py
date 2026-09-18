@@ -74,9 +74,10 @@ def _insert_note(
     csum: int = 0,
 ) -> None:
     # ``csum`` is fixture input, never asserted — the literal-oracle tests own
-    # the real values. ``0`` just keeps the column populated.
+    # the real values. ``0`` just keeps the column populated. Rows start
+    # *synced* (usn 0) so a mutator's re-flag to -1 is observable.
     Collection(db_path).insert_note(
-        id=note_id, fields=[front, back], tags=tags, mod=1, usn=-1, sfld=front, csum=csum
+        id=note_id, fields=[front, back], tags=tags, mod=1, usn=0, sfld=front, csum=csum
     )
 
 
@@ -92,7 +93,7 @@ def _insert_card(
     card_type: int = 0,
 ) -> None:
     Collection(db_path).insert_card(
-        id=card_id, nid=note_id, did=deck_id, ord=ord_, mod=1, usn=-1, type=card_type,
+        id=card_id, nid=note_id, did=deck_id, ord=ord_, mod=1, usn=0, type=card_type,
         queue=queue, due=due,
     )
 

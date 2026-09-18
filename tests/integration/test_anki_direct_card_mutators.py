@@ -172,14 +172,21 @@ def test_bury_then_unbury_all_restores_queue_by_type(
     assert _card_row(db_path, 1)["queue"] == -2
     assert _card_row(db_path, 2)["queue"] == -2
 
+    # Re-arm the baseline: bury already moved col.mod, so only a fresh bump
+    # proves unbury did its own bookkeeping.
+    col = Collection(db_path)
+    col.execute("UPDATE col SET mod = ?", (COL_BASE_MOD_MS,))
+
     unburied = store.unbury_cards()
-    _assert_col_synced(db_path)
     assert unburied == {"unburied": 4, "scope": "all"}
 
     assert _card_row(db_path, 1)["queue"] == 0
     assert _card_row(db_path, 2)["queue"] == 2
     assert _card_row(db_path, 3)["queue"] == 3
     assert _card_row(db_path, 4)["queue"] == 1
+    # Cards 3 and 4 were never touched by bury: only unbury could flag them.
+    col.assert_synced("cards", 3)
+    col.assert_synced("cards", 4)
 
 
 def test_unbury_in_filtered_deck_reads_odue_for_the_learn_unit(
@@ -214,6 +221,10 @@ def test_unbury_deck_scope_includes_children(
     assert _card_row(db_path, 101)["queue"] == 2
     assert _card_row(db_path, 102)["queue"] == 0
     assert _card_row(db_path, 103)["queue"] == -2
+    col = Collection(db_path)
+    col.assert_synced("cards", 101)
+    col.assert_synced("cards", 102)
+    assert _card_row(db_path, 103)["usn"] == 0  # out of scope: left alone
 
     missing = store.unbury_cards(deck="Missing")
     assert missing == {"unburied": 0, "deck": "Missing"}
