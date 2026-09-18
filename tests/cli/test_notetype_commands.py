@@ -6,6 +6,7 @@ from typing import Any
 
 from click.testing import CliRunner
 
+import anki_cli.backends.factory as factory_mod
 import anki_cli.cli.commands.notetype as nt_cmd_mod
 from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.cli.commands.notetype import (
@@ -53,7 +54,7 @@ def _patch_session(monkeypatch, backend: Any) -> None:
     def fake_session(obj: dict[str, Any]):
         yield backend
 
-    monkeypatch.setattr(nt_cmd_mod, "backend_session_from_context", fake_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", fake_session)
 
 
 def test_notetypes_cmd_success(monkeypatch) -> None:
@@ -78,7 +79,7 @@ def test_notetypes_cmd_backend_unavailable_exit_7(monkeypatch) -> None:
     def failing_session(obj: dict[str, Any]):
         raise BackendFactoryError("backend down")
 
-    monkeypatch.setattr(nt_cmd_mod, "backend_session_from_context", failing_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", failing_session)
 
     runner = CliRunner()
     result = runner.invoke(notetypes_cmd, [], obj=_base_obj(backend="direct"))

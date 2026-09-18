@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
+import anki_cli.backends.factory as factory_mod
 import anki_cli.cli.commands.deck as deck_mod
 import anki_cli.cli.commands.notetype as notetype_mod
 import anki_cli.cli.commands.tag as tag_mod
@@ -25,7 +26,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, module: Any, backend: Any) -> None:
     def fake_session(obj: dict[str, Any]):
         yield backend
 
-    monkeypatch.setattr(module, "backend_session_from_context", fake_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", fake_session)
 
 
 @pytest.mark.parametrize("spelling", ["--deck", "--name"])

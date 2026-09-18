@@ -6,7 +6,7 @@ from typing import Any
 
 from click.testing import CliRunner
 
-import anki_cli.cli.commands.cards as cards_cmd_mod
+import anki_cli.backends.factory as factory_mod
 from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.cli.commands.cards import card_cmd, card_revlog_cmd
 from anki_cli.cli.dispatcher import get_command
@@ -44,7 +44,7 @@ def _patch_session(monkeypatch, backend: Any) -> None:
     def fake_session(obj: dict[str, Any]):
         yield backend
 
-    monkeypatch.setattr(cards_cmd_mod, "backend_session_from_context", fake_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", fake_session)
 
 
 def test_card_cmd_success_without_note_id_and_without_revlog(monkeypatch) -> None:
@@ -216,7 +216,7 @@ def test_card_cmd_backend_unavailable_exit_7(monkeypatch) -> None:
     def failing_session(obj: dict[str, Any]):
         raise BackendFactoryError("backend down")
 
-    monkeypatch.setattr(cards_cmd_mod, "backend_session_from_context", failing_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", failing_session)
 
     runner = CliRunner()
     result = runner.invoke(card_cmd, ["--id", "1"], obj=_base_obj(backend="direct"))
@@ -276,7 +276,7 @@ def test_card_revlog_cmd_backend_unavailable_exit_7(monkeypatch) -> None:
     def failing_session(obj: dict[str, Any]):
         raise BackendFactoryError("backend down")
 
-    monkeypatch.setattr(cards_cmd_mod, "backend_session_from_context", failing_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", failing_session)
 
     runner = CliRunner()
     result = runner.invoke(card_revlog_cmd, ["--id", "5"], obj=_base_obj(backend="direct"))

@@ -10,6 +10,7 @@ from typing import Any
 
 from click.testing import CliRunner
 
+import anki_cli.backends.factory as factory_mod
 import anki_cli.cli.commands.review as review_cmd_mod
 from anki_cli.backends.ankiconnect import AnkiConnectProtocolError
 from anki_cli.backends.factory import BackendFactoryError
@@ -57,7 +58,7 @@ def _patch_session(monkeypatch, backend: Any) -> None:
     def fake_session(obj: dict[str, Any]):
         yield backend
 
-    monkeypatch.setattr(review_cmd_mod, "backend_session_from_context", fake_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", fake_session)
 
 
 def test_review_cmd_success_trims_deck_for_backend_call(monkeypatch) -> None:
@@ -86,7 +87,7 @@ def test_review_cmd_backend_unavailable_exit_7(monkeypatch) -> None:
     def failing_session(obj: dict[str, Any]):
         raise BackendFactoryError("backend down")
 
-    monkeypatch.setattr(review_cmd_mod, "backend_session_from_context", failing_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", failing_session)
 
     runner = CliRunner()
     result = runner.invoke(review_cmd, [], obj=_base_obj(backend="direct"))
@@ -676,7 +677,7 @@ def test_review_start_backend_unavailable_exit_7(monkeypatch) -> None:
     def failing_session(obj: dict[str, Any]):
         raise BackendFactoryError("backend down")
 
-    monkeypatch.setattr(review_cmd_mod, "backend_session_from_context", failing_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", failing_session)
 
     runner = CliRunner()
     result = runner.invoke(review_start_cmd, [], obj=_base_obj(backend="direct"))

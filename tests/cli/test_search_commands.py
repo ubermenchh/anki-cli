@@ -6,7 +6,7 @@ from typing import Any
 
 from click.testing import CliRunner
 
-import anki_cli.cli.commands.search as search_cmd_mod
+import anki_cli.backends.factory as factory_mod
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError
 from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.cli.commands.search import search_cmd
@@ -46,7 +46,7 @@ def _patch_session(monkeypatch, backend: Any) -> None:
     def fake_session(obj: dict[str, Any]):
         yield backend
 
-    monkeypatch.setattr(search_cmd_mod, "backend_session_from_context", fake_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", fake_session)
 
 
 def test_search_cmd_success(monkeypatch) -> None:
@@ -80,7 +80,7 @@ def test_search_cmd_backend_unavailable_exit_7(monkeypatch) -> None:
     def failing_session(obj: dict[str, Any]):
         raise BackendFactoryError("backend down")
 
-    monkeypatch.setattr(search_cmd_mod, "backend_session_from_context", failing_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", failing_session)
 
     runner = CliRunner()
     result = runner.invoke(search_cmd, ["--query", "x"], obj=_base_obj(backend="direct"))

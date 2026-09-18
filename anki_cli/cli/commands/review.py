@@ -6,32 +6,27 @@ from typing import Any, cast
 import click
 
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError, AnkiConnectProtocolError
-from anki_cli.backends.factory import (
-    BackendFactoryError,
-    backend_session_from_context,
-)
-from anki_cli.cli.dispatcher import register_command
-from anki_cli.cli.formatter import formatter_from_ctx
+from anki_cli.cli.command import CommandContext, ErrorMap, anki_command
+from anki_cli.core.render import extract_note_id, extract_ord, pick_template, render_card
 from anki_cli.core.scheduler import pick_next_due_card_id
-from anki_cli.core.template import render_template
 from anki_cli.core.undo import UndoItem, UndoStore, now_epoch_ms
+from anki_cli.models.output import JSONValue
+
+# Kept under their old private names: tests import them from here.
+_extract_note_id = extract_note_id
+_extract_ord = extract_ord
 
 
-def _emit_backend_unavailable(
-    *,
-    ctx: click.Context,
-    command: str,
-    obj: dict[str, Any],
-    error: Exception,
-) -> None:
-    formatter = formatter_from_ctx(ctx)
-    formatter.emit_error(
-        command=command,
-        code="BACKEND_UNAVAILABLE",
-        message=str(error),
-        details={"backend": str(obj.get("backend", "unknown"))},
-    )
-    raise click.exceptions.Exit(7) from error
+def _pick_template(templates: Mapping[str, Any], ord_: int) -> Mapping[str, Any] | None:
+    picked = pick_template(templates, ord_)
+    return picked[1] if picked is not None else None
+
+
+def _render_card(*, backend: Any, card_id: int, reveal_answer: bool) -> dict[str, Any]:
+    """``{"card", "rendered", "render_error"}`` for ``card_id`` (tests patch this)."""
+    result = render_card(backend, card_id)
+    rendered = result.rendered.as_dict(reveal_answer=reveal_answer) if result.rendered else None
+    return {"card": result.card, "rendered": rendered, "render_error": result.error}
 
 
 def _parse_ease(rating: str) -> int:
@@ -51,415 +46,181 @@ def _parse_ease(rating: str) -> int:
     return mapping[normalized]
 
 
-def _extract_note_id(card: Mapping[str, Any]) -> int | None:
-    for key in ("note", "nid", "noteId", "note_id"):
-        value = card.get(key)
-        if isinstance(value, int):
-            return value
+def _direct_store(backend: Any) -> Any | None:
+    """The direct backend's store, or ``None`` on any other backend."""
+    if getattr(backend, "name", "") == "direct" and hasattr(backend, "_store"):
+        return backend._store
     return None
 
 
-def _extract_ord(card: Mapping[str, Any]) -> int:
-    value = card.get("ord")
-    return int(value) if isinstance(value, int) else 0
+def _collection_of(backend: Any) -> str:
+    col = getattr(backend, "collection_path", None)
+    return str(col) if col is not None else ""
 
 
-def _pick_template(templates: Mapping[str, Any], ord_: int) -> Mapping[str, Any] | None:
-    items = list(templates.items())
-
-    for _name, tmpl in items:
-        if isinstance(tmpl, Mapping) and isinstance(tmpl.get("ord"), int) and tmpl["ord"] == ord_:
-            return cast(Mapping[str, Any], tmpl)
-
-    if 0 <= ord_ < len(items):
-        _name, tmpl = items[ord_]
-        return tmpl if isinstance(tmpl, Mapping) else {}
-
-    if items:
-        _name, tmpl = items[0]
-        return tmpl if isinstance(tmpl, Mapping) else {}
-
-    return None
+_OPERATION_FAILED: ErrorMap = {
+    AnkiConnectAPIError: ("BACKEND_OPERATION_FAILED", 1),
+    AnkiConnectProtocolError: ("BACKEND_OPERATION_FAILED", 1),
+    LookupError: ("BACKEND_OPERATION_FAILED", 1),
+    ValueError: ("BACKEND_OPERATION_FAILED", 1),
+}
 
 
-def _render_card(
-    *,
-    backend: Any,
-    card_id: int,
-    reveal_answer: bool,
-) -> dict[str, Any]:
-    card_obj = backend.get_card(card_id)
-    card_map = cast(Mapping[str, Any], card_obj) if isinstance(card_obj, Mapping) else {}
+@anki_command("review")
+@click.option("--deck", default=None, help="Optional deck filter")
+def review_cmd(cmd: CommandContext, deck: str | None) -> JSONValue:
+    """Show due counts for review."""
+    counts = cmd.backend.get_due_counts(deck=deck.strip() if deck else None)
+    return {"deck": deck, "due_counts": counts}
 
-    note_id = _extract_note_id(card_map)
-    ord_ = _extract_ord(card_map)
 
-    rendered: dict[str, Any] | None = None
-    render_error: str | None = None
+@anki_command("review:next", errors=_OPERATION_FAILED)
+@click.option("--deck", default=None, help="Optional deck filter")
+def review_next_cmd(cmd: CommandContext, deck: str | None) -> JSONValue:
+    """Fetch the next due card (question only)."""
+    with cmd.errors(details={"deck": deck}):
+        backend = cmd.backend
+        card_id: int | None
+        kind: str
+        store = _direct_store(backend)
+        if store is not None and hasattr(store, "get_next_due_card"):
+            picked = store.get_next_due_card(deck.strip() if deck else None)
+            card_id = picked.get("card_id") if isinstance(picked, dict) else None
+            kind = str(picked.get("kind", "none")) if isinstance(picked, dict) else "none"
+        else:
+            card_id, kind = pick_next_due_card_id(backend, deck=deck)
 
-    if note_id is None:
-        return {"card": card_obj, "rendered": None, "render_error": "Card has no note id."}
+        if not isinstance(card_id, int) or card_id <= 0:
+            return {"deck": deck, "card_id": None, "kind": kind}
 
-    fields_map = backend.get_note_fields(note_id=note_id, fields=None)
-
-    notetype_name: str | None = None
-    raw_nt = card_map.get("notetype_name")
-    if isinstance(raw_nt, str) and raw_nt.strip():
-        notetype_name = raw_nt.strip()
-    else:
-        note_obj = backend.get_note(note_id)
-        if isinstance(note_obj, Mapping) and isinstance(note_obj.get("modelName"), str):
-            notetype_name = str(note_obj["modelName"]).strip()
-
-    if not notetype_name:
-        return {"card": card_obj, "rendered": None, "render_error": "Unable to determine notetype."}
-
-    nt_detail = backend.get_notetype(notetype_name)
-    kind = str(nt_detail.get("kind", "normal")).lower()
-
-    templates_raw = nt_detail.get("templates")
-    templates_map: Mapping[str, Any]
-    if isinstance(templates_raw, Mapping):
-        templates_map = cast(Mapping[str, Any], templates_raw)
-    else:
-        templates_map = {}
-    tpl = _pick_template(templates_map, ord_)
-
-    if tpl is None:
-        render_error = f"No templates found for notetype '{notetype_name}'."
-        return {"card": card_obj, "rendered": None, "render_error": render_error}
-
-    front_tmpl = str(tpl.get("Front") or "")
-    back_tmpl = str(tpl.get("Back") or "")
-
-    if kind == "cloze":
-        cloze_index = ord_ + 1
-        question = render_template(
-            front_tmpl,
-            fields_map,
-            cloze_index=cloze_index,
-            reveal_cloze=False,
-        )
-        answer = render_template(
-            back_tmpl,
-            fields_map,
-            front_side=question,
-            cloze_index=cloze_index,
-            reveal_cloze=True,
-        )
-    else:
-        question = render_template(front_tmpl, fields_map)
-        answer = render_template(back_tmpl, fields_map, front_side=question)
-
-    css = ""
-    styling_raw = nt_detail.get("styling")
-    if isinstance(styling_raw, Mapping):
-        css = str(cast(Mapping[str, Any], styling_raw).get("css") or "")
-
-    rendered = {
-        "notetype": notetype_name,
-        "ord": ord_,
-        "question": question,
-        "answer": answer,
-        "css": css,
+        rendered = _render_card(backend=backend, card_id=card_id, reveal_answer=False)
+    return {
+        "deck": deck,
+        "kind": kind,
+        "card_id": card_id,
+        "question": (rendered.get("rendered") or {}).get("question"),
+        "rendered": rendered.get("rendered"),
     }
 
-    if not reveal_answer:
-        rendered = dict(rendered)
-        rendered.pop("answer", None)
 
-    return {"card": card_obj, "rendered": rendered, "render_error": render_error}
-
-
-@click.command("review")
+@anki_command("review:show", errors=_OPERATION_FAILED)
 @click.option("--deck", default=None, help="Optional deck filter")
-@click.pass_context
-def review_cmd(ctx: click.Context, deck: str | None) -> None:
-    """Show due counts for review."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            counts = backend.get_due_counts(deck=deck.strip() if deck else None)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="review", obj=obj, error=exc)
-
-    formatter.emit_success(
-        command="review",
-        data={"deck": deck, "due_counts": counts},
-    )
-
-
-@click.command("review:next")
-@click.option("--deck", default=None, help="Optional deck filter")
-@click.pass_context
-def review_next_cmd(ctx: click.Context, deck: str | None) -> None:
-    """Fetch the next due card (question only)."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            card_id: int | None
-            kind: str
-
-            if getattr(backend, "name", "") == "direct" and hasattr(backend, "_store"):
-                store = cast(Any, backend._store)
-                if hasattr(store, "get_next_due_card"):
-                    picked = store.get_next_due_card(deck.strip() if deck else None)
-                    card_id = picked.get("card_id") if isinstance(picked, dict) else None
-                    kind = str(picked.get("kind", "none")) if isinstance(picked, dict) else "none"
-                else:
-                    card_id, kind = pick_next_due_card_id(backend, deck=deck)
-            else:
-                card_id, kind = pick_next_due_card_id(backend, deck=deck)
-
-            if not isinstance(card_id, int) or card_id <= 0:
-                formatter.emit_success(
-                    command="review:next",
-                    data={"deck": deck, "card_id": None, "kind": kind},
-                )
-                return
-
-            rendered = _render_card(backend=backend, card_id=card_id, reveal_answer=False)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="review:next", obj=obj, error=exc)
-    except (AnkiConnectAPIError, AnkiConnectProtocolError, LookupError, ValueError) as exc:
-        formatter.emit_error(
-            command="review:next",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"deck": deck},
-        )
-        raise click.exceptions.Exit(1) from exc
-
-    formatter.emit_success(
-        command="review:next",
-        data={
-            "deck": deck,
-            "kind": kind,
-            "card_id": card_id,
-            "question": (rendered.get("rendered") or {}).get("question"),
-            "rendered": rendered.get("rendered"),
-        },
-    )
-
-
-@click.command("review:show")
-@click.option("--deck", default=None, help="Optional deck filter")
-@click.pass_context
-def review_show_cmd(ctx: click.Context, deck: str | None) -> None:
+def review_show_cmd(cmd: CommandContext, deck: str | None) -> JSONValue:
     """Show the next card with its answer."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            card_id, kind = pick_next_due_card_id(backend, deck=deck)
-            if card_id is None:
-                formatter.emit_success(
-                    command="review:show",
-                    data={"deck": deck, "card_id": None, "kind": kind},
-                )
-                return
-            rendered = _render_card(backend=backend, card_id=card_id, reveal_answer=True)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="review:show", obj=obj, error=exc)
-    except (AnkiConnectAPIError, AnkiConnectProtocolError, LookupError, ValueError) as exc:
-        formatter.emit_error(
-            command="review:show",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"deck": deck},
-        )
-        raise click.exceptions.Exit(1) from exc
-
-    formatter.emit_success(
-        command="review:show",
-        data={
-            "deck": deck,
-            "kind": kind,
-            "card_id": card_id,
-            "rendered": rendered.get("rendered"),
-        },
-    )
+    with cmd.errors(details={"deck": deck}):
+        backend = cmd.backend
+        card_id, kind = pick_next_due_card_id(backend, deck=deck)
+        if card_id is None:
+            return {"deck": deck, "card_id": None, "kind": kind}
+        rendered = _render_card(backend=backend, card_id=card_id, reveal_answer=True)
+    return {"deck": deck, "kind": kind, "card_id": card_id, "rendered": rendered.get("rendered")}
 
 
-@click.command("review:preview")
+@anki_command("review:preview", errors=_OPERATION_FAILED)
 @click.option("--id", "card_id", required=True, type=int, help="Card ID")
-@click.pass_context
-def review_preview_cmd(ctx: click.Context, card_id: int) -> None:
+def review_preview_cmd(cmd: CommandContext, card_id: int) -> JSONValue:
     """Preview scheduling outcome per rating."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            if getattr(backend, "name", "") != "direct" or not hasattr(backend, "_store"):
-                raise NotImplementedError("review:preview is supported only for direct backend.")
-            store = cast(Any, backend._store)
-            items = store.preview_ratings(int(card_id))
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="review:preview", obj=obj, error=exc)
-    except (AnkiConnectAPIError, AnkiConnectProtocolError, LookupError, ValueError) as exc:
-        formatter.emit_error(
-            command="review:preview",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"id": card_id},
-        )
-        raise click.exceptions.Exit(1) from exc
-
-    formatter.emit_success(command="review:preview", data={"card_id": card_id, "items": items})
+    with cmd.errors(details={"id": card_id}):
+        store = _direct_store(cmd.backend)
+        if store is None:
+            raise NotImplementedError("review:preview is supported only for direct backend.")
+        items = store.preview_ratings(int(card_id))
+    return {"card_id": card_id, "items": items}
 
 
-@click.command("review:undo")
-@click.pass_context
-def review_undo_cmd(ctx: click.Context) -> None:
+@anki_command(
+    "review:undo",
+    errors={
+        LookupError: ("BACKEND_OPERATION_FAILED", 1),
+        ValueError: ("BACKEND_OPERATION_FAILED", 1),
+    },
+)
+def review_undo_cmd(cmd: CommandContext) -> JSONValue:
     """Undo the last review answer."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
+    backend = cmd.backend
+    store = _direct_store(backend)
+    if store is None:
+        raise NotImplementedError("review:undo is supported only for direct backend.")
 
-    try:
-        with backend_session_from_context(obj) as backend:
-            if getattr(backend, "name", "") != "direct" or not hasattr(backend, "_store"):
-                raise NotImplementedError("review:undo is supported only for direct backend.")
-
-            col = getattr(backend, "collection_path", None)
-            collection = str(col) if col is not None else ""
-            store = UndoStore()
-            item = store.pop(collection=collection)
-            if item is None:
-                formatter.emit_error(
-                    command="review:undo",
-                    code="UNDO_EMPTY",
-                    message="No undo entries available.",
-                )
-                raise click.exceptions.Exit(2)
-
-            direct_store = cast(Any, backend._store)
-            result = direct_store.restore_card_state(item.snapshot)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="review:undo", obj=obj, error=exc)
-    except (LookupError, ValueError) as exc:
-        formatter.emit_error(
-            command="review:undo",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-        )
-        raise click.exceptions.Exit(1) from exc
-
-    formatter.emit_success(command="review:undo", data=result)
+    item = UndoStore().pop(collection=_collection_of(backend))
+    if item is None:
+        raise cmd.fail("UNDO_EMPTY", "No undo entries available.", exit_code=2)
+    return store.restore_card_state(item.snapshot)
 
 
-@click.command("review:answer")
+@anki_command(
+    "review:answer",
+    errors={
+        AnkiConnectAPIError: ("BACKEND_OPERATION_FAILED", 1),
+        AnkiConnectProtocolError: ("BACKEND_OPERATION_FAILED", 1),
+        LookupError: ("BACKEND_OPERATION_FAILED", 1),
+    },
+)
 @click.option("--id", "card_id", required=True, type=int, help="Card ID")
 @click.option("--rating", required=True, help="Rating: again|hard|good|easy or 1..4")
-@click.pass_context
-def review_answer_cmd(ctx: click.Context, card_id: int, rating: str) -> None:
+def review_answer_cmd(cmd: CommandContext, card_id: int, rating: str) -> JSONValue:
     """Answer a card (again/hard/good/easy)."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-    warnings: list[str] = []
-
     try:
         ease = _parse_ease(rating)
     except ValueError as exc:
-        formatter.emit_error(
-            command="review:answer",
-            code="INVALID_INPUT",
-            message=str(exc),
-            details={"rating": rating},
-        )
-        raise click.exceptions.Exit(2) from exc
+        raise cmd.invalid(str(exc), details={"rating": rating}) from exc
 
-    try:
-        with backend_session_from_context(obj) as backend:
-            # Save undo snapshot (direct backend only). The snapshot must
-            # capture pre-answer state, but it is pushed only after
-            # answer_card succeeds so a failed answer cannot leave a stale
-            # undo entry.
-            snapshot: dict[str, Any] | None = None
-            collection = ""
-            if getattr(backend, "name", "") == "direct" and hasattr(backend, "_store"):
-                col = getattr(backend, "collection_path", None)
-                collection = str(col) if col is not None else ""
-                direct_store = cast(Any, backend._store)
-                snapshot = cast(dict[str, Any], direct_store.snapshot_card_state(int(card_id)))
+    with cmd.errors(details={"id": card_id, "rating": rating, "ease": ease}):
+        backend = cmd.backend
+        # Save undo snapshot (direct backend only). The snapshot must capture
+        # pre-answer state, but it is pushed only after answer_card succeeds so
+        # a failed answer cannot leave a stale undo entry.
+        store = _direct_store(backend)
+        snapshot: dict[str, Any] | None = None
+        if store is not None:
+            snapshot = cast(dict[str, Any], store.snapshot_card_state(int(card_id)))
 
-            result = backend.answer_card(card_id=int(card_id), ease=ease)
+        result = backend.answer_card(card_id=int(card_id), ease=ease)
 
-            if snapshot is not None:
-                # Carry the id of the revlog row this answer wrote so undo can
-                # delete exactly that row instead of a time window.
-                revlog_id = result.get("revlog_id") if isinstance(result, Mapping) else None
-                undo_item = UndoItem(
-                    collection=collection,
-                    card_id=int(card_id),
-                    snapshot={**snapshot, "revlog_id": revlog_id},
-                    created_at_epoch_ms=now_epoch_ms(),
-                )
-                # Best-effort: the answer is already committed, so a failed
-                # undo write must not fail the command (a retry would apply a
-                # second review).
-                try:
-                    UndoStore().push(undo_item)
-                except OSError as exc:
-                    warnings.append(f"answer saved but undo entry not written: {exc}")
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="review:answer", obj=obj, error=exc)
-    except (AnkiConnectAPIError, AnkiConnectProtocolError, LookupError) as exc:
-        formatter.emit_error(
-            command="review:answer",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"id": card_id, "rating": rating, "ease": ease},
-        )
-        raise click.exceptions.Exit(1) from exc
+        if snapshot is not None:
+            # Carry the id of the revlog row this answer wrote so undo can
+            # delete exactly that row instead of a time window.
+            revlog_id = result.get("revlog_id") if isinstance(result, Mapping) else None
+            undo_item = UndoItem(
+                collection=_collection_of(backend),
+                card_id=int(card_id),
+                snapshot={**snapshot, "revlog_id": revlog_id},
+                created_at_epoch_ms=now_epoch_ms(),
+            )
+            # Best-effort: the answer is already committed, so a failed undo
+            # write must not fail the command (a retry would apply a second
+            # review).
+            try:
+                UndoStore().push(undo_item)
+            except OSError as exc:
+                cmd.warnings.append(f"answer saved but undo entry not written: {exc}")
+    return result
 
-    formatter.emit_success(command="review:answer", data=result, warnings=warnings)
 
-@click.command("review:start")
+TUI_HINT = {"hint": "Run: uv sync --extra tui"}
+
+
+@anki_command("review:start")
 @click.option("--deck", default=None, help="Optional deck filter")
-@click.pass_context
-def review_start_cmd(ctx: click.Context, deck: str | None) -> None:
+def review_start_cmd(cmd: CommandContext, deck: str | None) -> None:
     """Start an interactive review session (TUI)."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
     try:
         from anki_cli.tui.review_app import ReviewApp
     except Exception as exc:
-        formatter.emit_error(
-            command="review:start",
-            code="TUI_NOT_AVAILABLE",
-            message=f"Textual is not installed/available: {exc}",
-            details={"hint": "Run: uv sync --extra tui"},
+        raise cmd.fail(
+            "TUI_NOT_AVAILABLE",
+            f"Textual is not installed/available: {exc}",
+            exit_code=2,
+            details=TUI_HINT,
+        ) from exc
+
+    backend = cmd.backend
+    if getattr(backend, "name", "") != "direct":
+        raise cmd.fail(
+            "UNSUPPORTED_BACKEND",
+            "review:start currently supports only direct backend.",
+            exit_code=2,
+            details={"backend": getattr(backend, "name", "unknown")},
         )
-        raise click.exceptions.Exit(2) from exc
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            if getattr(backend, "name", "") != "direct":
-                formatter.emit_error(
-                    command="review:start",
-                    code="UNSUPPORTED_BACKEND",
-                    message="review:start currently supports only direct backend.",
-                    details={"backend": getattr(backend, "name", "unknown")},
-                )
-                raise click.exceptions.Exit(2)
-
-            app = ReviewApp(backend=backend, deck=deck.strip() if deck else None)
-            app.run()
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="review:start", obj=obj, error=exc)
-
-
-register_command("review", review_cmd)
-register_command("review:next", review_next_cmd)
-register_command("review:show", review_show_cmd)
-register_command("review:answer", review_answer_cmd)
-register_command("review:preview", review_preview_cmd)
-register_command("review:undo", review_undo_cmd)
-register_command("review:start", review_start_cmd)
+    ReviewApp(backend=backend, deck=deck.strip() if deck else None).run()
+    return None

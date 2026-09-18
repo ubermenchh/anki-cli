@@ -8,53 +8,9 @@ from typing import Any
 import click
 
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError
-from anki_cli.backends.factory import (
-    BackendFactoryError,
-    backend_session_from_context,
-)
-from anki_cli.backends.protocol import JSONValue
-from anki_cli.cli.dispatcher import register_command
-from anki_cli.cli.formatter import formatter_from_ctx
-from anki_cli.core.search import SearchParseError
+from anki_cli.cli.command import CommandContext, ErrorMap, anki_command
 from anki_cli.db.anki_direct import DuplicateNoteError
-
-
-def _emit_backend_unavailable(
-    *,
-    ctx: click.Context,
-    command: str,
-    obj: dict[str, Any],
-    error: Exception,
-) -> None:
-    formatter = formatter_from_ctx(ctx)
-    formatter.emit_error(
-        command=command,
-        code="BACKEND_UNAVAILABLE",
-        message=str(error),
-        details={"backend": str(obj.get("backend", "unknown"))},
-    )
-    raise click.exceptions.Exit(7) from error
-
-def _emit_invalid_query(
-    *,
-    ctx: click.Context,
-    command: str,
-    query: str | None,
-    error: Exception,
-) -> None:
-    formatter = formatter_from_ctx(ctx)
-    details: dict[str, Any] = {"query": query or ""}
-    if isinstance(error, SearchParseError) and error.position is not None:
-        details["position"] = error.position
-
-    formatter.emit_error(
-        command=command,
-        code="INVALID_INPUT",
-        message=f"Invalid search query: {error}",
-        details=details,
-    )
-    raise click.exceptions.Exit(2) from error
-
+from anki_cli.models.output import JSONValue
 
 # Keys a note:bulk item may not use as field names: they read like AnkiConnect's
 # per-note deck/notetype, which the CLI takes from its options instead.
@@ -101,312 +57,148 @@ def _parse_dynamic_fields(extra_args: list[str]) -> dict[str, str]:
     return fields
 
 
-@click.command("notes")
+
+_DYNAMIC_FIELDS = {"ignore_unknown_options": True, "allow_extra_args": True}
+
+
+def _dynamic_fields(cmd: CommandContext) -> dict[str, str]:
+    try:
+        return _parse_dynamic_fields(list(cmd.ctx.args))
+    except click.ClickException as exc:
+        raise cmd.invalid(str(exc)) from exc
+
+
+@anki_command("notes")
 @click.option("--query", default="", help="Anki search query")
-@click.pass_context
-def notes_cmd(ctx: click.Context, query: str) -> None:
+def notes_cmd(cmd: CommandContext, query: str) -> JSONValue:
     """List note IDs matching a query."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            ids = backend.find_notes(query=query)
-    except SearchParseError as exc:
-        _emit_invalid_query(ctx=ctx, command="notes", query=query, error=exc)
-    except AnkiConnectAPIError as exc:
-        _emit_invalid_query(ctx=ctx, command="notes", query=query, error=exc)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="notes", obj=obj, error=exc)
-
-    payload: dict[str, JSONValue] = {
-        "query": query,
-        "count": len(ids),
-        "ids": ids,
-    }
-    formatter.emit_success(command="notes", data=payload)
+    with cmd.query_errors(query):
+        ids = cmd.backend.find_notes(query=query)
+    return {"query": query, "count": len(ids), "ids": ids}
 
 
-@click.command("note")
-@click.option("--id", "note_id", required=True, type=int, help="Note ID")
-@click.pass_context
-def note_cmd(ctx: click.Context, note_id: int) -> None:
-    """Show detailed info for a single note."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            note = backend.get_note(note_id)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="note", obj=obj, error=exc)
-    except (AnkiConnectAPIError, LookupError) as exc:
-        formatter.emit_error(
-            command="note",
-            code="ENTITY_NOT_FOUND",
-            message=str(exc),
-            details={"id": note_id},
-        )
-        raise click.exceptions.Exit(4) from exc
-
-    formatter.emit_success(command="note", data=note)
-
-
-@click.command(
-    "note:add",
-    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+@anki_command(
+    "note",
+    errors={AnkiConnectAPIError: ("ENTITY_NOT_FOUND", 4), LookupError: ("ENTITY_NOT_FOUND", 4)},
 )
+@click.option("--id", "note_id", required=True, type=int, help="Note ID")
+def note_cmd(cmd: CommandContext, note_id: int) -> JSONValue:
+    """Show detailed info for a single note."""
+    with cmd.errors(details={"id": note_id}):
+        return cmd.backend.get_note(note_id)
+
+
+_OPERATION_FAILED: ErrorMap = {
+    AnkiConnectAPIError: ("BACKEND_OPERATION_FAILED", 1),
+    LookupError: ("BACKEND_OPERATION_FAILED", 1),
+    ValueError: ("BACKEND_OPERATION_FAILED", 1),
+}
+
+
+@anki_command("note:add", errors=_OPERATION_FAILED, context_settings=_DYNAMIC_FIELDS)
 @click.option("--deck", required=True, help="Deck name")
 @click.option("--notetype", required=True, help="Notetype name")
 @click.option("--tags", default="", help="Comma/space separated tags")
 @click.option("--allow-duplicate", is_flag=True, default=False, help="Allow duplicate notes")
-@click.pass_context
 def note_add_cmd(
-    ctx: click.Context,
-    deck: str,
-    notetype: str,
-    tags: str,
-    allow_duplicate: bool,
-) -> None:
+    cmd: CommandContext, deck: str, notetype: str, tags: str, allow_duplicate: bool
+) -> JSONValue:
     """Add a new note with custom fields."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    try:
-        fields = _parse_dynamic_fields(list(ctx.args))
-    except click.ClickException as exc:
-        formatter.emit_error(
-            command="note:add",
-            code="INVALID_INPUT",
-            message=str(exc),
-        )
-        raise click.exceptions.Exit(2) from exc
-
+    fields = _dynamic_fields(cmd)
     if not fields:
-        formatter.emit_error(
-            command="note:add",
-            code="INVALID_INPUT",
-            message="No fields provided. Pass fields like Front=... Back=...",
-        )
-        raise click.exceptions.Exit(2)
+        raise cmd.invalid("No fields provided. Pass fields like Front=... Back=...")
 
-    try:
-        with backend_session_from_context(obj) as backend:
-            note_id = backend.add_note(
+    details: dict[str, JSONValue] = {"deck": deck, "notetype": notetype}
+    with cmd.errors(details=details):
+        try:
+            note_id = cmd.backend.add_note(
                 deck=deck.strip(),
                 notetype=notetype.strip(),
                 fields=fields,
                 tags=_parse_tags(tags),
                 allow_duplicate=allow_duplicate,
             )
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="note:add", obj=obj, error=exc)
-    except (AnkiConnectAPIError, LookupError, ValueError) as exc:
-        # ValueError covers the direct backend's DuplicateNoteError / EmptyNoteError;
-        # AnkiConnect reports the same conditions as an AnkiConnectAPIError on
-        # `addNote`. The store states the fact; the remedy flag is CLI surface, so
-        # it is appended here.
-        details: dict[str, JSONValue] = {"deck": deck, "notetype": notetype}
-        message = str(exc)
-        if isinstance(exc, DuplicateNoteError):
-            details["duplicate_ids"] = list(exc.duplicate_ids)
-            message = f"{message} Pass --allow-duplicate to add it anyway."
-        formatter.emit_error(
-            command="note:add",
-            code="BACKEND_OPERATION_FAILED",
-            message=message,
-            details=details,
-        )
-        raise click.exceptions.Exit(1) from exc
-
-    payload: dict[str, JSONValue] = {
+        except DuplicateNoteError as exc:
+            # Caught ahead of the table so the envelope can carry the ids and
+            # the remedy flag (CLI surface; the store only states the fact).
+            # AnkiConnect reports duplicates as an AnkiConnectAPIError.
+            raise cmd.fail(
+                "BACKEND_OPERATION_FAILED",
+                f"{exc} Pass --allow-duplicate to add it anyway.",
+                exit_code=1,
+                details={**details, "duplicate_ids": list(exc.duplicate_ids)},
+            ) from exc
+    return {
         "id": note_id,
         "deck": deck,
         "notetype": notetype,
         "fields": fields,
         "tags": _parse_tags(tags),
     }
-    formatter.emit_success(command="note:add", data=payload)
 
 
-@click.command(
+@anki_command(
     "note:edit",
-    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+    errors={
+        AnkiConnectAPIError: ("BACKEND_OPERATION_FAILED", 1),
+        LookupError: ("BACKEND_OPERATION_FAILED", 1),
+    },
+    context_settings=_DYNAMIC_FIELDS,
 )
 @click.option("--id", "note_id", required=True, type=int, help="Note ID")
 @click.option("--tags", default=None, help="Replace tags with comma/space separated tags")
-@click.pass_context
-def note_edit_cmd(ctx: click.Context, note_id: int, tags: str | None) -> None:
+def note_edit_cmd(cmd: CommandContext, note_id: int, tags: str | None) -> JSONValue:
     """Edit fields or tags on an existing note."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    try:
-        fields = _parse_dynamic_fields(list(ctx.args))
-    except click.ClickException as exc:
-        formatter.emit_error(
-            command="note:edit",
-            code="INVALID_INPUT",
-            message=str(exc),
-        )
-        raise click.exceptions.Exit(2) from exc
-
+    fields = _dynamic_fields(cmd)
     if not fields and tags is None:
-        formatter.emit_error(
-            command="note:edit",
-            code="INVALID_INPUT",
-            message="Nothing to update. Provide fields and/or tags.",
-        )
-        raise click.exceptions.Exit(2)
-
+        raise cmd.invalid("Nothing to update. Provide fields and/or tags.")
     parsed_tags = _parse_tags(tags) if tags is not None else None
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            result = backend.update_note(note_id=note_id, fields=fields or None, tags=parsed_tags)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="note:edit", obj=obj, error=exc)
-    except (AnkiConnectAPIError, LookupError) as exc:
-        formatter.emit_error(
-            command="note:edit",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"id": note_id},
-        )
-        raise click.exceptions.Exit(1) from exc
-
-    formatter.emit_success(command="note:edit", data=result)
+    with cmd.errors(details={"id": note_id}):
+        return cmd.backend.update_note(note_id=note_id, fields=fields or None, tags=parsed_tags)
 
 
-@click.command("note:delete")
+@anki_command("note:delete", errors={AnkiConnectAPIError: ("BACKEND_OPERATION_FAILED", 1)})
 @click.option("--id", "note_id", required=True, type=int, help="Note ID")
-@click.pass_context
-def note_delete_cmd(ctx: click.Context, note_id: int) -> None:
+def note_delete_cmd(cmd: CommandContext, note_id: int) -> JSONValue:
     """Delete a note (requires --yes)."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    if not bool(obj.get("yes", False)):
-        formatter.emit_error(
-            command="note:delete",
-            code="CONFIRMATION_REQUIRED",
-            message="Deleting a note requires --yes.",
-            details={"hint": "Re-run with --yes."},
-        )
-        raise click.exceptions.Exit(2)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            result = backend.delete_notes([note_id])
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="note:delete", obj=obj, error=exc)
-    except AnkiConnectAPIError as exc:
-        formatter.emit_error(
-            command="note:delete",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"id": note_id},
-        )
-        raise click.exceptions.Exit(1) from exc
-
-    formatter.emit_success(command="note:delete", data=result)
+    cmd.require_yes("Deleting a note requires --yes.")
+    with cmd.errors(details={"id": note_id}):
+        return cmd.backend.delete_notes([note_id])
 
 
-@click.command("note:bulk")
-@click.option("--deck", required=True, help="Deck name")
-@click.option("--notetype", required=True, help="Notetype name")
-@click.option("--file", "file_path", type=click.Path(path_type=Path), default=None)
-@click.option(
-    "--allow-duplicate",
-    is_flag=True,
-    default=False,
-    help="Add notes whose first field already exists in the notetype (otherwise they are null)",
-)
-@click.pass_context
-def note_bulk_cmd(
-    ctx: click.Context,
-    deck: str,
-    notetype: str,
-    file_path: Path | None,
-    allow_duplicate: bool,
-) -> None:
-    """Bulk-add notes from a JSON file or stdin."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    try:
-        raw = file_path.read_text(encoding="utf-8") if file_path else sys.stdin.read()
-        parsed = json.loads(raw)
-    except (OSError, json.JSONDecodeError) as exc:
-        formatter.emit_error(
-            command="note:bulk",
-            code="INVALID_INPUT",
-            message=f"Failed to read JSON input: {exc}",
-        )
-        raise click.exceptions.Exit(2) from exc
-
+def _bulk_items(cmd: CommandContext, parsed: Any, deck: str, notetype: str) -> list[dict[str, Any]]:
     if not isinstance(parsed, list):
-        formatter.emit_error(
-            command="note:bulk",
-            code="INVALID_INPUT",
-            message="Bulk input must be a JSON array of note objects.",
-        )
-        raise click.exceptions.Exit(2)
+        raise cmd.invalid("Bulk input must be a JSON array of note objects.")
 
     notes_payload: list[dict[str, JSONValue]] = []
     for idx, item in enumerate(parsed):
         if not isinstance(item, dict):
-            formatter.emit_error(
-                command="note:bulk",
-                code="INVALID_INPUT",
-                message=f"Item {idx} is not an object.",
-            )
-            raise click.exceptions.Exit(2)
+            raise cmd.invalid(f"Item {idx} is not an object.")
 
         # Two shapes are accepted: {"fields": {...}, "tags": [...]} and the flat
         # {"Front": "Q", "Back": "A", "tags": [...]} that SKILL.md documents.
         tags = item.get("tags") or []
         if not isinstance(tags, (list, str)):
-            formatter.emit_error(
-                command="note:bulk",
-                code="INVALID_INPUT",
-                message=f"Item {idx}: 'tags' must be a list or a string.",
-            )
-            raise click.exceptions.Exit(2)
+            raise cmd.invalid(f"Item {idx}: 'tags' must be a list or a string.")
         reserved = _BULK_RESERVED_KEYS & item.keys()
         if reserved:
             # Per-item deck/notetype would be silently dropped (both backends
             # only read the notetype's own field names); refuse instead.
-            formatter.emit_error(
-                command="note:bulk",
-                code="INVALID_INPUT",
-                message=(
-                    f"Item {idx}: {sorted(reserved)} are not fields; the deck and "
-                    "notetype come from --deck / --notetype."
-                ),
+            raise cmd.invalid(
+                f"Item {idx}: {sorted(reserved)} are not fields; the deck and "
+                "notetype come from --deck / --notetype."
             )
-            raise click.exceptions.Exit(2)
         if "fields" in item:
             fields = item["fields"]
             if not isinstance(fields, dict):
-                formatter.emit_error(
-                    command="note:bulk",
-                    code="INVALID_INPUT",
-                    message=f"Item {idx}: 'fields' must be an object.",
-                )
-                raise click.exceptions.Exit(2)
+                raise cmd.invalid(f"Item {idx}: 'fields' must be an object.")
         else:
             fields = {k: v for k, v in item.items() if k != "tags"}
             if not fields:
-                formatter.emit_error(
-                    command="note:bulk",
-                    code="INVALID_INPUT",
-                    message=(
-                        f"Item {idx} has no fields. Use {{\"Front\": ..., \"Back\": ...}} "
-                        "or {\"fields\": {...}, \"tags\": [...]}."
-                    ),
+                raise cmd.invalid(
+                    f"Item {idx} has no fields. Use {{\"Front\": ..., \"Back\": ...}} "
+                    "or {\"fields\": {...}, \"tags\": [...]}."
                 )
-                raise click.exceptions.Exit(2)
 
         notes_payload.append(
             {
@@ -416,77 +208,66 @@ def note_bulk_cmd(
                 "tags": tags if isinstance(tags, list) else str(tags),
             }
         )
+    return notes_payload
 
+
+@anki_command(
+    "note:bulk",
+    errors={
+        AnkiConnectAPIError: ("BACKEND_OPERATION_FAILED", 1),
+        LookupError: ("BACKEND_OPERATION_FAILED", 1),
+        ValueError: ("BACKEND_OPERATION_FAILED", 1),
+        # Per-item refusals (duplicate/empty/missing deck) come back as null
+        # ids; anything that would fail every item the same way (collection
+        # locked, corrupt notetype config) propagates from add_notes and fails
+        # the whole command rather than reporting N spurious per-item failures.
+        RuntimeError: ("BACKEND_OPERATION_FAILED", 1),
+    },
+)
+@click.option("--deck", required=True, help="Deck name")
+@click.option("--notetype", required=True, help="Notetype name")
+@click.option("--file", "file_path", type=click.Path(path_type=Path), default=None)
+@click.option(
+    "--allow-duplicate",
+    is_flag=True,
+    default=False,
+    help="Add notes whose first field already exists in the notetype (otherwise they are null)",
+)
+def note_bulk_cmd(
+    cmd: CommandContext, deck: str, notetype: str, file_path: Path | None, allow_duplicate: bool
+) -> JSONValue:
+    """Bulk-add notes from a JSON file or stdin."""
     try:
-        with backend_session_from_context(obj) as backend:
-            results = backend.add_notes(notes_payload, allow_duplicate=allow_duplicate)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="note:bulk", obj=obj, error=exc)
-    except (AnkiConnectAPIError, LookupError, ValueError, RuntimeError) as exc:
-        # Per-item refusals (duplicate/empty/missing deck) come back as null ids;
-        # anything that would fail every item the same way (collection locked,
-        # corrupt notetype config) propagates from add_notes and fails the whole
-        # command rather than reporting N spurious per-item failures.
-        formatter.emit_error(
-            command="note:bulk",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"deck": deck, "notetype": notetype},
-        )
-        raise click.exceptions.Exit(1) from exc
+        raw = file_path.read_text(encoding="utf-8") if file_path else sys.stdin.read()
+        parsed = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise cmd.invalid(f"Failed to read JSON input: {exc}") from exc
+
+    notes_payload = _bulk_items(cmd, parsed, deck, notetype)
+    with cmd.errors(details={"deck": deck, "notetype": notetype}):
+        results = cmd.backend.add_notes(notes_payload, allow_duplicate=allow_duplicate)
 
     success_count = len([item for item in results if item is not None])
-    failed_count = len(results) - success_count
-
-    payload: dict[str, JSONValue] = {
+    return {
         "count": len(results),
         "created": success_count,
-        "failed": failed_count,
+        "failed": len(results) - success_count,
         "ids": results,
     }
-    formatter.emit_success(command="note:bulk", data=payload)
 
 
-@click.command("note:fields")
+@anki_command("note:fields", errors=_OPERATION_FAILED)
 @click.option("--id", "note_id", required=True, type=int, help="Note ID")
 @click.option("--fields", default="", help="Comma-separated field names")
 @click.option("--field", "field_list", multiple=True, help="Field name (repeatable)")
-@click.pass_context
 def note_fields_cmd(
-    ctx: click.Context, note_id: int, fields: str, field_list: tuple[str, ...]
-) -> None:
+    cmd: CommandContext, note_id: int, fields: str, field_list: tuple[str, ...]
+) -> JSONValue:
     """Show field values for a note."""
     fields = ",".join([*field_list, fields]) if field_list else fields
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
     selected: list[str] | None = None
     if fields.strip():
         selected = [part.strip() for part in fields.split(",") if part.strip()]
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            values = backend.get_note_fields(note_id=note_id, fields=selected)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="note:fields", obj=obj, error=exc)
-    except (AnkiConnectAPIError, LookupError, ValueError) as exc:
-        formatter.emit_error(
-            command="note:fields",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"id": note_id, "fields": selected or []},
-        )
-        raise click.exceptions.Exit(1) from exc
-
-    formatter.emit_success(
-        command="note:fields",
-        data={"id": note_id, "fields": values},
-    )
-
-
-register_command("notes", notes_cmd)
-register_command("note", note_cmd)
-register_command("note:add", note_add_cmd)
-register_command("note:edit", note_edit_cmd)
-register_command("note:delete", note_delete_cmd)
-register_command("note:bulk", note_bulk_cmd)
-register_command("note:fields", note_fields_cmd)
+    with cmd.errors(details={"id": note_id, "fields": selected or []}):
+        values = cmd.backend.get_note_fields(note_id=note_id, fields=selected)
+    return {"id": note_id, "fields": values}

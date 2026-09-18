@@ -326,6 +326,28 @@ uv sync --group dev --extra tui
 uv run pytest -m tui
 ```
 
+### Adding a command
+
+Commands live in `anki_cli/cli/commands/` and are declared with `@anki_command`
+(`anki_cli/cli/command.py`), which owns the output envelope, the backend session, and
+`BACKEND_UNAVAILABLE`. The body returns the success `data` and declares which other
+exceptions become which error code:
+
+```python
+@anki_command("deck", errors={LookupError: ("ENTITY_NOT_FOUND", 4)})
+@click.option("--deck", "deck_name", required=True)
+def deck_cmd(cmd: CommandContext, deck_name: str) -> JSONValue:
+    name = deck_name.strip()
+    if not name:
+        raise cmd.invalid("Deck name cannot be empty.")
+    with cmd.errors(details={"deck": name}):
+        return cmd.backend.get_deck(name)
+```
+
+Anything not mapped falls through to the entry-point mapper, which still renders an
+envelope. `anki commands --format json` lists the result; the docs-sync tests check that
+README and SKILL.md only mention commands and options that exist.
+
 ## License
 
 MIT. See `LICENSE`.
