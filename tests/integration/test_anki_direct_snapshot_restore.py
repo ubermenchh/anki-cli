@@ -9,68 +9,37 @@ import pytest
 
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
-from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
-from tests.integration.test_anki_direct_answer_card import _make_store as _make_answer_store
+from tests.anki_schema import connect
+from tests.conftest import new_collection
 
 
 def _make_store_with_cards_revlog(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            did INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            type INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL,
-            ivl INTEGER NOT NULL,
-            factor INTEGER NOT NULL,
-            reps INTEGER NOT NULL,
-            lapses INTEGER NOT NULL,
-            left INTEGER NOT NULL,
-            flags INTEGER NOT NULL,
-            data TEXT NOT NULL,
-            odid INTEGER NOT NULL DEFAULT 0,
-            odue INTEGER NOT NULL DEFAULT 0,
-            mod INTEGER NOT NULL DEFAULT 0,
-            usn INTEGER NOT NULL DEFAULT 0
-        );
-
-        CREATE TABLE revlog (
-            id INTEGER PRIMARY KEY,
-            cid INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            ease INTEGER NOT NULL,
-            ivl INTEGER NOT NULL,
-            lastIvl INTEGER NOT NULL,
-            factor INTEGER NOT NULL,
-            time INTEGER NOT NULL,
-            type INTEGER NOT NULL
-        );
-        """
+    """Bare schema-18 collection with review card 100 already flagged ``usn=7``
+    (so a restore that re-flags it is observable)."""
+    col = new_collection(tmp_path / "collection.anki2", seed=False)
+    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
+    col.insert_note(id=1000, fields=["Q", "A"])
+    col.insert_card(
+        id=100, nid=1000, did=1, type=2, queue=2, due=30, ivl=15, factor=2500, reps=20,
+        lapses=1, flags=3, data='{"x":1}', mod=111, usn=7,
     )
-    conn.execute(
-        """
-        INSERT INTO cards (
-            id, did, ord, type, queue, due, ivl, factor, reps, lapses, left, flags, data, mod, usn
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (100, 1, 0, 2, 2, 30, 15, 2500, 20, 1, 0, 3, '{"x":1}', 111, 7),
-    )
-    conn.executescript(COL_TABLE_SQL)
-    insert_col_row(conn, crt=0)
-    conn.commit()
-    conn.close()
+    return col.store(writable=False), col.db_path
 
-    return AnkiDirectReadStore(db_path), db_path
+
+def _make_answer_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
+    """Same card as test_anki_direct_answer_card's fixture (ivl 10, usn 0)."""
+    col = new_collection(tmp_path / "collection.anki2", seed=False)
+    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
+    col.insert_note(id=1000, fields=["Q", "A"])
+    col.insert_card(
+        id=100, nid=1000, did=1, mod=111, usn=0, type=2, queue=2, due=30, ivl=10,
+        factor=2500, reps=20, lapses=1, flags=3,
+    )
+    return col.store(writable=False), col.db_path
 
 
 def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     conn.row_factory = sqlite3.Row
     row = conn.execute(
         """
@@ -87,7 +56,7 @@ def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
 
 
 def _revlog_rows(db_path: Path) -> list[dict[str, Any]]:
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "SELECT id, cid, usn, ease, ivl, lastIvl, factor, time, type FROM revlog ORDER BY id"
@@ -99,7 +68,7 @@ def _revlog_rows(db_path: Path) -> list[dict[str, Any]]:
 def _insert_revlog_row(
     db_path: Path, *, row_id: int, cid: int, ease: int = 3, usn: int = -1
 ) -> None:
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     conn.execute(
         """
         INSERT INTO revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type)
@@ -387,7 +356,7 @@ def test_restore_leaves_revlog_row_that_synced_after_the_review(
     result = store.answer_card(100, ease=3)
 
     # The review's revlog row synced to AnkiWeb before the undo ran.
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     conn.execute("UPDATE revlog SET usn = 5 WHERE id = ?", (result["revlog_id"],))
     conn.commit()
     conn.close()

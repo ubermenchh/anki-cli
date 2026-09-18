@@ -8,6 +8,9 @@ import pytest
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.core.search import SearchParseError
 from anki_cli.db.anki_direct import AnkiDirectReadStore
+from tests.conftest import new_collection
+
+_TYPE_FOR_QUEUE = {0: 0, 1: 1, 2: 2, 3: 1}
 
 
 def _make_store(
@@ -18,64 +21,22 @@ def _make_store(
     cards: list[tuple[int, int, int, int, int]],
     col_crt: int = 0,
 ) -> AnkiDirectReadStore:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE col (
-            crt INTEGER NOT NULL
-        );
-
-        CREATE TABLE decks (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL
-        );
-
-        CREATE TABLE notes (
-            id INTEGER PRIMARY KEY,
-            tags TEXT NOT NULL,
-            flds TEXT NOT NULL,
-            mod INTEGER NOT NULL
-        );
-
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            nid INTEGER NOT NULL,
-            did INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL,
-            ivl INTEGER NOT NULL DEFAULT 0,
-            reps INTEGER NOT NULL DEFAULT 0,
-            lapses INTEGER NOT NULL DEFAULT 0,
-            flags INTEGER NOT NULL DEFAULT 0,
-            odid INTEGER NOT NULL DEFAULT 0,
-            type INTEGER NOT NULL DEFAULT 0
-        );
-        """
-    )
-    conn.execute("INSERT INTO col (crt) VALUES (?)", (col_crt,))
-    conn.executemany("INSERT INTO decks (id, name) VALUES (?, ?)", decks)
-    conn.executemany("INSERT INTO notes (id, tags, flds, mod) VALUES (?, ?, ?, ?)", notes)
-    conn.executemany("INSERT INTO cards (id, nid, did, queue, due) VALUES (?, ?, ?, ?, ?)", cards)
-    # Default ``type`` from ``queue`` the way Anki does for an unsuspended card:
-    # new/learn/review/relearn are types 0/1/2/3; day-learn (queue 3) is type 1
-    # for a learning card; suspended/buried (queue < 0) fall back to new (0).
-    # Tests that need a specific (type, queue) pair UPDATE it afterwards.
-    conn.execute(
-        """
-        UPDATE cards SET type = CASE
-            WHEN queue IN (1, 3) THEN 1
-            WHEN queue = 2 THEN 2
-            ELSE 0
-        END
-        """
-    )
-    conn.commit()
-    conn.close()
-
-    return AnkiDirectReadStore(db_path)
+    """Rows: decks ``(id, name)``; notes ``(id, tags, flds, mod)``; cards
+    ``(id, nid, did, queue, due)``. ``type`` follows ``queue`` the way Anki sets
+    it for an unsuspended card (new/learn/review/relearn 0/1/2/3, day-learn is
+    type 1, suspended/buried fall back to new); tests needing a specific
+    ``(type, queue)`` UPDATE it afterwards."""
+    col = new_collection(tmp_path / "collection.anki2", crt=col_crt, seed=False)
+    for did, name in decks:
+        col.insert_deck(id=did, name=name)
+    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
+    for nid, tags, flds, mod in notes:
+        col.insert_note(id=nid, fields=flds.split("\x1f"), tags=tags, mod=mod)
+    for cid, nid, did, queue, due in cards:
+        col.insert_card(
+            id=cid, nid=nid, did=did, queue=queue, due=due, type=_TYPE_FOR_QUEUE.get(queue, 0)
+        )
+    return col.store(writable=False)
 
 
 def _seed_store(tmp_path: Path) -> AnkiDirectReadStore:

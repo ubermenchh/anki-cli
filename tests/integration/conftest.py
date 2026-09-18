@@ -11,6 +11,17 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Everything under tests/integration is ``@pytest.mark.integration``
+    (registered in pyproject); ``-m "not integration"`` gives the fast set."""
+    here = Path(__file__).parent
+    for item in items:
+        if here in Path(str(item.fspath)).parents:
+            item.add_marker(pytest.mark.integration)
+
 # Anki schema-18 ``col`` table, verbatim. Every write in the direct backend bumps
 # ``mod`` and schema changes bump ``scm``, so every fixture that exercises a
 # mutator needs the real column set.

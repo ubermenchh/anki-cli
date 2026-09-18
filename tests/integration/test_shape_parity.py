@@ -6,7 +6,6 @@ to it. If either drifts, the model validation here fails.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -14,32 +13,21 @@ import pytest
 from anki_cli.backends.ankiconnect import AnkiConnectBackend
 from anki_cli.db.anki_direct import AnkiDirectReadStore
 from anki_cli.models.entities import Card, Deck, Note, Notetype
-from tests.integration.test_anki_direct_card_note_revlog_reads import (
-    _insert_card,
-    _insert_deck,
-    _insert_note,
-    _insert_notetype,
-    _make_store,
-)
+from tests.conftest import Collection
 
 CANONICAL_CARD_KEYS = set(Card.model_fields) - {"deckId", "notetype_id", "flags"}
 CANONICAL_NOTE_KEYS = {"id", "mod", "tags", "fields"}
 
 
-def _direct(tmp_path: Path) -> AnkiDirectReadStore:
-    store, db_path = _make_store(tmp_path)
-    _insert_deck(db_path, did=1, name="Default")
-    _insert_notetype(db_path, ntid=10, name="Basic")
-    _insert_note(
-        db_path, note_id=100, guid="g", mid=10, mod=1, usn=-1, tags=" t ",
-        flds="front\x1fback", sfld="front", csum=0, flags=0, data="",
+def _direct(collection: Collection) -> AnkiDirectReadStore:
+    """The seeded fixture (Default deck 1, Basic notetype 10) plus one note/card
+    mirroring the AnkiConnect fake below."""
+    collection.insert_note(id=100, fields=["front", "back"], tags=["t"], mod=1, usn=-1)
+    collection.insert_card(
+        id=200, nid=100, did=1, type=2, queue=2, due=40, ivl=16, factor=2500, reps=14,
+        lapses=1, mod=1, usn=-1,
     )
-    _insert_card(
-        db_path, card_id=200, nid=100, did=1, ord_=0, mod=1, usn=-1, card_type=2, queue=2,
-        due=40, ivl=16, factor=2500, reps=14, lapses=1, left=0, odue=0, odid=0, flags=0,
-        data="{}",
-    )
-    return store
+    return collection.store(writable=False)
 
 
 def _ankiconnect(monkeypatch: pytest.MonkeyPatch) -> AnkiConnectBackend:
@@ -71,8 +59,8 @@ def _ankiconnect(monkeypatch: pytest.MonkeyPatch) -> AnkiConnectBackend:
     return backend
 
 
-def test_both_backends_emit_the_canonical_card(tmp_path, monkeypatch) -> None:
-    direct = _direct(tmp_path).get_card(200)
+def test_both_backends_emit_the_canonical_card(collection, monkeypatch) -> None:
+    direct = _direct(collection).get_card(200)
     ac = _ankiconnect(monkeypatch).get_card(200)
 
     for card in (direct, ac):
@@ -90,8 +78,8 @@ def test_both_backends_emit_the_canonical_card(tmp_path, monkeypatch) -> None:
     assert "epoch_secs" not in ac["due_info"]
 
 
-def test_both_backends_emit_the_canonical_note(tmp_path, monkeypatch) -> None:
-    direct = _direct(tmp_path).get_note(100)
+def test_both_backends_emit_the_canonical_note(collection, monkeypatch) -> None:
+    direct = _direct(collection).get_note(100)
     ac = _ankiconnect(monkeypatch).get_note(100)
 
     for note in (direct, ac):
@@ -102,30 +90,36 @@ def test_both_backends_emit_the_canonical_note(tmp_path, monkeypatch) -> None:
     assert direct["tags"] == ac["tags"] == ["t"]
 
 
-def test_ankiconnect_notetypes_are_canonical(monkeypatch) -> None:
-    # The direct side is validated in test_anki_direct_read_apis (full DDL);
-    # this fixture's minimal ``notetypes`` table cannot serve get_notetype (#37).
+def test_both_backends_emit_canonical_notetypes(collection, monkeypatch) -> None:
+    store = _direct(collection)
     ac = _ankiconnect(monkeypatch)
-    nt = ac.get_notetype("Basic")
-    Notetype.model_validate(nt)
-    assert nt["id"] == 10 and nt["kind"] == "normal"
-    assert nt["templates"]["Card 1"]["ord"] == 0
-    assert [n["id"] for n in ac.get_notetypes()] == [10]
+
+    d_nt, a_nt = store.get_notetype("Basic"), ac.get_notetype("Basic")
+    Notetype.model_validate(d_nt)
+    Notetype.model_validate(a_nt)
+    assert d_nt["id"] == a_nt["id"] == 10
+    assert d_nt["kind"] == a_nt["kind"] == "normal"
+    assert d_nt["fields"] == a_nt["fields"] == ["Front", "Back"]
+    assert d_nt["templates"]["Card 1"]["ord"] == a_nt["templates"]["Card 1"]["ord"] == 0
+    assert [n["id"] for n in store.get_notetypes()] == [n["id"] for n in ac.get_notetypes()]
 
 
-def test_ankiconnect_decks_are_canonical(monkeypatch) -> None:
-    # The direct side is pinned by test_anki_direct_read_apis (full deck DDL);
-    # this fixture's minimal ``decks`` table cannot serve get_decks (#37).
+def test_both_backends_emit_canonical_decks(collection, monkeypatch) -> None:
+    store = _direct(collection)
     ac = _ankiconnect(monkeypatch)
-    for deck in (*ac.get_decks(), ac.get_deck("Default")):
+
+    for deck in (*store.get_decks(), *ac.get_decks(), store.get_deck("Default"),
+                 ac.get_deck("Default")):
         Deck.model_validate(deck)
+    assert store.get_deck("Default")["kind"] == "normal"
     assert ac.get_deck("Default")["kind"] == "unknown"  # honest, not guessed
+    assert store.get_deck("Default")["id"] == ac.get_deck("Default")["id"] == 1
 
 
-def test_unknown_id_is_not_found_on_both_backends(tmp_path, monkeypatch) -> None:
+def test_unknown_id_is_not_found_on_both_backends(collection, monkeypatch) -> None:
     """AnkiConnect returns ``{}`` for an id Anki does not know; before this fix
     the normaliser turned that into a card with ``cardId: 0`` and exit 0."""
-    store = _direct(tmp_path)
+    store = _direct(collection)
     ac = _ankiconnect(monkeypatch)
     monkeypatch.setattr(
         ac, "_invoke",

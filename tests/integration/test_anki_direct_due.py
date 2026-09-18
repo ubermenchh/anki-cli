@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 from anki_cli.db.anki_direct import AnkiDirectReadStore
+from tests.conftest import new_collection
+
+_TYPE_FOR_QUEUE = {0: 0, 1: 1, 2: 2, 3: 1}
 
 
 def _make_store(
@@ -12,36 +14,18 @@ def _make_store(
     decks: list[tuple[int, str]],
     cards: list[tuple[int, int, int, int]],
 ) -> AnkiDirectReadStore:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE col (
-            crt INTEGER NOT NULL
-        );
-
-        CREATE TABLE decks (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL
-        );
-
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            did INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL
-        );
-        """
-    )
-    conn.execute("INSERT INTO col (crt) VALUES (0)")
-    conn.executemany("INSERT INTO decks (id, name) VALUES (?, ?)", decks)
-    conn.executemany("INSERT INTO cards (id, did, queue, due) VALUES (?, ?, ?, ?)", cards)
-    conn.commit()
-    conn.close()
-
-    return AnkiDirectReadStore(db_path)
+    """``cards`` rows are ``(id, did, queue, due)``; ``type`` follows ``queue`` the
+    way Anki sets it for an unsuspended card (suspended/buried -> new)."""
+    col = new_collection(tmp_path / "collection.anki2", seed=False)
+    for did, name in decks:
+        col.insert_deck(id=did, name=name)
+    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
+    col.insert_note(id=1000, fields=["Q", "A"])
+    for cid, did, queue, due in cards:
+        col.insert_card(
+            id=cid, nid=1000, did=did, queue=queue, due=due, type=_TYPE_FOR_QUEUE.get(queue, 0)
+        )
+    return col.store(writable=False)
 
 
 def test_get_due_counts_all_decks_counts_only_due_cards(tmp_path: Path) -> None:

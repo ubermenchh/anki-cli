@@ -100,9 +100,6 @@ def test_invoke_non_json_response_raises_protocol() -> None:
 
 
 def test_invoke_non_object_response_raises_protocol() -> None:
-    backend = _backend_with_handler(_json_handler({"error": None, "result": [1, 2, 3]}))
-
-    # First call succeeds; now return list body to trigger protocol error.
     backend = _backend_with_handler(lambda request: httpx.Response(200, json=[1, 2, 3]))
 
     with pytest.raises(AnkiConnectProtocolError, match="must be an object"):
