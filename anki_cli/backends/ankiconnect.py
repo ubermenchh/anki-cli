@@ -7,6 +7,13 @@ from urllib.parse import urlparse
 
 import httpx
 
+from anki_cli.backends.normalize import (
+    normalize_card,
+    normalize_deck,
+    normalize_note,
+    normalize_notetype,
+    ordered_fields,
+)
 from anki_cli.backends.protocol import AnkiBackend, BackendUnsupportedError, JSONValue
 
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -145,10 +152,7 @@ class AnkiConnectBackend(AnkiBackend):
         decks: list[dict[str, JSONValue]] = []
         for name, deck_id in sorted(deck_map.items(), key=lambda item: str(item[0]).lower()):
             decks.append(
-                {
-                    "id": self._as_int(deck_id, "deck id"),
-                    "name": str(name),
-                }
+                normalize_deck({"id": self._as_int(deck_id, "deck id"), "name": str(name)})
             )
         return decks
 
@@ -162,11 +166,9 @@ class AnkiConnectBackend(AnkiBackend):
         deck_id = match.get("id")
         if not isinstance(deck_id, int):
             raise AnkiConnectProtocolError("deck id must be int.")
-        return {
-            "id": deck_id,
-            "name": normalized,
-            "due_counts": self.get_due_counts(deck=normalized),
-        }
+        return normalize_deck(
+            {"id": deck_id, "name": normalized, "due_counts": self.get_due_counts(deck=normalized)}
+        )
 
     def create_deck(self, name: str) -> dict[str, JSONValue]:
         self._invoke("createDeck", deck=name)
@@ -253,15 +255,17 @@ class AnkiConnectBackend(AnkiBackend):
         return {"deck": normalized, "updated": True, "config": config}
 
     # Notetypes
-    def get_notetypes(self) -> list[dict[str, JSONValue]]:
-        result = self._invoke("modelNames")
-        if not isinstance(result, list):
-            raise AnkiConnectProtocolError("modelNames must return a list.")
+    def _model_ids(self) -> dict[str, int]:
+        """``{name: id}``; the direct backend has notetype ids, so we ask for them too."""
+        result = self._invoke("modelNamesAndIds")
+        model_map = self._as_json_object(result, "modelNamesAndIds")
+        return {str(name): self._as_int(mid, "model id") for name, mid in model_map.items()}
 
-        names = [str(item) for item in result]
+    def get_notetypes(self) -> list[dict[str, JSONValue]]:
+        ids = self._model_ids()
         output: list[dict[str, JSONValue]] = []
 
-        for name in sorted(names, key=str.lower):
+        for name in sorted(ids, key=str.lower):
             fields_raw = self._invoke("modelFieldNames", modelName=name)
             templates_raw = self._invoke("modelTemplates", modelName=name)
 
@@ -274,6 +278,7 @@ class AnkiConnectBackend(AnkiBackend):
 
             output.append(
                 {
+                    "id": ids[name],
                     "name": name,
                     "field_count": len(fields),
                     "template_count": len(template_names),
@@ -293,6 +298,10 @@ class AnkiConnectBackend(AnkiBackend):
             "fields": self._as_str_list(fields_raw, "modelFieldNames"),
             "templates": templates_raw if isinstance(templates_raw, dict) else {},
         }
+        try:
+            result["id"] = self._model_ids().get(name)
+        except AnkiConnectError:
+            result["id"] = None
 
         kind = "normal"
         if isinstance(templates_raw, Mapping):
@@ -316,7 +325,7 @@ class AnkiConnectBackend(AnkiBackend):
             # Not all AnkiConnect versions expose modelStyling.
             result["styling"] = {}
 
-        return result
+        return normalize_notetype(result)
 
     def create_notetype(
         self,
@@ -566,21 +575,21 @@ class AnkiConnectBackend(AnkiBackend):
         if not isinstance(result, list) or not result:
             raise AnkiConnectProtocolError("notesInfo returned no rows.")
         first = result[0]
-        return self._as_json_object(first, "notesInfo row")
+        return normalize_note(self._as_json_object(first, "notesInfo row"))
 
     def get_note_fields(self, note_id: int, fields: list[str] | None = None) -> dict[str, str]:
         note = self.get_note(note_id)
-        raw_fields = note.get("fields")
-        if not isinstance(raw_fields, Mapping):
+        names = note.get("field_names")
+        field_values = note.get("fields")
+        if isinstance(names, list) and isinstance(field_values, list):
+            # Normalised note: parallel name/value lists in notetype order.
+            values = {str(n): str(v) for n, v in zip(names, field_values, strict=False)}
+        elif isinstance(field_values, Mapping):
+            # Raw notesInfo shape (a test double or an older caller).
+            raw_names, raw_values = ordered_fields(field_values)
+            values = dict(zip(raw_names, raw_values, strict=True))
+        else:
             raise AnkiConnectProtocolError("notesInfo.fields must be an object.")
-
-        values: dict[str, str] = {}
-        for k, v in raw_fields.items():
-            if isinstance(v, Mapping):
-                v_map = cast(Mapping[str, JSONValue], v)
-                values[str(k)] = str(v_map.get("value") or "")
-            else:
-                values[str(k)] = str(v)
 
         if fields:
             wanted = {f.strip() for f in fields if f.strip()}
@@ -597,7 +606,7 @@ class AnkiConnectBackend(AnkiBackend):
         if not isinstance(result, list) or not result:
             raise AnkiConnectProtocolError("cardsInfo returned no rows.")
         first = result[0]
-        return self._as_json_object(first, "cardsInfo row")
+        return normalize_card(self._as_json_object(first, "cardsInfo row"))
 
     def answer_card(self, card_id: int, ease: int) -> dict[str, JSONValue]:
         if ease not in {1, 2, 3, 4}:

@@ -146,3 +146,37 @@ def test_pick_next_due_applies_deck_prefix_to_queries() -> None:
     assert backend.find_calls == [
         'deck:"Japanese::Core" is:learn is:due',
     ]
+
+
+def test_pick_next_due_compares_decoded_units_not_raw_due() -> None:
+    """The ``is:learn is:due`` set mixes an intraday card (``due`` = epoch,
+    ~1.7e9) with a day-learn card (``due`` = day index, ~2e4). Raw ``min(due)``
+    always chose the day-learn card; comparing ``due_info`` puts the card that
+    is due *sooner in time* first."""
+    intraday_now = 1_700_000_000
+    backend = FakeBackend(
+        query_to_ids={"is:learn is:due": [1, 2]},
+        card_due_map={
+            # day-learn card: day index 40, i.e. 40 days after collection creation
+            1: {"id": 1, "due": 40, "due_info": {"kind": "learn_day_index", "raw": 40,
+                                                 "day_index": 40,
+                                                 "epoch_secs": intraday_now - 3600}},
+            # intraday card due right now
+            2: {"id": 2, "due": intraday_now, "due_info": {"kind": "learn_epoch_secs",
+                                                           "raw": intraday_now,
+                                                           "epoch_secs": intraday_now}},
+        },
+    )
+
+    card_id, kind = pick_next_due_card_id(backend)
+
+    # Both have an epoch; the earlier epoch wins — regardless of raw ``due`` size.
+    assert (card_id, kind) == (1, "learn_due")
+
+    # Without an epoch for the day-learn card (AnkiConnect cannot compute one),
+    # the intraday card — the only one with a known time — still comes first
+    # instead of losing to a small raw day index.
+    backend.card_due_map[1] = {"id": 1, "due": 40,
+                               "due_info": {"kind": "learn_day_index", "raw": 40,
+                                            "day_index": 40}}
+    assert pick_next_due_card_id(backend) == (2, "learn_due")

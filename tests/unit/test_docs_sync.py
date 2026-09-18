@@ -109,3 +109,31 @@ def test_docs_do_not_call_the_tui_as_if_it_were_json() -> None:
         text = (ROOT / doc).read_text(encoding="utf-8")
         assert not re.search(r"--format\s+json[^\n]*\bbrowse\b", text), doc
         assert not re.search(r"\bbrowse\b[^\n]*--format\s+json", text), doc
+
+
+# --- #30: the documented object shapes are the model's fields --------------------------
+
+
+def test_skill_card_shape_table_names_only_real_card_fields() -> None:
+    from anki_cli.models.entities import Card, DueInfo
+
+    text = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    assert "### Object Shapes" in text
+    section = text.split("### Object Shapes", 1)[1].split("## Command Reference", 1)[0]
+    card_table = section.split("**Card**", 1)[1].split("`due_info` tells you", 1)[0]
+
+    documented = {
+        key.strip("` ")
+        for row in re.findall(r"^\| ([^|]+) \|", card_table, flags=re.MULTILINE)
+        for key in row.split(",")
+        if key.strip("` ") and key.strip() != "Key"
+    }
+    known = set(Card.model_fields) | {"field_names", "data_parsed", "left_info"}
+    unknown = documented - known
+    assert not unknown, f"SKILL.md documents card keys the model does not define: {unknown}"
+
+    due_table = section.split("`due_info` tells you", 1)[1].split("**Note**", 1)[0]
+    due_kinds = set(re.findall(r"^\| `(\w+)` \|", due_table, flags=re.MULTILINE)) - {"kind"}
+    from typing import get_args
+
+    assert due_kinds == set(get_args(DueInfo.model_fields["kind"].annotation))

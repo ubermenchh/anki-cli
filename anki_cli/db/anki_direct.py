@@ -19,6 +19,9 @@ from fsrs import Card as FSRSCard
 from fsrs import Rating, ReviewLog, Scheduler, State
 from fsrs.scheduler import LOWER_BOUNDS_PARAMETERS, UPPER_BOUNDS_PARAMETERS
 
+from anki_cli.core.due import LEARN_DUE_EPOCH_THRESHOLD as _LEARN_DUE_EPOCH_THRESHOLD
+from anki_cli.core.due import decode_due, decode_left
+from anki_cli.core.due import is_intraday_learn_due as _is_intraday_learn_due
 from anki_cli.core.search import (
     SearchContext,
     compile_card_query,
@@ -53,12 +56,10 @@ from anki_cli.proto.anki.notetypes import (
     NotetypeTemplateConfig,
 )
 
-# Anki stores two different units in cards.due for learning cards: intraday
-# learning (queue 1) holds a unix epoch in seconds, day-learn (queue 3) holds a
-# day index relative to col.crt. rslib tells them apart with this threshold
-# (Card::restore_queue_from_type); any epoch after 2001-09-09 exceeds it and
-# no plausible day index ever will.
-LEARN_DUE_EPOCH_THRESHOLD = 1_000_000_000
+# ``cards.due`` decoding lives in core/due.py so both backends produce the same
+# ``due_info`` (#30); re-exported here because callers and tests import from
+# this module.
+LEARN_DUE_EPOCH_THRESHOLD = _LEARN_DUE_EPOCH_THRESHOLD
 
 
 class _SchedulerStepKwargs(TypedDict, total=False):
@@ -73,8 +74,7 @@ class _SchedulerStepKwargs(TypedDict, total=False):
     relearning_steps: list[timedelta]
 
 
-def is_intraday_learn_due(due: int) -> bool:
-    return due > LEARN_DUE_EPOCH_THRESHOLD
+is_intraday_learn_due = _is_intraday_learn_due
 
 
 # A card parked in a filtered deck keeps its real due in ``odue`` while ``due``
@@ -3939,48 +3939,10 @@ class AnkiDirectReadStore:
         due_raw: int,
         timing: SchedTiming | None,
     ) -> dict[str, JSONValue]:
-        if card_type == 0:
-            return {"kind": "new_position", "raw": due_raw, "position": due_raw}
-
-        if card_type in (1, 3):
-            if is_intraday_learn_due(due_raw):
-                return {"kind": "learn_epoch_secs", "raw": due_raw, "epoch_secs": due_raw}
-            # Day-learn (queue 3): a learning step of >= 1 day stores a day index.
-            out_learn: dict[str, JSONValue] = {
-                "kind": "learn_day_index",
-                "raw": due_raw,
-                "day_index": due_raw,
-            }
-            if timing is not None:
-                out_learn["epoch_secs"] = timing.day_start_epoch(due_raw)
-                out_learn["days_from_today"] = due_raw - timing.days_elapsed
-            return out_learn
-
-        if card_type == 2:
-            out: dict[str, JSONValue] = {
-                "kind": "review_day_index",
-                "raw": due_raw,
-                "day_index": due_raw,
-            }
-            if timing is not None:
-                out["epoch_secs"] = timing.day_start_epoch(due_raw)
-                # Relative day count for display; epoch_secs is the *start* of the
-                # due scheduling day, so flooring (epoch - now) would be off by one.
-                out["days_from_today"] = due_raw - timing.days_elapsed
-            return out
-
-        return {"kind": "raw", "raw": due_raw, "queue": queue, "type": card_type}
-
+        return decode_due(card_type=card_type, queue=queue, due_raw=due_raw, timing=timing)
 
     def _decode_left(self, left_raw: int) -> dict[str, int]:
-        if left_raw < 0:
-            return {"raw": left_raw}
-        return {
-            "raw": left_raw,
-            "today_remaining": left_raw // 1000,
-            "until_graduation": left_raw % 1000,
-        }
-
+        return decode_left(left_raw)
 
     def _parse_card_data(self, raw: str) -> JSONValue:
         stripped = raw.strip()

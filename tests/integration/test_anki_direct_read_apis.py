@@ -7,6 +7,7 @@ import pytest
 
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.models.entities import Deck, Notetype
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
 from anki_cli.proto.anki.decks import (
     DeckCommon,
@@ -291,6 +292,8 @@ def test_get_decks_returns_normal_filtered_and_config_data(tmp_path: Path) -> No
     )
 
     decks = store.get_decks()
+    for deck in decks:
+        Deck.model_validate(deck)  # canonical shape (#30)
     by_name = {str(item["name"]): item for item in decks}
 
     assert [str(item["name"]) for item in decks] == ["Default", "Filtered", "OrphanConfig"]
@@ -463,6 +466,7 @@ def test_get_notetype_returns_detailed_payload(tmp_path: Path) -> None:
     _insert_template(db_path, ntid=10, ord_=0, name="Card 1", qfmt="{{Front}}", afmt="{{Back}}")
 
     out = store.get_notetype("Basic")
+    Notetype.model_validate(out)  # the canonical shape AnkiConnect normalises to (#30)
     assert out["id"] == 10
     assert out["name"] == "Basic"
     assert out["kind"] == "normal"

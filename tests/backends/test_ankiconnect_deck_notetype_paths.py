@@ -35,7 +35,11 @@ def test_get_decks_sorted_and_coerced(
 
     out = backend.get_decks()
 
-    assert out == [{"id": 1, "name": "A"}, {"id": 2, "name": "b"}]
+    # AnkiConnect cannot tell normal from filtered; the canonical shape says so.
+    assert out == [
+        {"id": 1, "name": "A", "kind": "unknown"},
+        {"id": 2, "name": "b", "kind": "unknown"},
+    ]
     assert calls == [("deckNamesAndIds", {})]
 
 
@@ -65,6 +69,7 @@ def test_get_deck_success(
     assert out == {
         "id": 7,
         "name": "Default",
+        "kind": "unknown",
         "due_counts": {"new": 1, "learn": 2, "review": 3, "total": 6},
     }
 
@@ -265,8 +270,8 @@ def test_get_notetypes_success_and_sorting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_invoke(action: str, **params: Any) -> Any:
-        if action == "modelNames":
-            return ["cloze", "Basic"]
+        if action == "modelNamesAndIds":
+            return {"cloze": 200, "Basic": 100}
         if action == "modelFieldNames" and params["modelName"] == "Basic":
             return ["Front", "Back"]
         if action == "modelFieldNames" and params["modelName"] == "cloze":
@@ -283,6 +288,7 @@ def test_get_notetypes_success_and_sorting(
 
     assert out == [
         {
+            "id": 100,
             "name": "Basic",
             "field_count": 2,
             "template_count": 2,
@@ -290,6 +296,7 @@ def test_get_notetypes_success_and_sorting(
             "templates": ["card 1", "Card 2"],
         },
         {
+            "id": 200,
             "name": "cloze",
             "field_count": 1,
             "template_count": 1,
@@ -299,13 +306,13 @@ def test_get_notetypes_success_and_sorting(
     ]
 
 
-def test_get_notetypes_requires_model_names_list(
+def test_get_notetypes_requires_model_map(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(backend, "_invoke", lambda action, **params: {"bad": True})
+    monkeypatch.setattr(backend, "_invoke", lambda action, **params: ["bad"])
 
-    with pytest.raises(AnkiConnectProtocolError, match="modelNames must return a list"):
+    with pytest.raises(AnkiConnectProtocolError, match="modelNamesAndIds must be an object"):
         backend.get_notetypes()
 
 
@@ -320,16 +327,23 @@ def test_get_notetype_cloze_and_styling_fallback(
             return {"Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}"}}
         if action == "modelStyling":
             raise AnkiConnectAPIError("modelStyling", "unsupported")
+        if action == "modelNamesAndIds":
+            return {"Cloze": 55}
         raise AssertionError(f"unexpected action={action}")
 
     monkeypatch.setattr(backend, "_invoke", fake_invoke)
 
     out = backend.get_notetype("Cloze")
 
+    assert out["id"] == 55
     assert out["name"] == "Cloze"
     assert out["fields"] == ["Text"]
     assert out["kind"] == "cloze"
     assert out["styling"] == {}
+    # Templates carry the direct backend's ``ord`` (insertion order on AnkiConnect).
+    assert out["templates"] == {
+        "Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}", "ord": 0}
+    }
 
 
 def test_get_notetype_non_dict_templates_and_styling_dict(
@@ -343,6 +357,8 @@ def test_get_notetype_non_dict_templates_and_styling_dict(
             return ["not-a-dict"]
         if action == "modelStyling":
             return {"css": ".card {}"}
+        if action == "modelNamesAndIds":
+            raise AnkiConnectAPIError("modelNamesAndIds", "unsupported")
         raise AssertionError(f"unexpected action={action}")
 
     monkeypatch.setattr(backend, "_invoke", fake_invoke)
@@ -352,6 +368,7 @@ def test_get_notetype_non_dict_templates_and_styling_dict(
     assert out["templates"] == {}
     assert out["kind"] == "normal"
     assert out["styling"] == {"css": ".card {}"}
+    assert out["id"] is None  # id lookup failed; the rest still works
 
 
 @pytest.mark.parametrize(
@@ -533,13 +550,18 @@ def test_note_and_card_read_delete_wrappers(
             return [4, 2]
         if action == "notesInfo":
             if params["notes"] == [1]:
-                return [{"id": 1, "fields": {"Front": {"value": "Q"}}}]
+                return [{"noteId": 1, "modelName": "Basic", "tags": ["t"], "mod": 5,
+                         "fields": {"Back": {"value": "A", "order": 1},
+                                    "Front": {"value": "Q", "order": 0}}}]
             return []
         if action == "findCards":
             return [9]
         if action == "cardsInfo":
             if params["cards"] == [7]:
-                return [{"cardId": 7}]
+                return [{"cardId": 7, "note": 1, "deckName": "D", "modelName": "Basic",
+                         "type": 2, "queue": 2, "due": 40, "interval": 3, "factor": 2500,
+                         "reps": 4, "lapses": 0, "left": 0, "ord": 0,
+                         "fields": {"Front": {"value": "Q", "order": 0}}}]
             return []
         return None
 
@@ -547,12 +569,24 @@ def test_note_and_card_read_delete_wrappers(
 
     assert backend.delete_notes([2, 1, 2]) == {"deleted": 2, "note_ids": [2, 1]}
     assert backend.find_notes("tag:x") == [4, 2]
-    assert backend.get_note(1) == {"id": 1, "fields": {"Front": {"value": "Q"}}}
+    note = backend.get_note(1)
+    # Canonical keys added; AnkiConnect's own kept.
+    assert note["id"] == 1 and note["noteId"] == 1
+    assert note["notetype_name"] == "Basic" and note["modelName"] == "Basic"
+    assert note["fields"] == ["Q", "A"]  # notetype order, by ``order``
+    assert note["field_names"] == ["Front", "Back"]
+    assert note["tags"] == ["t"] and note["mod"] == 5
     with pytest.raises(AnkiConnectProtocolError, match="notesInfo returned no rows"):
         backend.get_note(999)
 
     assert backend.find_cards("deck:Default") == [9]
-    assert backend.get_card(7) == {"cardId": 7}
+    card = backend.get_card(7)
+    assert card["cardId"] == 7 and card["note"] == 1
+    assert card["notetype_name"] == "Basic" and card["modelName"] == "Basic"
+    assert card["fields"] == ["Q"] and card["field_names"] == ["Front"]
+    assert card["due_info"] == {"kind": "review_day_index", "raw": 40, "day_index": 40}
+    assert card["left_info"] == {"raw": 0, "today_remaining": 0, "until_graduation": 0}
+    assert card["tags"] == []  # cardsInfo has no tags; canonical key still present
     with pytest.raises(AnkiConnectProtocolError, match="cardsInfo returned no rows"):
         backend.get_card(999)
 
