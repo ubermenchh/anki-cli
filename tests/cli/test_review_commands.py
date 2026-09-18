@@ -298,6 +298,10 @@ def test_review_preview_unsupported_backend_exit_7(monkeypatch) -> None:
 
     assert result.exit_code == 7
     assert payload["error"]["code"] == "BACKEND_UNAVAILABLE"
+    # The message names the command the user typed, not the Protocol method.
+    assert payload["error"]["message"] == (
+        "review:preview is not supported by the ankiconnect backend. Use --backend direct."
+    )
 
 
 def test_review_preview_operation_error_exit_1(monkeypatch) -> None:

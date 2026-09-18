@@ -53,7 +53,9 @@ def test_ankiconnect_raises_backend_unsupported(method: str) -> None:
     assert isinstance(err, NotImplementedError)  # -> BACKEND_UNAVAILABLE at the CLI
     assert err.operation == method
     assert err.backend == "ankiconnect"
-    assert "--backend direct" in str(err)
+    assert str(err) == (
+        f"{method} is not supported by the ankiconnect backend. Use --backend direct."
+    )
 
 
 def test_no_consumer_probes_the_backend_by_name_or_store() -> None:

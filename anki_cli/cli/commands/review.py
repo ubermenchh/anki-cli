@@ -119,9 +119,12 @@ def review_show_cmd(cmd: CommandContext, deck: str | None) -> JSONValue:
 @click.option("--id", "card_id", required=True, type=int, help="Card ID")
 def review_preview_cmd(cmd: CommandContext, card_id: int) -> JSONValue:
     """Preview scheduling outcome per rating."""
+    backend = cmd.backend
+    if not _introspects(backend):
+        # Name the command, not the Protocol method, in the user's error.
+        raise BackendUnsupportedError("review:preview", backend.name, "Use --backend direct.")
     with cmd.errors(details={"id": card_id}):
-        # BackendUnsupportedError (a NotImplementedError) -> BACKEND_UNAVAILABLE.
-        items = cmd.backend.preview_ratings(int(card_id))
+        items = backend.preview_ratings(int(card_id))
     return {"card_id": card_id, "items": items}
 
 

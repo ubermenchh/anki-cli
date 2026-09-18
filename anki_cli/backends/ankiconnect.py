@@ -795,9 +795,7 @@ class AnkiConnectBackend(AnkiBackend):
     # ``supports_scheduler_introspection`` so callers branch on the capability.
 
     def _unsupported(self, operation: str) -> BackendUnsupportedError:
-        return BackendUnsupportedError(
-            operation, self.name, hint="Use --backend direct for this command."
-        )
+        return BackendUnsupportedError(operation, self.name, hint="Use --backend direct.")
 
     def get_next_due_card(self, deck: str | None = None) -> dict[str, JSONValue]:
         raise self._unsupported("get_next_due_card")
