@@ -10,7 +10,6 @@ falls back to the library defaults.
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -20,8 +19,8 @@ import pytest
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
-from anki_cli.proto.anki.decks import DeckKindContainer, DeckNormal
-from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
+from tests.anki_schema import connect
+from tests.conftest import Collection, new_collection, normal_deck_kind
 
 NOW_SEC = 1_700_000_000
 # crt is 0 and col.conf is empty, so timing is v1: today is a plain day index.
@@ -29,73 +28,16 @@ TODAY = NOW_SEC // 86400
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            nid INTEGER NOT NULL,
-            did INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            mod INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            type INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL,
-            ivl INTEGER NOT NULL,
-            factor INTEGER NOT NULL,
-            reps INTEGER NOT NULL,
-            lapses INTEGER NOT NULL,
-            left INTEGER NOT NULL,
-            odue INTEGER NOT NULL,
-            odid INTEGER NOT NULL,
-            flags INTEGER NOT NULL,
-            data TEXT NOT NULL
-        );
-
-        CREATE TABLE decks (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            kind BLOB NOT NULL
-        );
-
-        CREATE TABLE deck_config (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            config BLOB NOT NULL
-        );
-
-        CREATE TABLE revlog (
-            id INTEGER PRIMARY KEY,
-            cid INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            ease INTEGER NOT NULL,
-            ivl INTEGER NOT NULL,
-            lastIvl INTEGER NOT NULL,
-            factor INTEGER NOT NULL,
-            time INTEGER NOT NULL,
-            type INTEGER NOT NULL
-        );
-        """)
-    conn.executescript(COL_TABLE_SQL)
-    insert_col_row(conn, crt=0)
-    conn.commit()
-    conn.close()
-
-    return AnkiDirectReadStore(db_path), db_path
+    col = new_collection(tmp_path / "collection.anki2", seed=False)
+    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
+    col.insert_note(id=1000, fields=["Q", "A"])
+    return col.store(writable=False), col.db_path
 
 
 def _insert_deck(db_path: Path, *, did: int = 1, config_id: int = 1) -> None:
-    kind = DeckKindContainer(normal=DeckNormal(config_id=config_id))
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO decks (id, name, kind) VALUES (?, ?, ?)",
-        (did, "Default", bytes(kind)),
+    Collection(db_path).insert_deck(
+        id=did, name="Default", kind=normal_deck_kind(config_id=config_id)
     )
-    conn.commit()
-    conn.close()
 
 
 def _insert_deck_config(
@@ -105,18 +47,14 @@ def _insert_deck_config(
     learn_steps: list[float],
     relearn_steps: list[float],
 ) -> None:
+    # Exactly the preset these tests always used: retention + steps, nothing else
+    # (so the builder's other defaults do not creep into the scheduling under test).
     cfg = DeckConfigConfig(
         desired_retention=0.9,
         learn_steps=learn_steps,
         relearn_steps=relearn_steps,
     )
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO deck_config (id, name, config) VALUES (?, ?, ?)",
-        (config_id, "Default", bytes(cfg)),
-    )
-    conn.commit()
-    conn.close()
+    Collection(db_path).insert_deck_config(id=config_id, name="Default", config=bytes(cfg))
 
 
 def _insert_card(
@@ -131,43 +69,14 @@ def _insert_card(
     mod: int = 111,
     left: int = 0,
 ) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO cards (
-            id, nid, did, ord, mod, usn, type, queue, due, ivl, factor, reps,
-            lapses, left, odue, odid, flags, data
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            card_id,
-            1000,  # nid
-            1,  # did
-            0,  # ord
-            mod,
-            0,  # usn
-            card_type,
-            queue,
-            due,
-            ivl,
-            factor,
-            1,  # reps
-            0,  # lapses
-            left,
-            0,  # odue
-            0,  # odid
-            0,  # flags
-            "{}",
-        ),
+    Collection(db_path).insert_card(
+        id=card_id, nid=1000, did=1, mod=mod, type=card_type, queue=queue, due=due, ivl=ivl,
+        factor=factor, reps=1, left=left,
     )
-    conn.commit()
-    conn.close()
 
 
 def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
     conn.close()
     assert row is not None

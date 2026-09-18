@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Any, cast
 
@@ -11,12 +10,11 @@ import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
 from anki_cli.proto.anki.decks import (
     DeckCommon,
-    DeckFiltered,
-    DeckFilteredSearchTerm,
     DeckKindContainer,
     DeckNormal,
 )
-from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
+from tests.anki_schema import connect
+from tests.conftest import COL_BASE_MOD_MS, Collection, filtered_deck_kind, new_collection
 
 
 def _make_store(
@@ -24,55 +22,11 @@ def _make_store(
     *,
     include_default: bool = True,
 ) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE decks (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            mtime_secs INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            common BLOB NOT NULL,
-            kind BLOB NOT NULL
-        );
-
-        CREATE TABLE notes (
-            id INTEGER PRIMARY KEY
-        );
-
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            nid INTEGER NOT NULL,
-            did INTEGER NOT NULL,
-            mod INTEGER NOT NULL DEFAULT 0,
-            usn INTEGER NOT NULL DEFAULT 0,
-            type INTEGER NOT NULL DEFAULT 0,
-            queue INTEGER NOT NULL DEFAULT 0,
-            due INTEGER NOT NULL DEFAULT 0,
-            odue INTEGER NOT NULL DEFAULT 0,
-            odid INTEGER NOT NULL DEFAULT 0
-        );
-
-        CREATE TABLE graves (
-            oid INTEGER NOT NULL,
-            type INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            PRIMARY KEY (oid, type)
-        );
-        """
-    )
-    conn.executescript(COL_TABLE_SQL)
-    insert_col_row(conn, crt=0)
-    conn.commit()
-    conn.close()
-
+    col = new_collection(tmp_path / "collection.anki2", seed=False)
+    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
     if include_default:
-        _insert_deck(db_path, deck_id=1, name="Default")
-
-    return AnkiDirectReadStore(db_path), db_path
+        _insert_deck(col.db_path, deck_id=1, name="Default")
+    return col.store(writable=False), col.db_path
 
 
 def _common_blob() -> bytes:
@@ -84,14 +38,7 @@ def _kind_blob(*, config_id: int = 1, description: str = "") -> bytes:
 
 
 def _filtered_kind_blob() -> bytes:
-    return bytes(
-        DeckKindContainer(
-            filtered=DeckFiltered(
-                reschedule=True,
-                search_terms=[DeckFilteredSearchTerm(search="is:due", limit=100, order=0)],
-            )
-        )
-    )
+    return filtered_deck_kind(reschedule=True, searches=[("is:due", 100)])
 
 
 def _insert_deck(
@@ -110,23 +57,18 @@ def _insert_deck(
         if filtered
         else _kind_blob(config_id=config_id, description=description)
     )
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO decks (id, name, mtime_secs, usn, common, kind)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (deck_id, name, mtime_secs, usn, _common_blob(), kind),
+    Collection(db_path).insert_deck(
+        id=deck_id, name=name, mtime_secs=mtime_secs, usn=usn, kind=kind
     )
-    conn.commit()
-    conn.close()
+
+
+def _insert_broken_deck(db_path: Path, *, deck_id: int, name: str) -> None:
+    """A deck whose ``kind`` blob is empty — decodes to neither normal nor filtered."""
+    Collection(db_path).insert_deck(id=deck_id, name=name, kind=b"")
 
 
 def _insert_note(db_path: Path, *, note_id: int) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("INSERT INTO notes (id) VALUES (?)", (note_id,))
-    conn.commit()
-    conn.close()
+    Collection(db_path).insert_note(id=note_id, fields=["Q", "A"])
 
 
 def _insert_card(
@@ -141,21 +83,14 @@ def _insert_card(
     odid: int = 0,
     odue: int = 0,
 ) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO cards (id, nid, did, type, queue, due, odid, odue)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (card_id, note_id, deck_id, type_, queue, due, odid, odue),
+    Collection(db_path).insert_card(
+        id=card_id, nid=note_id, did=deck_id, type=type_, queue=queue, due=due, odid=odid,
+        odue=odue, mod=0,
     )
-    conn.commit()
-    conn.close()
 
 
 def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute(
         "SELECT id, nid, did, mod, usn, type, queue, due, odid, odue FROM cards WHERE id = ?",
         (card_id,),
@@ -166,8 +101,7 @@ def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
 
 
 def _deck_row(db_path: Path, deck_id: int) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute(
         """
         SELECT id, name, mtime_secs, usn, common, kind
@@ -182,28 +116,28 @@ def _deck_row(db_path: Path, deck_id: int) -> dict[str, Any]:
 
 
 def _deck_names(db_path: Path) -> list[str]:
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     rows = conn.execute("SELECT name FROM decks ORDER BY id").fetchall()
     conn.close()
     return [str(row[0]) for row in rows]
 
 
 def _note_ids(db_path: Path) -> list[int]:
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     rows = conn.execute("SELECT id FROM notes ORDER BY id").fetchall()
     conn.close()
     return [int(row[0]) for row in rows]
 
 
 def _card_ids(db_path: Path) -> list[int]:
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     rows = conn.execute("SELECT id FROM cards ORDER BY id").fetchall()
     conn.close()
     return [int(row[0]) for row in rows]
 
 
 def _grave_rows(db_path: Path) -> list[tuple[int, int, int]]:
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     rows = conn.execute("SELECT oid, type, usn FROM graves ORDER BY oid, type").fetchall()
     conn.close()
     return [(int(oid), int(gtype), int(usn)) for (oid, gtype, usn) in rows]
@@ -234,10 +168,9 @@ def test_write_deck_creates_from_template_and_applies_overrides(
     assert result["deck"] == "New Deck"
     assert result["created"] is True
     deck_id = int(cast(int | str, result["id"]))
-    row = _deck_row(db_path, deck_id)
+    row = Collection(db_path).assert_synced("decks", deck_id)
     assert row["name"] == "New Deck"
     assert row["mtime_secs"] == 1_700_000_000
-    assert row["usn"] == -1
 
     kind_name, config_id, description = _kind_info(bytes(row["kind"]))
     assert (kind_name, config_id, description) == ("normal", 5, "hello")
@@ -255,10 +188,9 @@ def test_write_deck_updates_existing_by_name(
     result = store.write_deck(name="Work", config_id=7, description="updated")
     assert result == {"deck": "Work", "id": 2, "created": False, "updated": True}
 
-    row = _deck_row(db_path, 2)
+    row = Collection(db_path).assert_synced("decks", 2)
     assert row["name"] == "Work"
     assert row["mtime_secs"] == 1_700_000_000
-    assert row["usn"] == -1
 
     kind_name, config_id, description = _kind_info(bytes(row["kind"]))
     assert (kind_name, config_id, description) == ("normal", 7, "updated")
@@ -328,9 +260,9 @@ def test_rename_deck_subtree_success(
         "Renamed::Child::Leaf",
         "Other",
     ]
-    assert _deck_row(db_path, 10)["usn"] == -1
-    assert _deck_row(db_path, 11)["usn"] == -1
-    assert _deck_row(db_path, 12)["usn"] == -1
+    col = Collection(db_path)
+    for did in (10, 11, 12):
+        col.assert_synced("decks", did)
 
 
 def test_rename_deck_conflict_raises_value_error(
@@ -435,6 +367,7 @@ def test_delete_deck_subtree_deletes_cards_conditional_notes_and_graves(
         (10, 2, -1),
         (11, 2, -1),
     }
+    assert Collection(db_path).col()["mod"] > COL_BASE_MOD_MS  # the graves must sync
 
 
 def test_delete_deck_refuses_default_deck(
@@ -458,13 +391,7 @@ def test_delete_deck_refuses_unknown_kind_and_leaves_collection_untouched(
 ) -> None:
     """A deck whose kind blob decodes to neither normal nor filtered must fail closed."""
     store, db_path = _make_store(tmp_path)
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO decks (id, name, mtime_secs, usn, common, kind) VALUES (?, ?, 1, 0, ?, ?)",
-        (10, "Broken", _common_blob(), b""),
-    )
-    conn.commit()
-    conn.close()
+    _insert_broken_deck(db_path, deck_id=10, name="Broken")
     _insert_note(db_path, note_id=100)
     _insert_card(db_path, card_id=1000, note_id=100, deck_id=10)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
@@ -476,6 +403,7 @@ def test_delete_deck_refuses_unknown_kind_and_leaves_collection_untouched(
     assert _card_ids(db_path) == [1000]
     assert _note_ids(db_path) == [100]
     assert _grave_rows(db_path) == []
+    Collection(db_path).assert_untouched()
 
 
 def test_delete_deck_with_malformed_child_rolls_back_the_whole_subtree(
@@ -485,13 +413,7 @@ def test_delete_deck_with_malformed_child_rolls_back_the_whole_subtree(
     """A valid parent plus a malformed child: nothing in the subtree may be deleted."""
     store, db_path = _make_store(tmp_path)
     _insert_deck(db_path, deck_id=10, name="Parent")
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO decks (id, name, mtime_secs, usn, common, kind) VALUES (?, ?, 1, 0, ?, ?)",
-        (11, "Parent::Broken", _common_blob(), b""),
-    )
-    conn.commit()
-    conn.close()
+    _insert_broken_deck(db_path, deck_id=11, name="Parent::Broken")
     _insert_note(db_path, note_id=100)
     _insert_card(db_path, card_id=1000, note_id=100, deck_id=10)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)

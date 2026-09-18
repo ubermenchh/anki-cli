@@ -1,8 +1,10 @@
 """Shared scaffolding for direct-backend integration tests.
 
-The per-file ``_make_store`` builders still own most of their schema (see #37 for
-the plan to consolidate them); this module provides the pieces every write path
-touches so they can't drift between files.
+Collections are built with ``tests.conftest.Collection`` (#37). This module
+keeps the col.mod/col.scm oracles (``assert_col_modified`` & co.), the
+Anki-written checksum literals, and ``COL_TABLE_SQL``/``insert_col_row`` for
+the one test (``test_anki_direct_schema_guard``) that must build a
+deliberately *wrong* schema and so cannot use the real DDL.
 """
 
 from __future__ import annotations
@@ -12,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+from tests.conftest import COL_BASE_MOD_MS, COL_BASE_SCM_MS
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -43,11 +47,6 @@ CREATE TABLE col (
 );
 """
 
-# Baseline timestamps chosen so tests can assert "moved" without depending on
-# the wall clock: negative, so no real or monkeypatched ``time.time()`` (even
-# ``lambda: 0``) can collide with them.
-COL_BASE_MOD_MS = -1
-COL_BASE_SCM_MS = -2
 
 # Anki-written ``notes.csum`` values. Never derive these from the CLI's own
 # checksum — they are the oracle. ``CSUM_TEST``/``CSUM_KYOU`` are rslib's own

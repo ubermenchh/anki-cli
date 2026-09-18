@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-from contextlib import contextmanager
 from typing import Any
 
 from click.testing import CliRunner
@@ -10,41 +8,10 @@ import anki_cli.backends.factory as factory_mod
 from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.cli.commands.cards import card_cmd, card_revlog_cmd
 from anki_cli.cli.dispatcher import get_command
-
-
-def _base_obj(**overrides: Any) -> dict[str, Any]:
-    base: dict[str, Any] = {
-        "format": "json",
-        "backend": "direct",
-        "collection_path": None,
-        "no_color": True,
-        "copy": False,
-    }
-    base.update(overrides)
-    return base
-
-
-def _success_payload(result) -> dict[str, Any]:
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["ok"] is True
-    return payload
-
-
-def _error_payload(result) -> dict[str, Any]:
-    assert result.exit_code != 0
-    raw = (getattr(result, "stderr", "") or result.output).strip()
-    payload = json.loads(raw)
-    assert payload["ok"] is False
-    return payload
-
-
-def _patch_session(monkeypatch, backend: Any) -> None:
-    @contextmanager
-    def fake_session(obj: dict[str, Any]):
-        yield backend
-
-    monkeypatch.setattr(factory_mod, "backend_session_from_context", fake_session)
+from tests.cli.conftest import base_obj as _base_obj
+from tests.cli.conftest import error_payload as _error_payload
+from tests.cli.conftest import patch_session as _patch_session
+from tests.cli.conftest import success_payload as _success_payload
 
 
 def test_card_cmd_success_without_note_id_and_without_revlog(monkeypatch) -> None:

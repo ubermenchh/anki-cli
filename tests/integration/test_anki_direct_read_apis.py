@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -21,74 +20,13 @@ from anki_cli.proto.anki.notetypes import (
     NotetypeConfigCardRequirement,
     NotetypeConfigCardRequirementKind,
     NotetypeConfigKind,
-    NotetypeFieldConfig,
-    NotetypeTemplateConfig,
 )
+from tests.conftest import Collection, new_collection
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE col (
-            crt INTEGER NOT NULL
-        );
-
-        CREATE TABLE deck_config (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            config BLOB NOT NULL
-        );
-
-        CREATE TABLE decks (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            common BLOB NOT NULL,
-            kind BLOB NOT NULL
-        );
-
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            did INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL
-        );
-
-        CREATE TABLE notetypes (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            config BLOB NOT NULL
-        );
-
-        CREATE TABLE fields (
-            ntid INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            config BLOB NOT NULL
-        );
-
-        CREATE TABLE templates (
-            ntid INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            config BLOB NOT NULL
-        );
-
-        CREATE TABLE notes (
-            id INTEGER PRIMARY KEY,
-            mid INTEGER NOT NULL,
-            flds TEXT NOT NULL
-        );
-        """
-    )
-    conn.execute("INSERT INTO col (crt) VALUES (0)")
-    conn.commit()
-    conn.close()
-
-    return AnkiDirectReadStore(db_path), db_path
+    col = new_collection(tmp_path / "collection.anki2", seed=False)
+    return col.store(writable=False), col.db_path
 
 
 def _insert_deck_config(
@@ -100,19 +38,19 @@ def _insert_deck_config(
     reviews_per_day: int,
     desired_retention: float,
 ) -> None:
+    # Only these three set, as the read tests always had (no steps).
     cfg = DeckConfigConfig(
         new_per_day=new_per_day,
         reviews_per_day=reviews_per_day,
         desired_retention=desired_retention,
     )
+    Collection(db_path).insert_deck_config(id=config_id, name=name, config=bytes(cfg))
 
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO deck_config (id, name, config) VALUES (?, ?, ?)",
-        (config_id, name, bytes(cfg)),
+
+def _common(stats: tuple[int, int, int]) -> bytes:
+    return bytes(
+        DeckCommon(new_studied=stats[0], review_studied=stats[1], learning_studied=stats[2])
     )
-    conn.commit()
-    conn.close()
 
 
 def _insert_deck_normal(
@@ -126,26 +64,15 @@ def _insert_deck_normal(
     review_limit: int | None = None,
     stats: tuple[int, int, int] = (0, 0, 0),
 ) -> None:
-    common = DeckCommon(
-        new_studied=stats[0],
-        review_studied=stats[1],
-        learning_studied=stats[2],
-    )
     normal = DeckNormal(
         config_id=config_id,
         description=description,
         new_limit=new_limit,
         review_limit=review_limit,
     )
-    kind = DeckKindContainer(normal=normal)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO decks (id, name, common, kind) VALUES (?, ?, ?, ?)",
-        (did, name, bytes(common), bytes(kind)),
+    Collection(db_path).insert_deck(
+        id=did, name=name, common=_common(stats), kind=bytes(DeckKindContainer(normal=normal))
     )
-    conn.commit()
-    conn.close()
 
 
 def _insert_deck_filtered(
@@ -157,36 +84,17 @@ def _insert_deck_filtered(
     searches: list[str],
     stats: tuple[int, int, int] = (0, 0, 0),
 ) -> None:
-    common = DeckCommon(
-        new_studied=stats[0],
-        review_studied=stats[1],
-        learning_studied=stats[2],
-    )
     filtered = DeckFiltered(
         reschedule=reschedule,
-        search_terms=[
-            DeckFilteredSearchTerm(search=s, limit=10) for s in searches
-        ],
+        search_terms=[DeckFilteredSearchTerm(search=s, limit=10) for s in searches],
     )
-    kind = DeckKindContainer(filtered=filtered)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO decks (id, name, common, kind) VALUES (?, ?, ?, ?)",
-        (did, name, bytes(common), bytes(kind)),
+    Collection(db_path).insert_deck(
+        id=did, name=name, common=_common(stats), kind=bytes(DeckKindContainer(filtered=filtered))
     )
-    conn.commit()
-    conn.close()
 
 
 def _insert_card(db_path: Path, *, cid: int, did: int, queue: int, due: int) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO cards (id, did, queue, due) VALUES (?, ?, ?, ?)",
-        (cid, did, queue, due),
-    )
-    conn.commit()
-    conn.close()
+    Collection(db_path).insert_card(id=cid, nid=1000, did=did, queue=queue, due=due)
 
 
 def _insert_notetype(
@@ -199,30 +107,15 @@ def _insert_notetype(
     css: str,
     reqs: list[NotetypeConfigCardRequirement],
 ) -> None:
-    cfg = NotetypeConfig(
-        kind=kind,
-        sort_field_idx=sort_field_idx,
-        css=css,
-        reqs=reqs,
+    cfg = NotetypeConfig(kind=kind, sort_field_idx=sort_field_idx, css=css, reqs=reqs)
+    # Fields and templates are placed individually by the tests.
+    Collection(db_path).insert_notetype(
+        id=ntid, name=name, fields=[], templates=[], config=bytes(cfg)
     )
-
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO notetypes (id, name, config) VALUES (?, ?, ?)",
-        (ntid, name, bytes(cfg)),
-    )
-    conn.commit()
-    conn.close()
 
 
 def _insert_field(db_path: Path, *, ntid: int, ord_: int, name: str) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO fields (ntid, ord, name, config) VALUES (?, ?, ?, ?)",
-        (ntid, ord_, name, bytes(NotetypeFieldConfig())),
-    )
-    conn.commit()
-    conn.close()
+    Collection(db_path).insert_field(ntid=ntid, ord=ord_, name=name)
 
 
 def _insert_template(
@@ -234,25 +127,11 @@ def _insert_template(
     qfmt: str,
     afmt: str,
 ) -> None:
-    cfg = NotetypeTemplateConfig(q_format=qfmt, a_format=afmt)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO templates (ntid, ord, name, config) VALUES (?, ?, ?, ?)",
-        (ntid, ord_, name, bytes(cfg)),
-    )
-    conn.commit()
-    conn.close()
+    Collection(db_path).insert_template(ntid=ntid, ord=ord_, name=name, front=qfmt, back=afmt)
 
 
 def _insert_note(db_path: Path, *, nid: int, mid: int, flds: str) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO notes (id, mid, flds) VALUES (?, ?, ?)",
-        (nid, mid, flds),
-    )
-    conn.commit()
-    conn.close()
+    Collection(db_path).insert_note(id=nid, mid=mid, fields=flds.split("\x1f"))
 
 
 def test_get_decks_returns_normal_filtered_and_config_data(tmp_path: Path) -> None:

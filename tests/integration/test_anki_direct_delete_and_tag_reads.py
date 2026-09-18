@@ -1,72 +1,32 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 from anki_cli.db.anki_direct import AnkiDirectReadStore
-from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
+from tests.conftest import COL_BASE_MOD_MS, Collection, new_collection
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE notes (
-            id INTEGER PRIMARY KEY,
-            tags TEXT NOT NULL
-        );
-
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY
-        );
-
-        CREATE TABLE graves (
-            oid INTEGER NOT NULL,
-            type INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            PRIMARY KEY (oid, type)
-        );
-        """
-    )
-    conn.executescript(COL_TABLE_SQL)
-    insert_col_row(conn, crt=0)
-    conn.commit()
-    conn.close()
-
-    return AnkiDirectReadStore(db_path), db_path
+    col = new_collection(tmp_path / "collection.anki2", seed=False)
+    return col.store(writable=False), col.db_path
 
 
 def _insert_note(db_path: Path, *, note_id: int, tags: str) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("INSERT INTO notes (id, tags) VALUES (?, ?)", (note_id, tags))
-    conn.commit()
-    conn.close()
+    Collection(db_path).insert_note(id=note_id, fields=["Q", "A"], tags=tags)
 
 
 def _insert_card(db_path: Path, *, card_id: int) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("INSERT INTO cards (id) VALUES (?)", (card_id,))
-    conn.commit()
-    conn.close()
+    Collection(db_path).insert_card(id=card_id, nid=1000)
 
 
 def _card_ids(db_path: Path) -> list[int]:
-    conn = sqlite3.connect(str(db_path))
-    rows = conn.execute("SELECT id FROM cards ORDER BY id").fetchall()
-    conn.close()
-    return [int(row[0]) for row in rows]
+    return Collection(db_path).ids("cards")
 
 
 def _grave_rows(db_path: Path) -> list[tuple[int, int, int]]:
-    conn = sqlite3.connect(str(db_path))
-    rows = conn.execute("SELECT oid, type, usn FROM graves ORDER BY oid, type").fetchall()
-    conn.close()
-    return [(int(oid), int(gtype), int(usn)) for (oid, gtype, usn) in rows]
+    return Collection(db_path).graves()
 
 
 def test_delete_card_non_positive_returns_deleted_false(tmp_path: Path) -> None:
@@ -92,6 +52,7 @@ def test_delete_card_missing_returns_deleted_false(
     assert store.delete_card(999) == {"card_id": 999, "deleted": False}
     assert _card_ids(db_path) == [10]
     assert _grave_rows(db_path) == []
+    Collection(db_path).assert_untouched()  # nothing to delete, nothing to sync
 
 
 def test_delete_card_existing_deletes_card_and_inserts_grave(
@@ -107,6 +68,7 @@ def test_delete_card_existing_deletes_card_and_inserts_grave(
     assert store.delete_card(10) == {"card_id": 10, "deleted": True}
     assert _card_ids(db_path) == [20]
     assert _grave_rows(db_path) == [(10, 0, -1)]
+    assert Collection(db_path).col()["mod"] > COL_BASE_MOD_MS  # sync notices the grave
 
 
 def test_delete_card_second_call_is_noop_and_grave_not_duplicated(

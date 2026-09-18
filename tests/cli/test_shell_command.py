@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import builtins
-import json
 import sys
 import types
 from typing import Any
@@ -10,26 +9,8 @@ from click.testing import CliRunner
 
 from anki_cli.cli.commands.shell import shell_cmd
 from anki_cli.cli.dispatcher import get_command
-
-
-def _base_obj(**overrides: Any) -> dict[str, Any]:
-    base: dict[str, Any] = {
-        "format": "json",
-        "backend": "direct",
-        "collection_path": None,
-        "no_color": True,
-        "copy": False,
-    }
-    base.update(overrides)
-    return base
-
-
-def _error_payload(result) -> dict[str, Any]:
-    assert result.exit_code != 0
-    raw = (getattr(result, "stderr", "") or result.output).strip()
-    payload = json.loads(raw)
-    assert payload["ok"] is False
-    return payload
+from tests.cli.conftest import base_obj as _base_obj
+from tests.cli.conftest import error_payload as _error_payload
 
 
 def test_shell_cmd_success_calls_run_repl(monkeypatch) -> None:
