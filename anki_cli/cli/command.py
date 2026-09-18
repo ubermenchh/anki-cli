@@ -9,6 +9,9 @@ envelope code, and the ``details`` it attaches (those are pinned by tests and
 differ command to command; a single global table would change behaviour, which
 this refactor must not).
 
+The session factory and formatter are resolved via their modules
+(``anki_cli.backends.factory``, ``anki_cli.cli.formatter``); tests patch there.
+
 Usage::
 
     @anki_command("deck", errors={LookupError: ("ENTITY_NOT_FOUND", 4)})
@@ -35,8 +38,10 @@ from typing import Any
 
 import click
 
+from anki_cli.backends import factory
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError
 from anki_cli.backends.factory import BackendFactoryError
+from anki_cli.cli import formatter as formatter_mod
 from anki_cli.cli.dispatcher import register_command
 from anki_cli.core.search import SearchParseError
 from anki_cli.models.output import JSONValue
@@ -58,48 +63,28 @@ class CommandExit(click.exceptions.Exit):
 class CommandContext:
     """Everything a command body needs, resolved lazily.
 
-    ``backend`` opens the session on first access — through the *command
-    module's* ``backend_session_from_context`` name so tests that monkeypatch
-    it on the module keep working — and closes it when the command finishes.
+    ``backend`` opens the session on first access and closes it when the
+    command finishes. Both the session factory and the formatter are looked up
+    through their modules at call time (``factory.backend_session_from_context``,
+    ``formatter_mod.formatter_from_ctx``), which is where tests patch them.
     """
 
-    def __init__(
-        self,
-        *,
-        name: str,
-        ctx: click.Context,
-        module_globals: dict[str, Any],
-        errors: ErrorMap,
-    ) -> None:
+    def __init__(self, *, name: str, ctx: click.Context, errors: ErrorMap) -> None:
         self.name = name
         self.ctx = ctx
         self._default_errors: ErrorMap = errors
         self.obj: dict[str, Any] = ctx.obj or {}
-        self._globals = module_globals
-        self.formatter = self._lookup("formatter_from_ctx")(ctx)
+        self.formatter = formatter_mod.formatter_from_ctx(ctx)
         self.warnings: list[str] = []
         self._stack = ExitStack()
         self._backend: Any = None
-
-    # -- lookups that honour per-module monkeypatching ---------------------------
-
-    def _lookup(self, name: str) -> Any:
-        if name in self._globals:
-            return self._globals[name]
-        if name == "formatter_from_ctx":
-            from anki_cli.cli.formatter import formatter_from_ctx
-
-            return formatter_from_ctx
-        from anki_cli.backends import factory
-
-        return getattr(factory, name)
 
     # -- backend session -------------------------------------------------------------
 
     @property
     def backend(self) -> Any:
         if self._backend is None:
-            session = self._lookup("backend_session_from_context")(self.obj)
+            session = factory.backend_session_from_context(self.obj)
             self._backend = self._stack.enter_context(session)
         return self._backend
 
@@ -179,52 +164,31 @@ class CommandContext:
         )
 
     @contextmanager
-    def errors(
-        self,
-        mapping: ErrorMap | None = None,
-        *,
-        details: Mapping[str, JSONValue]
-        | Callable[[BaseException], Mapping[str, JSONValue]]
-        | None = None,
-        message: Callable[[BaseException], str] | None = None,
-    ) -> Iterator[None]:
-        """Turn the exceptions in ``mapping`` (default: the command's own table)
-        into envelopes. ``details`` and ``message`` may be callables taking the
-        exception, for envelopes that depend on what was raised. Backend-
-        unavailable is always included."""
-        table = dict(self._default_errors)
-        if mapping:
-            table.update(mapping)
+    def errors(self, *, details: Mapping[str, JSONValue] | None = None) -> Iterator[None]:
+        """Turn the exceptions in the command's table into envelopes, attaching
+        ``details``. Backend-unavailable is always handled first. Anything not
+        in the table propagates to the entry-point mapper (#27)."""
+        table = self._default_errors
         try:
             yield
         except CommandExit:
             raise
         except Exception as exc:
+            # Backend-unavailable is decided *before* the table: the old
+            # handlers listed that clause first, and both of these types are
+            # RuntimeError subclasses, so a table row for RuntimeError (note:bulk)
+            # would otherwise capture them. A command may still override by
+            # naming the exact type.
+            if (
+                isinstance(exc, (BackendFactoryError, NotImplementedError))
+                and type(exc) not in table
+            ):
+                raise self.backend_unavailable(exc) from exc
             mapped = _mapped_by_mro(exc, table)
             if mapped is None:
-                if isinstance(exc, (BackendFactoryError, NotImplementedError)):
-                    raise self.backend_unavailable(exc) from exc
                 raise
-            raise self._raise_mapped(exc, mapped, details, message) from exc
-
-    def _raise_mapped(
-        self,
-        exc: BaseException,
-        mapped: tuple[str, int],
-        details: Mapping[str, JSONValue]
-        | Callable[[BaseException], Mapping[str, JSONValue]]
-        | None,
-        message: Callable[[BaseException], str] | None,
-    ) -> CommandExit:
-        code, exit_code = mapped
-        resolved = details(exc) if callable(details) else details
-        return self.fail(
-            code,
-            message(exc) if message else str(exc),
-            exit_code=exit_code,
-            details=resolved,
-        )
-
+            code, exit_code = mapped
+            raise self.fail(code, str(exc), exit_code=exit_code, details=details) from exc
 
 
 def _mapped_by_mro(exc: BaseException, table: ErrorMap) -> tuple[str, int] | None:
@@ -255,14 +219,10 @@ def anki_command(
     table: ErrorMap = dict(errors or {})
 
     def decorate(fn: Callable[..., Any]) -> click.Command:
-        module_globals: dict[str, Any] = getattr(fn, "__globals__", {})
-
         @functools.wraps(fn)
         @click.pass_context
         def runner(ctx: click.Context, /, **kwargs: Any) -> None:
-            cmd = CommandContext(
-                name=name, ctx=ctx, module_globals=module_globals, errors=table
-            )
+            cmd = CommandContext(name=name, ctx=ctx, errors=table)
             try:
                 with cmd.errors():
                     data = fn(cmd, **kwargs)

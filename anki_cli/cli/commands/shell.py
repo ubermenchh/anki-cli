@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from anki_cli.cli.command import CommandContext, anki_command
-from anki_cli.cli.formatter import formatter_from_ctx  # noqa: F401  (patched by tests)
 
 
 @anki_command("shell")

@@ -4,9 +4,7 @@ from typing import Any
 
 import click
 
-from anki_cli.backends.factory import backend_session_from_context  # noqa: F401  (patched by tests)
 from anki_cli.cli.command import CommandContext, anki_command
-from anki_cli.cli.formatter import formatter_from_ctx  # noqa: F401  (patched by tests)
 from anki_cli.models.output import JSONValue
 
 DEFAULT_CARD_LIMIT = 1000

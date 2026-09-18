@@ -5,9 +5,7 @@ from typing import Any
 import click
 
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError
-from anki_cli.backends.factory import backend_session_from_context  # noqa: F401  (patched by tests)
 from anki_cli.cli.command import CommandContext, anki_command, id_or_query
-from anki_cli.cli.formatter import formatter_from_ctx  # noqa: F401  (patched by tests)
 from anki_cli.models.output import JSONValue
 
 
@@ -25,11 +23,12 @@ def _normalize_tag_list(raw: str) -> list[str]:
 @anki_command("tags")
 def tags_cmd(cmd: CommandContext) -> JSONValue:
     """List all tags with counts."""
+    backend = cmd.backend  # open once, outside the fallback
     try:
-        items = cmd.backend.get_tag_counts()
+        items = backend.get_tag_counts()
     except Exception:
         # Backends without counts fall back to the bare tag list.
-        tags = cmd.backend.get_tags()
+        tags = backend.get_tags()
         return {"count": len(tags), "items": sorted(tags, key=str.lower)}
     return {"count": len(items), "items": sorted(items, key=lambda x: str(x["tag"]).lower())}
 

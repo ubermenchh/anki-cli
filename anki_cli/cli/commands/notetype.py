@@ -6,9 +6,7 @@ from typing import Any, cast
 import click
 
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError
-from anki_cli.backends.factory import backend_session_from_context  # noqa: F401  (patched by tests)
 from anki_cli.cli.command import CommandContext, ErrorMap, anki_command
-from anki_cli.cli.formatter import formatter_from_ctx  # noqa: F401  (patched by tests)
 from anki_cli.models.output import JSONValue
 
 
@@ -71,7 +69,9 @@ def notetypes_cmd(cmd: CommandContext) -> JSONValue:
     "notetype",
     errors={AnkiConnectAPIError: ("ENTITY_NOT_FOUND", 4), LookupError: ("ENTITY_NOT_FOUND", 4)},
 )
-@click.option("--notetype", "--name", "notetype_name", required=True, help="Notetype name")
+@click.option(
+    "--notetype", "--name", "notetype_name", required=True, help="Notetype name, e.g. Basic"
+)
 def notetype_cmd(cmd: CommandContext, notetype_name: str) -> JSONValue:
     """Show details for a note type."""
     normalized = notetype_name.strip()

@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-import anki_cli.cli.commands.note as note_cmd_mod
+import anki_cli.backends.factory as factory_mod
 from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.cli.commands.note import (
     note_add_cmd,
@@ -55,7 +55,7 @@ def _patch_session(monkeypatch: pytest.MonkeyPatch, backend: Any) -> None:
     def fake_session(obj: dict[str, Any]):
         yield backend
 
-    monkeypatch.setattr(note_cmd_mod, "backend_session_from_context", fake_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", fake_session)
 
 
 def test_notes_cmd_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -78,7 +78,7 @@ def test_notes_cmd_backend_unavailable_exit_7(monkeypatch: pytest.MonkeyPatch) -
     def failing_session(obj: dict[str, Any]):
         raise BackendFactoryError("backend down")
 
-    monkeypatch.setattr(note_cmd_mod, "backend_session_from_context", failing_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", failing_session)
 
     runner = CliRunner()
     result = runner.invoke(notes_cmd, ["--query", ""], obj=_base_obj(backend="direct"))

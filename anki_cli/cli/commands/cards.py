@@ -5,9 +5,7 @@ from typing import Any
 import click
 
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError
-from anki_cli.backends.factory import backend_session_from_context  # noqa: F401  (patched by tests)
 from anki_cli.cli.command import CommandContext, ErrorMap, anki_command, id_or_query
-from anki_cli.cli.formatter import formatter_from_ctx  # noqa: F401  (patched by tests)
 from anki_cli.core.render import extract_note_id, extract_ord, pick_template, render_card
 from anki_cli.models.output import JSONValue
 
@@ -101,8 +99,10 @@ def _target_ids(cmd: CommandContext, card_id: int | None, query: str | None) -> 
 @id_or_query("card")
 def card_suspend_cmd(cmd: CommandContext, card_id: int | None, query: str | None) -> JSONValue:
     """Suspend cards by ID or query."""
-    ids = _target_ids(cmd, card_id, query)
+    # find_cards is inside the block too: an AnkiConnect failure while
+    # resolving --query carries the same details it always did.
     with cmd.errors(details={"id": card_id, "query": query}):
+        ids = _target_ids(cmd, card_id, query)
         return cmd.backend.suspend_cards(ids)
 
 
@@ -110,8 +110,8 @@ def card_suspend_cmd(cmd: CommandContext, card_id: int | None, query: str | None
 @id_or_query("card")
 def card_unsuspend_cmd(cmd: CommandContext, card_id: int | None, query: str | None) -> JSONValue:
     """Unsuspend cards by ID or query."""
-    ids = _target_ids(cmd, card_id, query)
     with cmd.errors(details={"id": card_id, "query": query}):
+        ids = _target_ids(cmd, card_id, query)
         return cmd.backend.unsuspend_cards(ids)
 
 

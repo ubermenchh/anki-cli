@@ -7,7 +7,8 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-import anki_cli.cli.commands.deck as deck_cmd_mod
+import anki_cli.backends.factory as factory_mod
+import anki_cli.cli.formatter as formatter_mod
 from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.cli.commands.deck import (
     deck_cmd,
@@ -54,7 +55,7 @@ def _patch_session(monkeypatch: pytest.MonkeyPatch, backend: Any) -> None:
     def fake_session(obj: dict[str, Any]):
         yield backend
 
-    monkeypatch.setattr(deck_cmd_mod, "backend_session_from_context", fake_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", fake_session)
 
 
 def test_decks_cmd_json_mode_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,7 +140,7 @@ def test_decks_cmd_emits_one_canonical_shape_regardless_of_format(
 
     cap = CaptureFormatter()
     _patch_session(monkeypatch, Backend())
-    monkeypatch.setattr(deck_cmd_mod, "formatter_from_ctx", lambda ctx: cap)
+    monkeypatch.setattr(formatter_mod, "formatter_from_ctx", lambda ctx: cap)
 
     runner = CliRunner()
     result = runner.invoke(decks_cmd, [], obj=_base_obj(format="table"))
@@ -185,7 +186,7 @@ def test_decks_cmd_backend_unavailable_exit_7(monkeypatch: pytest.MonkeyPatch) -
     def failing_session(obj: dict[str, Any]):
         raise BackendFactoryError("backend down")
 
-    monkeypatch.setattr(deck_cmd_mod, "backend_session_from_context", failing_session)
+    monkeypatch.setattr(factory_mod, "backend_session_from_context", failing_session)
 
     runner = CliRunner()
     result = runner.invoke(decks_cmd, [], obj=_base_obj(backend="direct"))

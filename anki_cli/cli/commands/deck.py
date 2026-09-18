@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import click
 
-from anki_cli.backends.factory import backend_session_from_context  # noqa: F401  (patched by tests)
 from anki_cli.backends.protocol import JSONValue
 from anki_cli.cli.command import CommandContext, anki_command
-from anki_cli.cli.formatter import formatter_from_ctx  # noqa: F401  (patched by tests)
 
 
 def _deck_chain(name: str) -> list[str]:

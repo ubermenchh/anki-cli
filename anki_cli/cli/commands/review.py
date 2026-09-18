@@ -6,9 +6,7 @@ from typing import Any, cast
 import click
 
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError, AnkiConnectProtocolError
-from anki_cli.backends.factory import backend_session_from_context  # noqa: F401  (patched by tests)
 from anki_cli.cli.command import CommandContext, ErrorMap, anki_command
-from anki_cli.cli.formatter import formatter_from_ctx  # noqa: F401  (patched by tests)
 from anki_cli.core.render import extract_note_id, extract_ord, pick_template, render_card
 from anki_cli.core.scheduler import pick_next_due_card_id
 from anki_cli.core.undo import UndoItem, UndoStore, now_epoch_ms

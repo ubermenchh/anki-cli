@@ -8,9 +8,7 @@ from typing import Any
 import click
 
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError
-from anki_cli.backends.factory import backend_session_from_context  # noqa: F401  (patched by tests)
 from anki_cli.cli.command import CommandContext, ErrorMap, anki_command
-from anki_cli.cli.formatter import formatter_from_ctx  # noqa: F401  (patched by tests)
 from anki_cli.db.anki_direct import DuplicateNoteError
 from anki_cli.models.output import JSONValue
 
@@ -97,14 +95,6 @@ _OPERATION_FAILED: ErrorMap = {
 }
 
 
-def _add_note_message(exc: BaseException) -> str:
-    # The store states the fact; the remedy flag is CLI surface, so it is
-    # appended here. AnkiConnect reports duplicates as an AnkiConnectAPIError.
-    if isinstance(exc, DuplicateNoteError):
-        return f"{exc} Pass --allow-duplicate to add it anyway."
-    return str(exc)
-
-
 @anki_command("note:add", errors=_OPERATION_FAILED, context_settings=_DYNAMIC_FIELDS)
 @click.option("--deck", required=True, help="Deck name")
 @click.option("--notetype", required=True, help="Notetype name")
@@ -118,20 +108,26 @@ def note_add_cmd(
     if not fields:
         raise cmd.invalid("No fields provided. Pass fields like Front=... Back=...")
 
-    def _details(exc: BaseException) -> dict[str, JSONValue]:
-        details: dict[str, JSONValue] = {"deck": deck, "notetype": notetype}
-        if isinstance(exc, DuplicateNoteError):
-            details["duplicate_ids"] = list(exc.duplicate_ids)
-        return details
-
-    with cmd.errors(details=_details, message=_add_note_message):
-        note_id = cmd.backend.add_note(
-            deck=deck.strip(),
-            notetype=notetype.strip(),
-            fields=fields,
-            tags=_parse_tags(tags),
-            allow_duplicate=allow_duplicate,
-        )
+    details: dict[str, JSONValue] = {"deck": deck, "notetype": notetype}
+    with cmd.errors(details=details):
+        try:
+            note_id = cmd.backend.add_note(
+                deck=deck.strip(),
+                notetype=notetype.strip(),
+                fields=fields,
+                tags=_parse_tags(tags),
+                allow_duplicate=allow_duplicate,
+            )
+        except DuplicateNoteError as exc:
+            # Caught ahead of the table so the envelope can carry the ids and
+            # the remedy flag (CLI surface; the store only states the fact).
+            # AnkiConnect reports duplicates as an AnkiConnectAPIError.
+            raise cmd.fail(
+                "BACKEND_OPERATION_FAILED",
+                f"{exc} Pass --allow-duplicate to add it anyway.",
+                exit_code=1,
+                details={**details, "duplicate_ids": list(exc.duplicate_ids)},
+            ) from exc
     return {
         "id": note_id,
         "deck": deck,
