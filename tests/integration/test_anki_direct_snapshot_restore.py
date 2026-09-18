@@ -268,7 +268,7 @@ def test_restore_card_state_missing_target_card_returns_restored_false(
 def _fake_answer_internals(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectStore) -> None:
     """Stub the FSRS internals so answer_card is deterministic.
 
-    ``_allocate_epoch_ms_id`` is deliberately left alone so the revlog row gets
+    ``_allocate_row_id`` is deliberately left alone so the revlog row gets
     a real wall-clock id; restore must not depend on how that id relates to
     when the snapshot was taken.
     """

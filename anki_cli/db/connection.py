@@ -158,15 +158,7 @@ class ConnectionMixin(CodecMixin):
             )
 
     def _allocate_row_id(self, conn: sqlite3.Connection, table: str) -> int:
-        candidate = int(time.time() * 1000)
-        while (
-            conn.execute(f"SELECT 1 FROM {table} WHERE id = ? LIMIT 1", (candidate,)).fetchone()
-            is not None
-        ):
-            candidate += 1
-        return candidate
-
-    def _allocate_epoch_ms_id(self, conn: sqlite3.Connection, table: str) -> int:
+        """Anki ids are epoch milliseconds, nudged forward past any collision."""
         candidate = int(time.time() * 1000)
         while (
             conn.execute(f"SELECT 1 FROM {table} WHERE id = ? LIMIT 1", (candidate,)).fetchone()

@@ -11,7 +11,7 @@ import sqlite3
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any, TypedDict, cast
+from typing import Any, NamedTuple, TypedDict, cast
 
 from fsrs import Card as FSRSCard
 from fsrs import Rating, ReviewLog, Scheduler, State
@@ -34,6 +34,18 @@ class _SchedulerStepKwargs(TypedDict, total=False):
 
     learning_steps: list[timedelta]
     relearning_steps: list[timedelta]
+
+class _FsrsReviewSetup(NamedTuple):
+    """What ``_prepare_fsrs_review`` hands to ``answer_card`` / ``preview_ratings``."""
+
+    card: FSRSCard
+    scheduler: Scheduler
+    timing: SchedTiming
+    desired_retention: float
+    learn_step_count: int
+    relearn_step_count: int
+    params_source: str
+
 
 
 # py-fsrs 6 wants exactly 21 weights. Anki may still carry FSRS-4.5 (17) or
@@ -226,63 +238,10 @@ class SchedulingMixin(CardsMixin):
             if row is None:
                 raise LookupError(f"Card not found: {card_id}")
 
-            timing = self._timing(conn, int(review_dt.timestamp()))
-
-            odid = int(row["odid"])
-            if odid != 0 and self._filtered_deck_reschedules(conn, int(row["did"])) is False:
-                raise ValueError(
-                    "Card is in a preview (non-rescheduling) filtered deck; "
-                    "answer it in Anki or empty the deck first."
-                )
-            # Options come from the home deck when the card is on loan.
-            scheduler, _dr, learn_count, relearn_count, params_source = self._build_scheduler_ex(
-                conn, odid if odid != 0 else int(row["did"])
-            )
-
-            base = self._card_row_to_fsrs(
-                row,
-                timing=timing,
-                now_dt=review_dt,
-                learn_step_count=learn_count,
-                relearn_step_count=relearn_count,
-            )
-            if base.last_review is None:
-                base.last_review = self._last_review_time(conn, int(row["id"]))
-
-            needs_seed = base.state in (State.Review, State.Relearning) and (
-                base.stability is None or base.difficulty is None or base.last_review is None
-            )
-            if needs_seed:
-                seeded = self._seed_fsrs_card_from_revlog(
-                    conn,
-                    scheduler,
-                    card_id=int(row["id"]),
-                    now_dt=review_dt,
-                )
-                if seeded is not None:
-                    base.stability = seeded.stability
-                    base.difficulty = seeded.difficulty
-                    base.last_review = seeded.last_review
-                else:
-                    ivl_days = int(row["ivl"] or 0)
-                    factor = int(row["factor"] or 0)
-
-                    base.stability = float(max(1, ivl_days))
-                    if factor > 0:
-                        ease_mult = max(1.3, min(3.0, factor / 1000.0))
-                        scaled = (ease_mult - 1.3) / (3.0 - 1.3)
-                        base.difficulty = max(1.0, min(10.0, 10.0 - (scaled * 9.0)))
-                    else:
-                        base.difficulty = 5.0
-
-                    mod_sec = int(row["mod"] or int(review_dt.timestamp()))
-                    try:
-                        base.last_review = datetime.fromtimestamp(mod_sec, tz=UTC)
-                    except (OSError, OverflowError, ValueError):
-                        base.last_review = review_dt
-
-            if base.state == State.Relearning and base.step is None:
-                base.step = 0
+            setup = self._prepare_fsrs_review(conn, row, review_dt)
+            base, scheduler, timing = setup.card, setup.scheduler, setup.timing
+            learn_count, relearn_count = setup.learn_step_count, setup.relearn_step_count
+            params_source = setup.params_source
 
             out: list[dict[str, JSONValue]] = []
             for ease in (1, 2, 3, 4):
@@ -353,79 +312,10 @@ class SchedulingMixin(CardsMixin):
                 raise LookupError(f"Card not found: {card_id}")
 
             review_dt = datetime.now(UTC)
-            timing = self._timing(conn, int(review_dt.timestamp()))
-
-            # A card in a filtered deck keeps its real schedule in odue and its
-            # options come from the home deck. Anki (v3) answers it, sends it
-            # home, then schedules normally; preview decks don't reschedule at
-            # all, which this backend does not emulate.
-            odid = int(row["odid"])
-            home_did = odid if odid != 0 else int(row["did"])
-            if odid != 0 and self._filtered_deck_reschedules(conn, int(row["did"])) is False:
-                raise ValueError(
-                    "Card is in a preview (non-rescheduling) filtered deck; "
-                    "answer it in Anki or empty the deck first."
-                )
-
-            (
-                scheduler,
-                desired_retention,
-                learn_count,
-                relearn_count,
-                params_source,
-            ) = self._build_scheduler_ex(conn, home_did)
-
-            fsrs_card = self._card_row_to_fsrs(
-                row,
-                timing=timing,
-                now_dt=review_dt,
-                learn_step_count=learn_count,
-                relearn_step_count=relearn_count,
-            )
-            if fsrs_card.last_review is None:
-                fsrs_card.last_review = self._last_review_time(conn, int(row["id"]))
-
-            needs_seed = fsrs_card.state in (State.Review, State.Relearning) and (
-                fsrs_card.stability is None
-                or fsrs_card.difficulty is None
-                or fsrs_card.last_review is None
-            )
-            if needs_seed:
-                seeded = self._seed_fsrs_card_from_revlog(
-                    conn,
-                    scheduler,
-                    card_id=int(row["id"]),
-                    now_dt=review_dt
-                )
-                if seeded is not None:
-                    fsrs_card.stability = seeded.stability
-                    fsrs_card.difficulty = seeded.difficulty
-                    fsrs_card.last_review = seeded.last_review
-                else:
-                    # Fallback for imported/legacy cards with no usable revlog.
-                    ivl_days = int(row["ivl"] or 0)
-                    factor = int(row["factor"] or 0)
-
-                    fsrs_card.stability = float(max(1, ivl_days))
-
-                    if factor > 0:
-                        ease_mult = max(1.3, min(3.0, factor / 1000.0))
-                        scaled = (ease_mult - 1.3) / (3.0 - 1.3)  # 0..1
-                        fsrs_card.difficulty = max(
-                            1.0,
-                            min(10.0, 10.0 - (scaled * 9.0)),
-                        )
-                    else:
-                        fsrs_card.difficulty = 5.0
-
-                    mod_sec = int(row["mod"] or int(review_dt.timestamp()))
-                    try:
-                        fsrs_card.last_review = datetime.fromtimestamp(mod_sec, tz=UTC)
-                    except (OSError, OverflowError, ValueError):
-                        fsrs_card.last_review = review_dt
-
-            if fsrs_card.state == State.Relearning and fsrs_card.step is None:
-                fsrs_card.step = 0
+            setup = self._prepare_fsrs_review(conn, row, review_dt)
+            fsrs_card, scheduler, timing = setup.card, setup.scheduler, setup.timing
+            learn_count, relearn_count = setup.learn_step_count, setup.relearn_step_count
+            desired_retention, params_source = setup.desired_retention, setup.params_source
 
             next_card = self._review_with_fuzz_seed(
                 scheduler,
@@ -505,7 +395,7 @@ class SchedulingMixin(CardsMixin):
                 ),
             )
 
-            revlog_id = self._allocate_epoch_ms_id(conn, "revlog")
+            revlog_id = self._allocate_row_id(conn, "revlog")
             old_due = self._scheduling_due(row)
             old_type = int(row["type"])
             old_queue = int(row["queue"])
@@ -573,6 +463,96 @@ class SchedulingMixin(CardsMixin):
             "interval": new_ivl,
             "revlog_id": revlog_id,
         }
+
+    def _prepare_fsrs_review(
+        self, conn: sqlite3.Connection, row: sqlite3.Row, review_dt: datetime
+    ) -> _FsrsReviewSetup:
+        """Everything ``answer_card`` and ``preview_ratings`` share before the
+        rating is applied: the day timing, the home deck's scheduler, and the
+        card as py-fsrs sees it (seeded from the revlog or the legacy
+        ivl/factor columns when Anki never stored FSRS memory state).
+
+        A card in a filtered deck keeps its real schedule in ``odue`` and its
+        options come from the home deck. Anki (v3) answers it, sends it home,
+        then schedules normally; preview decks don't reschedule at all, which
+        this backend does not emulate.
+        """
+        timing = self._timing(conn, int(review_dt.timestamp()))
+
+        odid = int(row["odid"])
+        home_did = odid if odid != 0 else int(row["did"])
+        if odid != 0 and self._filtered_deck_reschedules(conn, int(row["did"])) is False:
+            raise ValueError(
+                "Card is in a preview (non-rescheduling) filtered deck; "
+                "answer it in Anki or empty the deck first."
+            )
+
+        (
+            scheduler,
+            desired_retention,
+            learn_count,
+            relearn_count,
+            params_source,
+        ) = self._build_scheduler_ex(conn, home_did)
+
+        fsrs_card = self._card_row_to_fsrs(
+            row,
+            timing=timing,
+            now_dt=review_dt,
+            learn_step_count=learn_count,
+            relearn_step_count=relearn_count,
+        )
+        if fsrs_card.last_review is None:
+            fsrs_card.last_review = self._last_review_time(conn, int(row["id"]))
+
+        needs_seed = fsrs_card.state in (State.Review, State.Relearning) and (
+            fsrs_card.stability is None
+            or fsrs_card.difficulty is None
+            or fsrs_card.last_review is None
+        )
+        if needs_seed:
+            seeded = self._seed_fsrs_card_from_revlog(
+                conn,
+                scheduler,
+                card_id=int(row["id"]),
+                now_dt=review_dt,
+            )
+            if seeded is not None:
+                fsrs_card.stability = seeded.stability
+                fsrs_card.difficulty = seeded.difficulty
+                fsrs_card.last_review = seeded.last_review
+            else:
+                # Fallback for imported/legacy cards with no usable revlog.
+                ivl_days = int(row["ivl"] or 0)
+                factor = int(row["factor"] or 0)
+
+                fsrs_card.stability = float(max(1, ivl_days))
+
+                if factor > 0:
+                    ease_mult = max(1.3, min(3.0, factor / 1000.0))
+                    scaled = (ease_mult - 1.3) / (3.0 - 1.3)  # 0..1
+                    fsrs_card.difficulty = max(1.0, min(10.0, 10.0 - (scaled * 9.0)))
+                else:
+                    fsrs_card.difficulty = 5.0
+
+                mod_sec = int(row["mod"] or int(review_dt.timestamp()))
+                try:
+                    fsrs_card.last_review = datetime.fromtimestamp(mod_sec, tz=UTC)
+                except (OSError, OverflowError, ValueError):
+                    fsrs_card.last_review = review_dt
+
+        if fsrs_card.state == State.Relearning and fsrs_card.step is None:
+            fsrs_card.step = 0
+
+        return _FsrsReviewSetup(
+            card=fsrs_card,
+            scheduler=scheduler,
+            timing=timing,
+            desired_retention=desired_retention,
+            learn_step_count=learn_count,
+            relearn_step_count=relearn_count,
+            params_source=params_source,
+        )
 
     def _build_scheduler_ex(
         self,

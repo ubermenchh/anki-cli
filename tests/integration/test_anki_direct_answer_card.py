@@ -80,7 +80,7 @@ def test_answer_card_updates_card_and_writes_revlog_non_lapse(
     store, db_path = _make_store(tmp_path)
 
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(store, "_allocate_epoch_ms_id", lambda conn, table: 9001)
+    monkeypatch.setattr(store, "_allocate_row_id", lambda conn, table: 9001)
 
     # Keep flow deterministic and independent of FSRS internals.
     monkeypatch.setattr(
@@ -173,7 +173,7 @@ def test_answer_card_lapse_increments_lapses_and_sets_relearn_type(
     store, db_path = _make_store(tmp_path)
 
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(store, "_allocate_epoch_ms_id", lambda conn, table: 9002)
+    monkeypatch.setattr(store, "_allocate_row_id", lambda conn, table: 9002)
 
     monkeypatch.setattr(
         store,
@@ -250,7 +250,7 @@ def test_answer_card_day_learn_step_writes_day_index_and_positive_revlog_ivl(
     revlog logs day-learn intervals in positive days (rslib as_revlog_interval)."""
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(store, "_allocate_epoch_ms_id", lambda conn, table: 9003)
+    monkeypatch.setattr(store, "_allocate_row_id", lambda conn, table: 9003)
 
     # Fixture col.crt is 0, so "today" is a large day index; pin the clock.
     now_sec = 1_700_000_000
@@ -360,7 +360,7 @@ def test_answer_card_in_rescheduling_filtered_deck_sends_it_home(
     """Anki v3: remove_from_filtered_deck_before_reschedule, then schedule normally."""
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(store, "_allocate_epoch_ms_id", lambda conn, table: 9010)
+    monkeypatch.setattr(store, "_allocate_row_id", lambda conn, table: 9010)
     _insert_deck(db_path, did=1, name="Home", filtered=False)
     _insert_deck(db_path, did=555, name="Cram", filtered=True, reschedule=True)
     _park_card_in_filtered_deck(db_path, filtered_did=555, home_did=1, odue=30)
@@ -405,7 +405,7 @@ def test_undo_restores_filtered_deck_membership(
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
     ids = iter([9011, 9012])
-    monkeypatch.setattr(store, "_allocate_epoch_ms_id", lambda conn, table: next(ids))
+    monkeypatch.setattr(store, "_allocate_row_id", lambda conn, table: next(ids))
     _insert_deck(db_path, did=1, name="Home", filtered=False)
     _insert_deck(db_path, did=555, name="Cram", filtered=True)
     _park_card_in_filtered_deck(db_path, filtered_did=555, home_did=1, odue=30)
@@ -430,7 +430,7 @@ def test_answer_card_new_card_on_loan_records_original_position(
     """data.pos must be the new-queue position (odue), not the filtered-deck slot."""
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(store, "_allocate_epoch_ms_id", lambda conn, table: 9020)
+    monkeypatch.setattr(store, "_allocate_row_id", lambda conn, table: 9020)
     _insert_deck(db_path, did=1, name="Home", filtered=False)
     _insert_deck(db_path, did=555, name="Cram", filtered=True)
     conn = connect(str(db_path))

@@ -88,7 +88,7 @@ def _pin_clock(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectStore) -> None:
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
     ids = iter(range(9001, 9100))
     monkeypatch.setattr(
-        store, "_allocate_epoch_ms_id", lambda conn, table: next(ids)
+        store, "_allocate_row_id", lambda conn, table: next(ids)
     )
     monkeypatch.setattr(time, "time", lambda: NOW_SEC)
 
