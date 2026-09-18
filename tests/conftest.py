@@ -223,42 +223,58 @@ class Collection:
         kind: str = "normal",
         sort_field_idx: int = 0,
         css: str = "",
+        config: bytes | None = None,
         mtime_secs: int = BASE_MOD,
         usn: int = BASE_USN,
     ) -> int:
         """A notetype with its fields and templates (``(name, front, back)``).
-        ``templates=None`` means one ``Card 1`` showing ``{{<first field>}}``."""
+        ``templates=None`` means one ``Card 1`` showing ``{{<first field>}}``;
+        pass ``[]`` for none. ``config`` overrides the kind/sort/css blob."""
+        blob = (
+            notetype_config_blob(kind=kind, sort_field_idx=sort_field_idx, css=css)
+            if config is None
+            else config
+        )
         self._insert(
             "notetypes",
-            {
-                "id": id,
-                "name": name,
-                "mtime_secs": mtime_secs,
-                "usn": usn,
-                "config": notetype_config_blob(kind=kind, sort_field_idx=sort_field_idx, css=css),
-            },
+            {"id": id, "name": name, "mtime_secs": mtime_secs, "usn": usn, "config": blob},
         )
         for ord_, field in enumerate(fields):
-            self._insert(
-                "fields",
-                {"ntid": id, "ord": ord_, "name": field, "config": bytes(NotetypeFieldConfig())},
-            )
+            self.insert_field(ntid=id, ord=ord_, name=field)
         if templates is None:
             first = fields[0] if fields else "Front"
             templates = [("Card 1", f"{{{{{first}}}}}", "{{FrontSide}}")]
         for ord_, (tname, front, back) in enumerate(templates):
-            self._insert(
-                "templates",
-                {
-                    "ntid": id,
-                    "ord": ord_,
-                    "name": tname,
-                    "mtime_secs": mtime_secs,
-                    "usn": usn,
-                    "config": template_config_blob(front, back),
-                },
+            self.insert_template(
+                ntid=id, ord=ord_, name=tname, front=front, back=back,
+                mtime_secs=mtime_secs, usn=usn,
             )
         return id
+
+    def insert_field(self, *, ntid: int, ord: int, name: str, config: bytes | None = None) -> None:
+        self._insert(
+            "fields",
+            {"ntid": ntid, "ord": ord, "name": name,
+             "config": bytes(NotetypeFieldConfig()) if config is None else config},
+        )
+
+    def insert_template(
+        self,
+        *,
+        ntid: int,
+        ord: int,
+        name: str,
+        front: str = "",
+        back: str = "",
+        config: bytes | None = None,
+        mtime_secs: int = BASE_MOD,
+        usn: int = BASE_USN,
+    ) -> None:
+        self._insert(
+            "templates",
+            {"ntid": ntid, "ord": ord, "name": name, "mtime_secs": mtime_secs, "usn": usn,
+             "config": template_config_blob(front, back) if config is None else config},
+        )
 
     def insert_note(
         self,

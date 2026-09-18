@@ -25,112 +25,18 @@ import pytest
 
 import anki_cli.backends.detect as detect_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore, DirectWriteBlockedError
-from tests.integration.conftest import (
-    COL_TABLE_SQL,
-    assert_col_modified,
-    assert_col_untouched,
-    insert_col_row,
-)
+from tests.anki_schema import connect
+from tests.conftest import Collection, new_collection
+from tests.integration.conftest import assert_col_modified, assert_col_untouched
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
-    """Minimal schema for ``update_note``: col + notes + notetypes + fields,
-    plus the tables the card-generation pass touches."""
-    # TODO(#37): 17th file-local _make_store — consolidate into conftest.
-    # ``notetypes`` is not dead DDL: ``update_note`` → ``_field_schema_for_mid``
-    # selects ``notetypes.config`` for the sort-field index. ``cards`` and
-    # ``templates`` are likewise live: since #59 ``update_note`` runs
-    # ``_generate_missing_cards``, which reads both even when it generates
-    # nothing.
-    db_path = tmp_path / "collection.db"
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE decks (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL
-        );
-
-        CREATE TABLE notetypes (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            config BLOB NOT NULL
-        );
-
-        CREATE TABLE fields (
-            ntid INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            name TEXT NOT NULL
-        );
-
-        CREATE TABLE templates (
-            ntid INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            config BLOB NOT NULL DEFAULT X''
-        );
-
-        CREATE TABLE notes (
-            id INTEGER PRIMARY KEY,
-            guid TEXT NOT NULL,
-            mid INTEGER NOT NULL,
-            mod INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            tags TEXT NOT NULL,
-            flds TEXT NOT NULL,
-            sfld TEXT NOT NULL,
-            csum INTEGER NOT NULL,
-            flags INTEGER NOT NULL,
-            data TEXT NOT NULL
-        );
-
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            nid INTEGER NOT NULL,
-            did INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            mod INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            type INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL,
-            ivl INTEGER NOT NULL,
-            factor INTEGER NOT NULL,
-            reps INTEGER NOT NULL,
-            lapses INTEGER NOT NULL,
-            left INTEGER NOT NULL,
-            odue INTEGER NOT NULL,
-            odid INTEGER NOT NULL,
-            flags INTEGER NOT NULL,
-            data TEXT NOT NULL
-        );
-
-        CREATE TABLE graves (
-            oid INTEGER NOT NULL,
-            type INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            PRIMARY KEY (oid, type)
-        );
-        """
-    )
-    conn.executescript(COL_TABLE_SQL)
-    insert_col_row(conn, crt=0)
-    conn.execute(
-        "INSERT INTO decks (id, name) VALUES (?, ?)",
-        (1, "Default"),
-    )
-    conn.execute(
-        "INSERT INTO notetypes (id, name, config) VALUES (?, ?, ?)",
-        (10, "Basic", b""),
-    )
-    conn.executemany(
-        "INSERT INTO fields (ntid, ord, name) VALUES (?, ?, ?)",
-        [(10, 0, "Front"), (10, 1, "Back")],
-    )
-    conn.commit()
-    conn.close()
-
-    return AnkiDirectReadStore(db_path), db_path
+    """Real schema; the guard itself is what these tests exercise, so the store
+    is *not* made writable here."""
+    col = new_collection(tmp_path / "collection.anki2", seed=False)
+    col.insert_deck(id=1, name="Default")
+    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"], templates=[])
+    return col.store(writable=False), col.db_path
 
 
 def _insert_note(
@@ -141,21 +47,13 @@ def _insert_note(
     back: str = "B0",
     tags: str = " old ",
 ) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO notes (id, guid, mid, mod, usn, tags, flds, sfld, csum, flags, data)
-        VALUES (?, ?, ?, 1, -1, ?, ?, ?, 0, 0, '')
-        """,
-        (note_id, f"guid-{note_id}", 10, tags, f"{front}\x1f{back}", front),
+    Collection(db_path).insert_note(
+        id=note_id, fields=[front, back], tags=tags, mod=1, usn=-1
     )
-    conn.commit()
-    conn.close()
 
 
 def _note_row(db_path: Path, note_id: int) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute(
         "SELECT id, mid, mod, usn, tags, flds, sfld, csum FROM notes WHERE id = ?",
         (note_id,),

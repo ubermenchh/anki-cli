@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Any, cast
 
@@ -15,83 +14,25 @@ from anki_cli.proto.anki.notetypes import (
     NotetypeConfigKind,
     NotetypeTemplateConfig,
 )
-from tests.integration.conftest import (
-    COL_TABLE_SQL,
-    CSUM_A,
-    CSUM_B,
-    assert_col_modified,
-    col_row,
-    insert_col_row,
-)
+from tests.anki_schema import connect
+from tests.conftest import Collection, new_collection
+from tests.integration.conftest import CSUM_A, CSUM_B, assert_col_modified, col_row
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript(
-        """
-        CREATE TABLE notetypes (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            mtime_secs INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            config BLOB NOT NULL
-        );
-
-        CREATE TABLE fields (
-            ntid INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            config BLOB NOT NULL
-        );
-
-        CREATE TABLE templates (
-            ntid INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            mtime_secs INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            config BLOB NOT NULL
-        );
-
-        CREATE TABLE notes (
-            id INTEGER PRIMARY KEY,
-            guid TEXT NOT NULL DEFAULT '',
-            mid INTEGER NOT NULL,
-            mod INTEGER NOT NULL DEFAULT 0,
-            usn INTEGER NOT NULL DEFAULT 0,
-            tags TEXT NOT NULL DEFAULT '',
-            flds TEXT NOT NULL,
-            sfld INTEGER NOT NULL DEFAULT '',
-            csum INTEGER NOT NULL DEFAULT 0,
-            flags INTEGER NOT NULL DEFAULT 0,
-            data TEXT NOT NULL DEFAULT ''
-        );
-        """
-    )
-    conn.executescript(COL_TABLE_SQL)
-    insert_col_row(conn, crt=0)
-    conn.commit()
-    conn.close()
-
-    return AnkiDirectReadStore(db_path), db_path
+    """Bare schema; every notetype here is created through the store."""
+    col = new_collection(tmp_path / "collection.anki2", seed=False)
+    return col.store(writable=False), col.db_path
 
 
 def _insert_note(db_path: Path, *, note_id: int, mid: int, fields: list[str]) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO notes (id, mid, flds, sfld, csum) VALUES (?, ?, ?, ?, ?)",
-        (note_id, mid, "\x1f".join(fields), fields[0], 0),
-    )
-    conn.commit()
-    conn.close()
+    # mod/usn at the DDL defaults this file always used (0/0), so a mutator's
+    # re-flagging is observable.
+    Collection(db_path).insert_note(id=note_id, mid=mid, fields=fields, mod=0, usn=0)
 
 
 def _note_row(db_path: Path, note_id: int) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute(
         "SELECT id, mid, mod, usn, flds, sfld, csum FROM notes WHERE id = ?",
         (note_id,),
@@ -124,7 +65,7 @@ def _mark_synced(db_path: Path, ntid: int) -> None:
     Without this, the ``usn == -1`` written by ``create_notetype`` would satisfy
     every later assertion before the mutator under test even runs.
     """
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     conn.execute("UPDATE notetypes SET usn = 0, mtime_secs = 0 WHERE id = ?", (ntid,))
     conn.execute("UPDATE templates SET usn = 0, mtime_secs = 0 WHERE ntid = ?", (ntid,))
     conn.commit()
@@ -132,8 +73,7 @@ def _mark_synced(db_path: Path, ntid: int) -> None:
 
 
 def _notetype_row_by_id(db_path: Path, ntid: int) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute(
         "SELECT id, name, mtime_secs, usn, config FROM notetypes WHERE id = ?",
         (ntid,),
@@ -144,8 +84,7 @@ def _notetype_row_by_id(db_path: Path, ntid: int) -> dict[str, Any]:
 
 
 def _notetype_row_by_name(db_path: Path, name: str) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute(
         "SELECT id, name, mtime_secs, usn, config FROM notetypes WHERE name = ?",
         (name,),
@@ -156,8 +95,7 @@ def _notetype_row_by_name(db_path: Path, name: str) -> dict[str, Any]:
 
 
 def _fields_for_ntid(db_path: Path, ntid: int) -> list[dict[str, Any]]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     rows = conn.execute(
         "SELECT ord, name, config FROM fields WHERE ntid = ? ORDER BY ord",
         (ntid,),
@@ -167,8 +105,7 @@ def _fields_for_ntid(db_path: Path, ntid: int) -> list[dict[str, Any]]:
 
 
 def _templates_for_ntid(db_path: Path, ntid: int) -> list[dict[str, Any]]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     rows = conn.execute(
         "SELECT ord, name, mtime_secs, usn, config FROM templates WHERE ntid = ? ORDER BY ord",
         (ntid,),
@@ -178,7 +115,7 @@ def _templates_for_ntid(db_path: Path, ntid: int) -> list[dict[str, Any]]:
 
 
 def _notetype_count(db_path: Path, name: str) -> int:
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     row = conn.execute("SELECT COUNT(*) FROM notetypes WHERE name = ?", (name,)).fetchone()
     conn.close()
     assert row is not None
@@ -401,7 +338,7 @@ def test_add_notetype_field_pads_to_field_count_not_max_ord(
     store, db_path = _make_store(tmp_path)
     _enable_writes(monkeypatch, store)
     ntid = _create_basic_notetype(store)
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     conn.execute("UPDATE fields SET ord = 2 WHERE ntid = ? AND ord = 1", (ntid,))  # ords 0, 2
     conn.commit()
     conn.close()
@@ -536,7 +473,7 @@ def test_remove_notetype_field_removing_the_sort_field_keeps_its_ordinal(
     ntid = int(nt_row["id"])
     cfg = NotetypeConfig().parse(bytes(nt_row["config"]))
     cfg.sort_field_idx = 1  # "B"
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     conn.execute("UPDATE notetypes SET config = ? WHERE id = ?", (bytes(cfg), ntid))
     conn.commit()
     conn.close()
@@ -607,7 +544,7 @@ def test_remove_notetype_field_shifts_sort_idx_and_requirement_ords(
             card_ord=2, kind=NotetypeConfigCardRequirementKind.KIND_ALL, field_ords=[0, 2, 3]
         ),
     ]
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     conn.execute("UPDATE notetypes SET config = ? WHERE id = ?", (bytes(cfg), ntid))
     conn.commit()
     conn.close()
@@ -655,7 +592,7 @@ def test_remove_notetype_field_updates_sort_field_idx_when_out_of_range(
 
     cfg = NotetypeConfig().parse(bytes(nt_row["config"]))
     cfg.sort_field_idx = 2
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     conn.execute("UPDATE notetypes SET config = ? WHERE id = ?", (bytes(cfg), ntid))
     conn.commit()
     conn.close()

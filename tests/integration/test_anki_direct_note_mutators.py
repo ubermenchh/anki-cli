@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 import time
 from hashlib import sha1
 from pathlib import Path
@@ -15,8 +14,9 @@ from anki_cli.db.anki_direct import (
     EmptyNoteError,
     NoteRejectedError,
 )
+from tests.anki_schema import connect
+from tests.conftest import COL_BASE_MOD_MS, Collection, new_collection
 from tests.integration.conftest import (
-    COL_TABLE_SQL,
     CSUM_A_SPACE_B,
     CSUM_AMPX_KEPT,
     CSUM_AUDIO_A_MP3,
@@ -39,7 +39,6 @@ from tests.integration.conftest import (
     CSUM_TEST,
     CSUM_VIDEO_V_MP4,
     assert_col_untouched,
-    insert_col_row,
 )
 
 
@@ -54,94 +53,15 @@ def _checksum(first_field: str) -> int:
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
-        CREATE TABLE decks (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL
-        );
-
-        CREATE TABLE notetypes (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            config BLOB NOT NULL
-        );
-
-        CREATE TABLE fields (
-            ntid INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            name TEXT NOT NULL
-        );
-
-        CREATE TABLE templates (
-            ntid INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            config BLOB NOT NULL DEFAULT X''
-        );
-
-        CREATE TABLE notes (
-            id INTEGER PRIMARY KEY,
-            guid TEXT NOT NULL,
-            mid INTEGER NOT NULL,
-            mod INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            tags TEXT NOT NULL,
-            flds TEXT NOT NULL,
-            sfld TEXT NOT NULL,
-            csum INTEGER NOT NULL,
-            flags INTEGER NOT NULL,
-            data TEXT NOT NULL
-        );
-
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            nid INTEGER NOT NULL,
-            did INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            mod INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            type INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL,
-            ivl INTEGER NOT NULL,
-            factor INTEGER NOT NULL,
-            reps INTEGER NOT NULL,
-            lapses INTEGER NOT NULL,
-            left INTEGER NOT NULL,
-            odue INTEGER NOT NULL,
-            odid INTEGER NOT NULL,
-            flags INTEGER NOT NULL,
-            data TEXT NOT NULL
-        );
-
-        CREATE TABLE graves (
-            oid INTEGER NOT NULL,
-            type INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            PRIMARY KEY (oid, type)
-        );
-        """)
-    conn.executescript(COL_TABLE_SQL)
-    insert_col_row(conn, crt=0)
-    conn.executemany(
-        "INSERT INTO decks (id, name) VALUES (?, ?)",
-        [(1, "Default"), (2, "Other")],
-    )
-    conn.execute(
-        "INSERT INTO notetypes (id, name, config) VALUES (?, ?, ?)",
-        (10, "Basic", b""),
-    )
-    conn.executemany(
-        "INSERT INTO fields (ntid, ord, name) VALUES (?, ?, ?)",
-        [(10, 0, "Front"), (10, 1, "Back")],
-    )
-    conn.commit()
-    conn.close()
-
-    return AnkiDirectReadStore(db_path), db_path
+    """Decks Default/Other, notetype 10 "Basic" (Front/Back) with **no
+    templates**: add_note then relies on the ensure_not_empty fallback (one
+    card, ord 0), which is what these tests were written against. Tests that
+    need real templates call ``_install_templates``."""
+    col = new_collection(tmp_path / "collection.anki2", seed=False)
+    col.insert_deck(id=1, name="Default")
+    col.insert_deck(id=2, name="Other")
+    col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"], templates=[])
+    return col.store(writable=False), col.db_path
 
 
 def _insert_note(
@@ -155,27 +75,9 @@ def _insert_note(
 ) -> None:
     # ``csum`` is fixture input, never asserted — the literal-oracle tests own
     # the real values. ``0`` just keeps the column populated.
-    flds = f"{front}\x1f{back}"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO notes (id, guid, mid, mod, usn, tags, flds, sfld, csum, flags, data)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, '')
-        """,
-        (
-            note_id,
-            f"guid-{note_id}",
-            10,
-            1,
-            -1,
-            tags,
-            flds,
-            front,
-            csum,
-        ),
+    Collection(db_path).insert_note(
+        id=note_id, fields=[front, back], tags=tags, mod=1, usn=-1, sfld=front, csum=csum
     )
-    conn.commit()
-    conn.close()
 
 
 def _insert_card(
@@ -189,24 +91,14 @@ def _insert_card(
     due: int = 0,
     card_type: int = 0,
 ) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO cards (
-            id, nid, did, ord, mod, usn, type, queue, due, ivl, factor, reps,
-            lapses, left, odue, odid, flags, data
-        )
-        VALUES (?, ?, ?, ?, ?, -1, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, '{}')
-        """,
-        (card_id, note_id, deck_id, ord_, 1, card_type, queue, due),
+    Collection(db_path).insert_card(
+        id=card_id, nid=note_id, did=deck_id, ord=ord_, mod=1, usn=-1, type=card_type,
+        queue=queue, due=due,
     )
-    conn.commit()
-    conn.close()
 
 
 def _note_row(db_path: Path, note_id: int) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute(
         "SELECT id, mid, mod, usn, tags, flds, sfld, csum FROM notes WHERE id = ?",
         (note_id,),
@@ -217,8 +109,7 @@ def _note_row(db_path: Path, note_id: int) -> dict[str, Any]:
 
 
 def _cards_for_note(db_path: Path, note_id: int) -> list[dict[str, Any]]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     rows = conn.execute(
         """
         SELECT id, nid, did, ord, type, queue, due, ivl, factor, reps, lapses, left, usn
@@ -233,21 +124,21 @@ def _cards_for_note(db_path: Path, note_id: int) -> list[dict[str, Any]]:
 
 
 def _note_ids(db_path: Path) -> list[int]:
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     rows = conn.execute("SELECT id FROM notes ORDER BY id").fetchall()
     conn.close()
     return [int(row[0]) for row in rows]
 
 
 def _card_ids(db_path: Path) -> list[int]:
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     rows = conn.execute("SELECT id FROM cards ORDER BY id").fetchall()
     conn.close()
     return [int(row[0]) for row in rows]
 
 
 def _grave_rows(db_path: Path) -> list[tuple[int, int, int]]:
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     rows = conn.execute("SELECT oid, type, usn FROM graves").fetchall()
     conn.close()
     return [(int(oid), int(gtype), int(usn)) for (oid, gtype, usn) in rows]
@@ -287,7 +178,9 @@ def test_add_note_creates_note_and_card_with_ordered_fields(
     assert cards[0]["type"] == 0
     assert cards[0]["queue"] == 0
     assert cards[0]["due"] == 8
-    assert cards[0]["usn"] == -1
+    # Note and card both flagged for sync, and col.mod moved so sync looks (#47).
+    Collection(db_path).assert_synced("notes", note_id)
+    Collection(db_path).assert_synced("cards", int(cards[0]["id"]))
 
 
 def test_add_note_missing_required_field_raises_lookup_error(
@@ -336,7 +229,7 @@ def test_update_note_updates_fields_tags_and_checksum(
     assert note["sfld"] == "F1"
     assert note["csum"] == CSUM_F1
     assert note["tags"] == " a z "
-    assert note["usn"] == -1
+    Collection(db_path).assert_synced("notes", 1001)
 
 
 def test_update_note_unknown_field_raises_and_rolls_back(
@@ -385,13 +278,14 @@ def test_delete_notes_deletes_existing_tracks_missing_and_writes_graves(
         (2002, 0, -1),
         (1001, 1, -1),
     }
+    assert Collection(db_path).col()["mod"] > COL_BASE_MOD_MS  # graves must sync
 
 
 def test_delete_notes_empty_or_non_positive_input_returns_noop(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    store, _db_path = _make_store(tmp_path)
+    store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
 
     assert store.delete_notes([]) == {
@@ -406,6 +300,7 @@ def test_delete_notes_empty_or_non_positive_input_returns_noop(
         "deleted_cards": 0,
         "missing_note_ids": [],
     }
+    Collection(db_path).assert_untouched()  # a no-op must not dirty col.mod
 
 
 @pytest.mark.parametrize(
@@ -551,17 +446,12 @@ def test_add_note_checksums_stripped_first_field(
 
 
 def _install_templates(db_path: Path, ntid: int, fronts: list[str]) -> None:
-    from anki_cli.proto.anki.notetypes import NotetypeTemplateConfig
-
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("DELETE FROM templates WHERE ntid = ?", (ntid,))
+    col = Collection(db_path)
+    col.execute("DELETE FROM templates WHERE ntid = ?", (ntid,))
     for ord_, front in enumerate(fronts):
-        conn.execute(
-            "INSERT INTO templates (ntid, ord, config) VALUES (?, ?, ?)",
-            (ntid, ord_, bytes(NotetypeTemplateConfig(q_format=front, a_format="{{FrontSide}}"))),
+        col.insert_template(
+            ntid=ntid, ord=ord_, name=f"Card {ord_ + 1}", front=front, back="{{FrontSide}}"
         )
-    conn.commit()
-    conn.close()
 
 
 def _card_ords(db_path: Path, note_id: int) -> list[int]:
@@ -806,7 +696,7 @@ def test_add_note_duplicate_refusal_leaves_col_untouched(
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
     # Seed via SQL so the seed itself does not bump col.mod.
     _insert_note(db_path, note_id=500, front="hola", back="hello")
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     conn.execute("UPDATE notes SET csum = ? WHERE id = 500", (store._field_checksum("hola"),))
     conn.commit()
     conn.close()
@@ -870,20 +760,11 @@ def test_add_note_duplicate_check_is_scoped_to_notetype(
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
 
     # Same first field already exists, but under a different notetype (mid 20).
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        "INSERT INTO notetypes (id, name, config) VALUES (?, ?, ?)", (20, "Cloze-ish", b"")
+    col = Collection(db_path)
+    col.insert_notetype(id=20, name="Cloze-ish", fields=["Text"], templates=[])
+    col.insert_note(
+        id=600, mid=20, fields=["hola"], mod=1, usn=-1, csum=store._field_checksum("hola")
     )
-    conn.execute("INSERT INTO fields (ntid, ord, name) VALUES (?, ?, ?)", (20, 0, "Text"))
-    conn.execute(
-        """
-        INSERT INTO notes (id, guid, mid, mod, usn, tags, flds, sfld, csum, flags, data)
-        VALUES (?, ?, ?, 1, -1, '', ?, ?, ?, 0, '')
-        """,
-        (600, "guid-600", 20, "hola", "hola", store._field_checksum("hola")),
-    )
-    conn.commit()
-    conn.close()
 
     nid = _add_basic(store, "hola", allow_duplicate=False)
 
@@ -937,7 +818,7 @@ def test_add_note_empty_check_runs_before_duplicate_check(
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
     _insert_note(db_path, note_id=500, front="   ", back="legacy")
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     conn.execute("UPDATE notes SET csum = ? WHERE id = 500", (store._field_checksum("   "),))
     conn.commit()
     conn.close()
@@ -1183,3 +1064,43 @@ def test_update_note_writes_stripped_sfld(
     assert note["flds"] == "<b>Zebra</b>&nbsp;\x1fA"
     assert note["sfld"] == "Zebra "
     assert note["csum"] == store._field_checksum("Zebra ")
+
+
+# --- sync bookkeeping, every note-side mutator (#37 / #47) --------------------------------
+
+
+@pytest.mark.parametrize(
+    ("mutate", "table", "row_id"),
+    [
+        (lambda s: s.add_note(deck="Default", notetype="Basic", fields={"Front": "N", "Back": "A"},
+                              tags=None, allow_duplicate=False), "notes", None),
+        (lambda s: s.update_note(note_id=500, fields={"Back": "B2"}, tags=None), "notes", 500),
+        (lambda s: s.update_note(note_id=500, fields=None, tags=["x"]), "notes", 500),
+        (lambda s: s.add_tags([500], ["t"]), "notes", 500),
+        (lambda s: s.remove_tags([500], ["old"]), "notes", 500),
+        (lambda s: s.rename_tag(old_tag="old", new_tag="new"), "notes", 500),
+        (lambda s: s.add_notes([{"deck": "Default", "notetype": "Basic",
+                                 "fields": {"Front": "B1", "Back": "A"}}]), "notes", None),
+    ],
+    ids=["add_note", "update_fields", "update_tags", "add_tags", "remove_tags", "rename_tag",
+         "add_notes"],
+)
+def test_every_note_mutator_flags_the_row_and_bumps_col_mod(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mutate, table, row_id
+) -> None:
+    """Anki's sync only scans for ``usn = -1`` rows when ``col.mod`` moved (#47);
+    a mutator that forgets either is invisible to the next sync. Seeded rows
+    start synced (``usn = 0``) so the re-flag is observable."""
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    col = Collection(db_path)
+    col.insert_note(id=500, fields=["Q", "A"], tags=["old"], mod=1, usn=0)
+
+    result = mutate(store)
+
+    target = row_id
+    if target is None:  # created: find the new row
+        target = next(nid for nid in col.ids("notes") if nid != 500)
+        if isinstance(result, list):
+            assert result == [target]
+    col.assert_synced(table, target)
