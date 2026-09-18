@@ -8,12 +8,8 @@ from typing import Any
 import pytest
 
 from anki_cli.backends.protocol import JSONValue
-from anki_cli.db.anki_direct import (
-    AnkiDirectReadStore,
-    DuplicateNoteError,
-    EmptyNoteError,
-    NoteRejectedError,
-)
+from anki_cli.db.errors import DuplicateNoteError, EmptyNoteError, NoteRejectedError
+from anki_cli.db.store import AnkiDirectStore
 from tests.anki_schema import connect
 from tests.conftest import COL_BASE_MOD_MS, Collection, new_collection
 from tests.integration.conftest import (
@@ -52,7 +48,7 @@ def _checksum(first_field: str) -> int:
     return int(digest[:8], 16)
 
 
-def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
+def _make_store(tmp_path: Path) -> tuple[AnkiDirectStore, Path]:
     """Decks Default/Other, notetype 10 "Basic" (Front/Back) with **no
     templates**: add_note then relies on the ensure_not_empty fallback (one
     card, ord 0), which is what these tests were written against. Tests that
@@ -364,7 +360,7 @@ def test_field_checksum_matches_anki(
     """
     db_path = tmp_path / "collection.db"
     db_path.touch()  # pure function — only the path must exist
-    store = AnkiDirectReadStore(db_path)
+    store = AnkiDirectStore(db_path)
 
     assert store._field_checksum(first_field) == expected
 
@@ -379,7 +375,7 @@ def test_field_checksum_srcless_media_tag_is_linear(tmp_path: Path) -> None:
     attrs = " ".join(f'a{i}="v{i}"' for i in range(40))
     db_path = tmp_path / "collection.db"
     db_path.touch()
-    store = AnkiDirectReadStore(db_path)
+    store = AnkiDirectStore(db_path)
 
     t0 = time.perf_counter()
     assert store._field_checksum(f"<img {attrs}>Q") == CSUM_Q
@@ -655,7 +651,7 @@ def test_update_note_tags_can_unlock_a_tags_template(
 # the tests then hold regardless of how the fixture helper populates ``csum``.
 
 
-def _add_basic(store: AnkiDirectReadStore, front: str, *, allow_duplicate: bool) -> int:
+def _add_basic(store: AnkiDirectStore, front: str, *, allow_duplicate: bool) -> int:
     return store.add_note(
         deck="Default",
         notetype="Basic",

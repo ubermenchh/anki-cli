@@ -3,11 +3,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.store import AnkiDirectStore
 from anki_cli.db.timing import sched_timing_today_v1
 
 
-def _make_store(tmp_path: Path) -> AnkiDirectReadStore:
+def _make_store(tmp_path: Path) -> AnkiDirectStore:
     db_path = tmp_path / "collection.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -16,7 +16,7 @@ def _make_store(tmp_path: Path) -> AnkiDirectReadStore:
     conn.commit()
     conn.close()
 
-    return AnkiDirectReadStore(db_path)
+    return AnkiDirectStore(db_path)
 
 
 def test_parse_card_data_empty_string_returns_empty_dict(tmp_path: Path) -> None:

@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from anki_cli.backends.ankiconnect import AnkiConnectBackend
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.store import AnkiDirectStore
 from anki_cli.models.entities import Card, Deck, Note, Notetype
 from tests.conftest import Collection
 
@@ -19,7 +19,7 @@ CANONICAL_CARD_KEYS = set(Card.model_fields) - {"deckId", "notetype_id", "flags"
 CANONICAL_NOTE_KEYS = {"id", "mod", "tags", "fields"}
 
 
-def _direct(collection: Collection) -> AnkiDirectReadStore:
+def _direct(collection: Collection) -> AnkiDirectStore:
     """The seeded fixture (Default deck 1, Basic notetype 10) plus one note/card
     mirroring the AnkiConnect fake below."""
     collection.insert_note(id=100, fields=["front", "back"], tags=["t"], mod=1, usn=-1)

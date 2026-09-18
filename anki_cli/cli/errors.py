@@ -24,7 +24,7 @@ from anki_cli.backends.detect import DetectionError
 from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.config_runtime import ConfigError
 from anki_cli.core.template import TemplateParseError
-from anki_cli.db.anki_direct import DirectWriteBlockedError, UnsupportedCollectionError
+from anki_cli.db.errors import DirectWriteBlockedError, UnsupportedCollectionError
 from anki_cli.db.search_sql import SearchParseError
 from anki_cli.models.output import ErrorCode, ExitCode, JSONValue
 

@@ -1,18 +1,19 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fsrs import State
 
-import anki_cli.db.anki_direct as direct_mod
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.store import AnkiDirectStore
 from tests.anki_schema import connect
 from tests.conftest import new_collection, seed_review_card
 
 
-def _make_store_with_cards_revlog(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
+def _make_store_with_cards_revlog(tmp_path: Path) -> tuple[AnkiDirectStore, Path]:
     """Bare schema-18 collection with review card 100 already flagged ``usn=7``
     (so a restore that re-flags it is observable)."""
     col = new_collection(tmp_path / "collection.anki2", seed=False)
@@ -20,7 +21,7 @@ def _make_store_with_cards_revlog(tmp_path: Path) -> tuple[AnkiDirectReadStore, 
     return col.store(writable=False), col.db_path
 
 
-def _make_answer_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
+def _make_answer_store(tmp_path: Path) -> tuple[AnkiDirectStore, Path]:
     """The same card test_anki_direct_answer_card seeds (ivl 10, usn 0)."""
     col = new_collection(tmp_path / "collection.anki2", seed=False)
     seed_review_card(col)
@@ -106,7 +107,7 @@ def test_restore_card_state_updates_card_and_deletes_recorded_revlog_row(
 ) -> None:
     store, db_path = _make_store_with_cards_revlog(tmp_path)
 
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1234.567)
+    monkeypatch.setattr(time, "time", lambda: 1234.567)
 
     # Older revlog row; preserved.
     _insert_revlog_row(db_path, row_id=1000, cid=100)
@@ -264,7 +265,7 @@ def test_restore_card_state_missing_target_card_returns_restored_false(
     assert _revlog_rows(db_path) == []
 
 
-def _fake_answer_internals(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectReadStore) -> None:
+def _fake_answer_internals(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectStore) -> None:
     """Stub the FSRS internals so answer_card is deterministic.
 
     ``_allocate_epoch_ms_id`` is deliberately left alone so the revlog row gets
@@ -295,7 +296,7 @@ def _fake_answer_internals(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectRea
         store,
         "_card_row_to_fsrs",
         lambda row, *, timing, now_dt, **_steps: SimpleNamespace(
-            state=direct_mod.State.Learning,
+            state=State.Learning,
             step=0,
             stability=None,
             difficulty=None,

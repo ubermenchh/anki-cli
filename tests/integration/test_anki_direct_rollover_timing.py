@@ -9,12 +9,13 @@ result reaches the public read/write paths.
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
 
-import anki_cli.db.anki_direct as direct_mod
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+import anki_cli.db.connection as connection_mod
+from anki_cli.db.store import AnkiDirectStore
 from tests.conftest import Collection, new_collection
 
 EST_WEST = 5 * 60
@@ -29,7 +30,7 @@ def _make_store(
     crt: int = CRT,
     config: dict[str, object] | None = None,
     with_config_table: bool = True,
-) -> tuple[AnkiDirectReadStore, Path]:
+) -> tuple[AnkiDirectStore, Path]:
     """``with_config_table=False`` drops Anki's ``config`` table after building
     the real schema: not an Anki shape, but the store tolerates it (v1 fallback)
     and one test pins that."""
@@ -52,8 +53,8 @@ def _insert_card(db_path: Path, *, card_id: int, type_: int, queue: int, due: in
 @pytest.fixture
 def est_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin wall clock to the issue's `now` and the machine's zone to EST."""
-    monkeypatch.setattr(direct_mod.time, "time", lambda: NOW)
-    monkeypatch.setattr(direct_mod, "local_minutes_west_for_stamp", lambda _epoch: EST_WEST)
+    monkeypatch.setattr(time, "time", lambda: NOW)
+    monkeypatch.setattr(connection_mod, "local_minutes_west_for_stamp", lambda _epoch: EST_WEST)
 
 
 V2_NEW = {"schedVer": 2, "rollover": 4, "creationOffset": EST_WEST}
@@ -150,7 +151,7 @@ def test_current_offset_comes_from_the_machine_clock(
     conn.commit()
     conn.close()
 
-    monkeypatch.setattr(direct_mod, "local_minutes_west_for_stamp", lambda _e: 7 * 60)  # MST
+    monkeypatch.setattr(connection_mod, "local_minutes_west_for_stamp", lambda _e: 7 * 60)  # MST
     assert store._today_due_index(now) == 507
-    monkeypatch.setattr(direct_mod, "local_minutes_west_for_stamp", lambda _e: 6 * 60)  # MDT
+    monkeypatch.setattr(connection_mod, "local_minutes_west_for_stamp", lambda _e: 6 * 60)  # MDT
     assert store._today_due_index(now) == 507

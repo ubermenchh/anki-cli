@@ -18,7 +18,7 @@ from anki_cli.cli.commands.note import (
     notes_cmd,
 )
 from anki_cli.cli.dispatcher import get_command
-from anki_cli.db.anki_direct import DuplicateNoteError, EmptyNoteError
+from anki_cli.db.errors import DuplicateNoteError, EmptyNoteError
 from tests.cli.conftest import base_obj as _base_obj
 from tests.cli.conftest import error_payload as _error_payload
 from tests.cli.conftest import patch_session as _patch_session

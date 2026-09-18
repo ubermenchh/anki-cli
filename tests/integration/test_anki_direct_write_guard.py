@@ -21,13 +21,14 @@ from typing import Any
 import pytest
 
 import anki_cli.db.lock as lock_mod
-from anki_cli.db.anki_direct import AnkiDirectReadStore, DirectWriteBlockedError
+from anki_cli.db.errors import DirectWriteBlockedError
+from anki_cli.db.store import AnkiDirectStore
 from tests.anki_schema import connect
 from tests.conftest import Collection, new_collection
 from tests.integration.conftest import assert_col_modified, assert_col_untouched
 
 
-def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
+def _make_store(tmp_path: Path) -> tuple[AnkiDirectStore, Path]:
     """Real schema; the guard itself is what these tests exercise, so the store
     is *not* made writable here."""
     col = new_collection(tmp_path / "collection.anki2", seed=False)
@@ -121,7 +122,7 @@ def test_write_refused_when_lock_probe_is_inconclusive(
     """
     bad = tmp_path / "collection.anki2"
     bad.mkdir()
-    store = AnkiDirectReadStore(bad)
+    store = AnkiDirectStore(bad)
     monkeypatch.setattr(lock_mod, "anki_process_running", lambda: False)
 
     with pytest.raises(DirectWriteBlockedError, match="Cannot verify the collection lock state"):

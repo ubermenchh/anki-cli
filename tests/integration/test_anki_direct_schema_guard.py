@@ -8,11 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from anki_cli.db.anki_direct import (
-    MIN_SUPPORTED_SCHEMA_VERSION,
-    AnkiDirectReadStore,
-    UnsupportedCollectionError,
-)
+from anki_cli.db.errors import MIN_SUPPORTED_SCHEMA_VERSION, UnsupportedCollectionError
+from anki_cli.db.store import AnkiDirectStore
 from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
 
 
@@ -42,7 +39,7 @@ def test_schema_11_collection_is_refused_with_upgrade_hint(tmp_path: Path) -> No
     db = _legacy_collection(tmp_path, ver=11)
 
     with pytest.raises(UnsupportedCollectionError) as excinfo:
-        AnkiDirectReadStore(db)
+        AnkiDirectStore(db)
 
     message = str(excinfo.value)
     assert "schema 11" in message
@@ -55,7 +52,7 @@ def test_schema_11_collection_is_refused_with_upgrade_hint(tmp_path: Path) -> No
 def test_supported_schema_versions_construct(tmp_path: Path, ver: int) -> None:
     db = _legacy_collection(tmp_path, ver=ver)
 
-    store = AnkiDirectReadStore(db)
+    store = AnkiDirectStore(db)
 
     assert store.db_path == db.resolve()
 
@@ -64,7 +61,7 @@ def test_boundary_just_below_minimum_is_refused(tmp_path: Path) -> None:
     db = _legacy_collection(tmp_path, ver=MIN_SUPPORTED_SCHEMA_VERSION - 1)
 
     with pytest.raises(UnsupportedCollectionError):
-        AnkiDirectReadStore(db)
+        AnkiDirectStore(db)
 
 
 def test_real_col_ddl_from_conftest_is_accepted(tmp_path: Path) -> None:
@@ -75,7 +72,7 @@ def test_real_col_ddl_from_conftest_is_accepted(tmp_path: Path) -> None:
     conn.commit()
     conn.close()
 
-    AnkiDirectReadStore(db)  # must not raise
+    AnkiDirectStore(db)  # must not raise
 
 
 def _sqlite_with(script: str, rows: list[tuple[str, tuple]] | None = None):
@@ -117,7 +114,7 @@ def test_files_without_a_readable_version_are_left_alone(tmp_path: Path, label: 
     """Only the version is policed here; other problems surface from later queries."""
     db = build(tmp_path / f"{label}.anki2")
 
-    store = AnkiDirectReadStore(db)  # must not raise
+    store = AnkiDirectStore(db)  # must not raise
 
     # ... and "later queries" really do reject the file on their own terms.
     with pytest.raises(sqlite3.Error), store._connect() as conn:
@@ -144,7 +141,7 @@ def test_guard_handles_paths_with_uri_delimiters(tmp_path: Path, profile_name: s
     db = _legacy_collection(profile, ver=11)
 
     with pytest.raises(UnsupportedCollectionError, match="schema 11"):
-        AnkiDirectReadStore(db)
+        AnkiDirectStore(db)
 
     assert sorted(p.name for p in tmp_path.iterdir()) == [profile.name]
 
@@ -159,13 +156,13 @@ def test_guard_works_on_a_wal_collection_without_shm(tmp_path: Path) -> None:
     assert not (tmp_path / "collection.anki2-shm").exists()
 
     with pytest.raises(UnsupportedCollectionError):
-        AnkiDirectReadStore(db)
+        AnkiDirectStore(db)
 
 
 def test_guard_does_not_lock_the_file(tmp_path: Path) -> None:
     """The version probe opens read-only and closes; a writer must not be blocked."""
     db = _legacy_collection(tmp_path, ver=MIN_SUPPORTED_SCHEMA_VERSION)
-    AnkiDirectReadStore(db)
+    AnkiDirectStore(db)
 
     conn = sqlite3.connect(str(db), timeout=0.1)
     conn.execute("BEGIN IMMEDIATE")

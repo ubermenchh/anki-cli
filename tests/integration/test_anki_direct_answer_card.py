@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 import json
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fsrs import State
 
-import anki_cli.db.anki_direct as direct_mod
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+import anki_cli.db.scheduling as scheduling_mod
+from anki_cli.db.store import AnkiDirectStore
 from anki_cli.proto.anki.decks import DeckFiltered, DeckKindContainer
 from tests.anki_schema import connect
 from tests.conftest import Collection, new_collection, seed_review_card
 
 
-def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
+def _make_store(tmp_path: Path) -> tuple[AnkiDirectStore, Path]:
     """Bare schema-18 collection (no deck_config row — tests assert the FSRS
     fallback when it is absent) with one review card, id 100, in deck 1."""
     col = new_collection(tmp_path / "collection.anki2", seed=False)
@@ -103,7 +106,7 @@ def test_answer_card_updates_card_and_writes_revlog_non_lapse(
         store,
         "_card_row_to_fsrs",
         lambda row, *, timing, now_dt, **_steps: SimpleNamespace(
-            state=direct_mod.State.Learning,
+            state=State.Learning,
             step=0,
             stability=None,
             difficulty=None,
@@ -195,7 +198,7 @@ def test_answer_card_lapse_increments_lapses_and_sets_relearn_type(
         store,
         "_card_row_to_fsrs",
         lambda row, *, timing, now_dt, **_steps: SimpleNamespace(
-            state=direct_mod.State.Learning,
+            state=State.Learning,
             step=0,
             stability=None,
             difficulty=None,
@@ -252,14 +255,14 @@ def test_answer_card_day_learn_step_writes_day_index_and_positive_revlog_ivl(
     # Fixture col.crt is 0, so "today" is a large day index; pin the clock.
     now_sec = 1_700_000_000
     today = now_sec // 86400
-    monkeypatch.setattr(direct_mod.time, "time", lambda: now_sec)
+    monkeypatch.setattr(time, "time", lambda: now_sec)
 
-    class _Now(direct_mod.datetime):
+    class _Now(datetime):
         @classmethod
         def now(cls, tz=None):  # type: ignore[override]
-            return direct_mod.datetime.fromtimestamp(now_sec, tz=direct_mod.UTC)
+            return datetime.fromtimestamp(now_sec, tz=UTC)
 
-    monkeypatch.setattr(direct_mod, "datetime", _Now)
+    monkeypatch.setattr(scheduling_mod, "datetime", _Now)
 
     # Card is already in day-learn: due tomorrow-ish (today + 1) -> lastIvl +1.
     conn = connect(str(db_path))
@@ -270,7 +273,7 @@ def test_answer_card_day_learn_step_writes_day_index_and_positive_revlog_ivl(
     conn.commit()
     conn.close()
 
-    two_days_later = direct_mod.datetime.fromtimestamp(now_sec + 2 * 86400, tz=direct_mod.UTC)
+    two_days_later = datetime.fromtimestamp(now_sec + 2 * 86400, tz=UTC)
     monkeypatch.setattr(
         store,
         "_build_scheduler",
@@ -281,7 +284,7 @@ def test_answer_card_day_learn_step_writes_day_index_and_positive_revlog_ivl(
                 {
                     "review_card": lambda self, card, rating, review_datetime: (
                         SimpleNamespace(
-                            state=direct_mod.State.Learning,
+                            state=State.Learning,
                             step=1,
                             due=two_days_later,
                             stability=None,
@@ -332,7 +335,7 @@ def _park_card_in_filtered_deck(db_path: Path, *, filtered_did: int, home_did: i
     conn.close()
 
 
-def _fake_scheduler(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectReadStore, captured: dict):
+def _fake_scheduler(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectStore, captured: dict):
     class FakeScheduler:
         def review_card(self, card, rating, review_datetime):
             captured["fsrs_due"] = card.due
@@ -372,7 +375,7 @@ def test_answer_card_in_rescheduling_filtered_deck_sends_it_home(
     # Options come from the home deck, and FSRS saw the real due (odue = day 30
     # after crt 0), not the filtered-deck position -7.
     assert captured["scheduler_deck"] == 1
-    assert captured["fsrs_due"] == direct_mod.datetime.fromtimestamp(30 * 86400, tz=direct_mod.UTC)
+    assert captured["fsrs_due"] == datetime.fromtimestamp(30 * 86400, tz=UTC)
 
 
 def test_answer_card_in_preview_filtered_deck_is_refused(

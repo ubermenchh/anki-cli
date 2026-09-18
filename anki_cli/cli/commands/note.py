@@ -9,7 +9,7 @@ import click
 
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError
 from anki_cli.cli.command import CommandContext, ErrorMap, anki_command
-from anki_cli.db.anki_direct import DuplicateNoteError
+from anki_cli.db.errors import DuplicateNoteError
 from anki_cli.models.output import JSONValue
 
 # Keys a note:bulk item may not use as field names: they read like AnkiConnect's

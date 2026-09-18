@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
 
-import anki_cli.db.anki_direct as direct_mod
-from anki_cli.db.anki_direct import AnkiDirectReadStore
 from anki_cli.db.search_sql import SearchParseError
+from anki_cli.db.store import AnkiDirectStore
 from tests.conftest import new_collection
 
 _TYPE_FOR_QUEUE = {0: 0, 1: 1, 2: 2, 3: 1}
@@ -20,7 +20,7 @@ def _make_store(
     notes: list[tuple[int, str, str, int]],
     cards: list[tuple[int, int, int, int, int]],
     col_crt: int = 0,
-) -> AnkiDirectReadStore:
+) -> AnkiDirectStore:
     """Rows: decks ``(id, name)``; notes ``(id, tags, flds, mod)``; cards
     ``(id, nid, did, queue, due)``. ``type`` follows ``queue`` the way Anki sets
     it for an unsuspended card (new/learn/review/relearn 0/1/2/3, day-learn is
@@ -39,7 +39,7 @@ def _make_store(
     return col.store(writable=False)
 
 
-def _seed_store(tmp_path: Path) -> AnkiDirectReadStore:
+def _seed_store(tmp_path: Path) -> AnkiDirectStore:
     store = _make_store(
         tmp_path,
         decks=[
@@ -87,8 +87,8 @@ def _seed_store(tmp_path: Path) -> AnkiDirectReadStore:
 def test_find_note_ids_by_tag_and_deck(tmp_path: Path) -> None:
     store = _seed_store(tmp_path)
 
-    assert store.find_note_ids("tag:foo") == [101, 102]
-    assert store.find_note_ids('tag:foo deck:"Lang::Spanish"') == [101]
+    assert store.find_notes("tag:foo") == [101, 102]
+    assert store.find_notes('tag:foo deck:"Lang::Spanish"') == [101]
 
 
 def test_deck_filter_matches_parent_and_children_like_anki(tmp_path: Path) -> None:
@@ -101,16 +101,16 @@ def test_deck_filter_matches_parent_and_children_like_anki(tmp_path: Path) -> No
         cards=[(900 + n, n, n - 100, 0, 0) for n in (101, 102, 103, 104)],
     )
 
-    assert store.find_card_ids("deck:Lang") == [1001, 1002, 1003]
-    assert store.find_card_ids("deck:Lang::Spanish") == [1002, 1003]
-    assert store.find_card_ids("deck:Language") == [1004]
-    assert store.find_card_ids("-deck:Lang") == [1004]
-    assert store.find_note_ids("deck:Lang") == [101, 102, 103]
+    assert store.find_cards("deck:Lang") == [1001, 1002, 1003]
+    assert store.find_cards("deck:Lang::Spanish") == [1002, 1003]
+    assert store.find_cards("deck:Language") == [1004]
+    assert store.find_cards("-deck:Lang") == [1004]
+    assert store.find_notes("deck:Lang") == [101, 102, 103]
     # ASCII case-insensitive via SQLite LIKE (guards against a swap to = / GLOB).
-    assert store.find_card_ids("deck:lang") == [1001, 1002, 1003]
+    assert store.find_cards("deck:lang") == [1001, 1002, 1003]
     # rslib special values.
-    assert store.find_card_ids("deck:*") == [1001, 1002, 1003, 1004]
-    assert store.find_card_ids("-deck:*") == []
+    assert store.find_cards("deck:*") == [1001, 1002, 1003, 1004]
+    assert store.find_cards("-deck:*") == []
 
 
 def test_deck_filter_follows_cards_visiting_a_filtered_deck(tmp_path: Path) -> None:
@@ -127,46 +127,46 @@ def test_deck_filter_follows_cards_visiting_a_filtered_deck(tmp_path: Path) -> N
     conn.commit()
     conn.close()
 
-    assert store.find_card_ids("deck:Home") == [1001]
-    assert store.find_card_ids("deck:Cram") == [1001, 1002]
-    assert store.find_card_ids("deck:filtered") == [1001]
-    assert store.find_note_ids("deck:filtered") == [101]
+    assert store.find_cards("deck:Home") == [1001]
+    assert store.find_cards("deck:Cram") == [1001, 1002]
+    assert store.find_cards("deck:filtered") == [1001]
+    assert store.find_notes("deck:filtered") == [101]
     with pytest.raises(SearchParseError, match="deck:current is not supported"):
-        store.find_card_ids("deck:current")
+        store.find_cards("deck:current")
 
 
 def test_find_note_ids_supports_deck_wildcards_and_text_search(tmp_path: Path) -> None:
     store = _seed_store(tmp_path)
 
-    assert store.find_note_ids("deck:Lang::* tag:foo") == [101, 102]
-    assert store.find_note_ids("bonjour") == [102]
-    assert store.find_note_ids("nid:103") == [103]
+    assert store.find_notes("deck:Lang::* tag:foo") == [101, 102]
+    assert store.find_notes("bonjour") == [102]
+    assert store.find_notes("nid:103") == [103]
 
 
 def test_find_card_ids_basic_token_filters(tmp_path: Path) -> None:
     store = _seed_store(tmp_path)
 
-    assert store.find_card_ids("cid:1005") == [1005]
-    assert store.find_card_ids("nid:102") == [1004, 1005]
-    assert store.find_card_ids("tag:foo deck:Lang::Spanish") == [1001, 1002, 1003]
+    assert store.find_cards("cid:1005") == [1005]
+    assert store.find_cards("nid:102") == [1004, 1005]
+    assert store.find_cards("tag:foo deck:Lang::Spanish") == [1001, 1002, 1003]
 
 
 def test_find_card_ids_is_filters_and_due_logic(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_000_000)
     store = _seed_store(tmp_path)
 
     # The fixture defaults type from queue, so suspended/buried cards are type 0.
-    assert store.find_card_ids("is:new") == [1001, 1007, 1008, 1009]
-    assert store.find_card_ids("is:new -is:suspended -is:buried") == [1001]
-    assert store.find_card_ids("is:learn") == [1002, 1003, 1004, 1010]
-    assert store.find_card_ids("is:review") == [1005, 1006]
-    assert store.find_card_ids("is:suspended") == [1007]
+    assert store.find_cards("is:new") == [1001, 1007, 1008, 1009]
+    assert store.find_cards("is:new -is:suspended -is:buried") == [1001]
+    assert store.find_cards("is:learn") == [1002, 1003, 1004, 1010]
+    assert store.find_cards("is:review") == [1005, 1006]
+    assert store.find_cards("is:suspended") == [1007]
     # New cards are never "due" (rslib StateKind::Due); 1001 is queue 0.
-    assert store.find_card_ids("is:due") == [1002, 1004, 1005]
-    assert store.find_card_ids("is:due is:new") == []
+    assert store.find_cards("is:due") == [1002, 1004, 1005]
+    assert store.find_cards("is:due is:new") == []
 
 
 def test_is_new_and_is_review_follow_card_type_not_queue(
@@ -176,7 +176,7 @@ def test_is_new_and_is_review_follow_card_type_not_queue(
     """rslib write_state: New/Review are card types. A suspended new card is
     still is:new; a relearning card (type 3, queue 1) is still is:review and,
     once its step is due, is:due; a preview-queue card (queue 4) is due too."""
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_000_000)
     store = _make_store(
         tmp_path,
         decks=[(1, "Default")],
@@ -196,65 +196,65 @@ def test_is_new_and_is_review_follow_card_type_not_queue(
     conn.commit()
     conn.close()
 
-    assert store.find_card_ids("is:new") == [1, 5]
-    assert store.find_card_ids("is:new is:suspended") == [1]
-    assert store.find_card_ids("is:review") == [2, 3, 4]
-    assert store.find_card_ids("is:learn") == [2]
-    assert store.find_card_ids("is:due") == [2, 3, 4]
+    assert store.find_cards("is:new") == [1, 5]
+    assert store.find_cards("is:new is:suspended") == [1]
+    assert store.find_cards("is:review") == [2, 3, 4]
+    assert store.find_cards("is:learn") == [2]
+    assert store.find_cards("is:due") == [2, 3, 4]
 
 
 def test_find_card_ids_combines_due_and_deck_filters(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_000_000)
     store = _seed_store(tmp_path)
 
-    assert store.find_card_ids("is:due deck:Lang::French") == [1004, 1005]
-    assert store.find_card_ids("is:due deck:Default") == []
+    assert store.find_cards("is:due deck:Lang::French") == [1004, 1005]
+    assert store.find_cards("is:due deck:Default") == []
 
 def test_find_note_ids_supports_or_and_parentheses(tmp_path: Path) -> None:
     store = _seed_store(tmp_path)
 
-    assert store.find_note_ids("tag:spanish OR tag:bar deck:Default") == [101, 103]
-    assert store.find_note_ids("(tag:spanish OR tag:bar) deck:Default") == [103]
+    assert store.find_notes("tag:spanish OR tag:bar deck:Default") == [101, 103]
+    assert store.find_notes("(tag:spanish OR tag:bar) deck:Default") == [103]
 
 
 def test_find_card_ids_supports_or_and_parentheses(tmp_path: Path) -> None:
     store = _seed_store(tmp_path)
 
-    assert store.find_card_ids("tag:spanish OR tag:french is:new") == [1001, 1002, 1003]
-    assert store.find_card_ids("(tag:spanish OR tag:french) is:new") == [1001]
+    assert store.find_cards("tag:spanish OR tag:french is:new") == [1001, 1002, 1003]
+    assert store.find_cards("(tag:spanish OR tag:french) is:new") == [1001]
 
 
 def test_find_note_and_card_ids_support_unary_not(tmp_path: Path) -> None:
     store = _seed_store(tmp_path)
 
-    assert store.find_note_ids("tag:foo -deck:Lang::French") == [101]
-    assert store.find_card_ids("is:review -deck:Default") == [1005]
+    assert store.find_notes("tag:foo -deck:Lang::French") == [101]
+    assert store.find_cards("is:review -deck:Default") == [1005]
 
 
 def test_find_card_and_note_ids_flag_filters(tmp_path: Path) -> None:
     store = _seed_store(tmp_path)
 
-    assert store.find_card_ids("flag:3") == [1002, 1005]
-    assert store.find_note_ids("flag:3") == [101, 102]
+    assert store.find_cards("flag:3") == [1002, 1005]
+    assert store.find_notes("flag:3") == [101, 102]
 
 
 def test_find_card_and_note_ids_prop_filters(tmp_path: Path) -> None:
     store = _seed_store(tmp_path)
 
-    assert store.find_card_ids("prop:ivl>10") == [1005]
-    assert store.find_card_ids("prop:reps>=6") == [1002, 1005]
-    assert store.find_note_ids("prop:reps>=6") == [101, 102]
-    assert store.find_note_ids("prop:lapses>1") == [102]
+    assert store.find_cards("prop:ivl>10") == [1005]
+    assert store.find_cards("prop:reps>=6") == [1002, 1005]
+    assert store.find_notes("prop:reps>=6") == [101, 102]
+    assert store.find_notes("prop:lapses>1") == [102]
 
 
 def test_find_card_and_note_ids_is_buried(tmp_path: Path) -> None:
     store = _seed_store(tmp_path)
 
-    assert store.find_card_ids("is:buried") == [1008, 1009]
-    assert store.find_note_ids("is:buried") == [103, 104]
+    assert store.find_cards("is:buried") == [1008, 1009]
+    assert store.find_notes("is:buried") == [103, 104]
 
 
 def test_tag_filter_matches_children_and_tag_none(tmp_path: Path) -> None:
@@ -272,17 +272,17 @@ def test_tag_filter_matches_children_and_tag_none(tmp_path: Path) -> None:
         cards=[(n + 900, n, 1, 0, 0) for n in (101, 102, 103, 104, 105, 106)],
     )
 
-    assert store.find_note_ids("tag:verb") == [101, 102]
-    assert store.find_note_ids("tag:verb::irregular") == [102]
-    assert store.find_note_ids("tag:adverb") == [105]
-    assert store.find_note_ids("tag:verb*") == [101, 102, 103]
-    assert store.find_note_ids("tag:none") == [104, 106]
-    assert store.find_card_ids("tag:verb") == [1001, 1002]
-    assert store.find_card_ids("-tag:verb") == [1003, 1004, 1005, 1006]
+    assert store.find_notes("tag:verb") == [101, 102]
+    assert store.find_notes("tag:verb::irregular") == [102]
+    assert store.find_notes("tag:adverb") == [105]
+    assert store.find_notes("tag:verb*") == [101, 102, 103]
+    assert store.find_notes("tag:none") == [104, 106]
+    assert store.find_cards("tag:verb") == [1001, 1002]
+    assert store.find_cards("-tag:verb") == [1003, 1004, 1005, 1006]
     # rslib: tag:* is every note, tagged or not; a tag with a space matches nothing.
-    assert store.find_note_ids("tag:*") == [101, 102, 103, 104, 105, 106]
-    assert store.find_note_ids("-tag:*") == []
-    assert store.find_note_ids('"tag:a b"') == []
+    assert store.find_notes("tag:*") == [101, 102, 103, 104, 105, 106]
+    assert store.find_notes("-tag:*") == []
+    assert store.find_notes('"tag:a b"') == []
 
 
 def test_note_prefix_is_an_alias_for_notetype(tmp_path: Path) -> None:
@@ -299,7 +299,7 @@ def test_added_uses_creation_time_and_the_scheduling_day(
     """``added:N`` is "created since N rollovers ago", read off the card id
     (creation ms) — not ``notes.mod``, which every edit bumps."""
     now = 1_000_000
-    monkeypatch.setattr(direct_mod.time, "time", lambda: now)
+    monkeypatch.setattr(time, "time", lambda: now)
     day = 86_400
     # v1 timing (no schedVer): next rollover is the next 86400 boundary.
     next_day_at = (now // day + 1) * day
@@ -329,17 +329,17 @@ def test_added_uses_creation_time_and_the_scheduling_day(
         ],
     )
 
-    assert store.find_card_ids("added:1") == [ids_ms["today"]]
-    assert store.find_card_ids("added:2") == sorted(
+    assert store.find_cards("added:1") == [ids_ms["today"]]
+    assert store.find_cards("added:2") == sorted(
         [ids_ms["on_cutoff"], ids_ms["late_yesterday"], ids_ms["yesterday"], ids_ms["today"]]
     )
-    assert store.find_card_ids("added:30") == sorted(ids_ms.values())
-    assert store.find_note_ids("added:1") == [1]
-    assert store.find_note_ids("added:2") == [1, 2, 3, 4]
+    assert store.find_cards("added:30") == sorted(ids_ms.values())
+    assert store.find_notes("added:1") == [1]
+    assert store.find_notes("added:2") == [1, 2, 3, 4]
     # rslib parse_added: n.max(1), negatives are a parse error.
-    assert store.find_card_ids("added:0") == store.find_card_ids("added:1")
+    assert store.find_cards("added:0") == store.find_cards("added:1")
     with pytest.raises(SearchParseError, match="non-negative"):
-        store.find_card_ids("added:-1")
+        store.find_cards("added:-1")
 
 
 def test_unknown_prefix_is_rejected_not_searched_as_text(tmp_path: Path) -> None:
@@ -347,10 +347,10 @@ def test_unknown_prefix_is_rejected_not_searched_as_text(tmp_path: Path) -> None
 
     for query in ("card:1", "rated:1", "mid:123", "did:1", "dupe:1,x", "front:hola"):
         with pytest.raises(SearchParseError, match="Unsupported filter"):
-            store.find_card_ids(query)
+            store.find_cards(query)
 
     with pytest.raises(SearchParseError, match=r"Supported: added, cid, deck") as excinfo:
-        store.find_note_ids("card:1")
+        store.find_notes("card:1")
     assert excinfo.value.position == 0
 
 
@@ -362,20 +362,20 @@ def test_escaped_colon_is_a_literal_text_search(tmp_path: Path) -> None:
         cards=[(1001, 101, 1, 0, 0), (1002, 102, 1, 0, 0)],
     )
 
-    assert store.find_note_ids(r"12\:30") == [101]
-    assert store.find_note_ids(r'"12\:30"') == [101]
+    assert store.find_notes(r"12\:30") == [101]
+    assert store.find_notes(r'"12\:30"') == [101]
     # A leading colon has no prefix and is plain text too.
-    assert store.find_note_ids(":30") == [101]
+    assert store.find_notes(":30") == [101]
     # Quotes do not protect the colon (Anki: "deck:x" is still a deck search).
     with pytest.raises(SearchParseError, match="Unsupported filter 'x:'"):
-        store.find_note_ids('"x:y"')
+        store.find_notes('"x:y"')
 
 
 def test_invalid_queries_raise_parse_errors(tmp_path: Path) -> None:
     store = _seed_store(tmp_path)
 
     with pytest.raises(SearchParseError, match="Missing closing"):
-        store.find_card_ids("(tag:foo OR tag:bar")
+        store.find_cards("(tag:foo OR tag:bar")
 
     with pytest.raises(SearchParseError, match="Invalid prop filter"):
-        store.find_note_ids("prop:ivl>>3")
+        store.find_notes("prop:ivl>>3")

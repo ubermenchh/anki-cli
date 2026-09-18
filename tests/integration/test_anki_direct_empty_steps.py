@@ -10,14 +10,15 @@ falls back to the library defaults.
 
 from __future__ import annotations
 
-from datetime import timedelta
+import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-import anki_cli.db.anki_direct as direct_mod
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+import anki_cli.db.scheduling as scheduling_mod
+from anki_cli.db.store import AnkiDirectStore
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
 from tests.anki_schema import connect
 from tests.conftest import Collection, new_collection, normal_deck_kind
@@ -27,7 +28,7 @@ NOW_SEC = 1_700_000_000
 TODAY = NOW_SEC // 86400
 
 
-def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
+def _make_store(tmp_path: Path) -> tuple[AnkiDirectStore, Path]:
     col = new_collection(tmp_path / "collection.anki2", seed=False)
     col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
     col.insert_note(id=1000, fields=["Q", "A"])
@@ -83,20 +84,20 @@ def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
     return dict(row)
 
 
-def _pin_clock(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectReadStore) -> None:
+def _pin_clock(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectStore) -> None:
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
     ids = iter(range(9001, 9100))
     monkeypatch.setattr(
         store, "_allocate_epoch_ms_id", lambda conn, table: next(ids)
     )
-    monkeypatch.setattr(direct_mod.time, "time", lambda: NOW_SEC)
+    monkeypatch.setattr(time, "time", lambda: NOW_SEC)
 
-    class _Now(direct_mod.datetime):
+    class _Now(datetime):
         @classmethod
         def now(cls, tz=None):  # type: ignore[override]
-            return direct_mod.datetime.fromtimestamp(NOW_SEC, tz=direct_mod.UTC)
+            return datetime.fromtimestamp(NOW_SEC, tz=UTC)
 
-    monkeypatch.setattr(direct_mod, "datetime", _Now)
+    monkeypatch.setattr(scheduling_mod, "datetime", _Now)
 
 
 def test_empty_step_lists_reach_the_scheduler_untouched(tmp_path: Path) -> None:

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, cast
 
 import betterproto
 import pytest
 
-import anki_cli.db.anki_direct as direct_mod
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.store import AnkiDirectStore
 from anki_cli.proto.anki.decks import (
     DeckCommon,
     DeckKindContainer,
@@ -21,7 +21,7 @@ def _make_store(
     tmp_path: Path,
     *,
     include_default: bool = True,
-) -> tuple[AnkiDirectReadStore, Path]:
+) -> tuple[AnkiDirectStore, Path]:
     col = new_collection(tmp_path / "collection.anki2", seed=False)
     col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
     if include_default:
@@ -157,7 +157,7 @@ def test_write_deck_creates_from_template_and_applies_overrides(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     result = store.write_deck(
         name="  New Deck  ",
@@ -183,7 +183,7 @@ def test_write_deck_updates_existing_by_name(
     store, db_path = _make_store(tmp_path)
     _insert_deck(db_path, deck_id=2, name="Work", config_id=1, description="old")
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     result = store.write_deck(name="Work", config_id=7, description="updated")
     assert result == {"deck": "Work", "id": 2, "created": False, "updated": True}
@@ -203,7 +203,7 @@ def test_write_deck_updates_existing_by_id_and_renames(
     store, db_path = _make_store(tmp_path)
     _insert_deck(db_path, deck_id=20, name="OldName", config_id=3, description="x")
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     result = store.write_deck(name="Renamed", deck_id=20)
     assert result == {"deck": "Renamed", "id": 20, "created": False, "updated": True}
@@ -246,7 +246,7 @@ def test_rename_deck_subtree_success(
     _insert_deck(db_path, deck_id=12, name="Base::Child::Leaf")
     _insert_deck(db_path, deck_id=13, name="Other")
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     result = store.rename_deck(old_name="Base", new_name="Renamed")
     assert result["from"] == "Base"
@@ -516,7 +516,7 @@ def test_delete_filtered_deck_returns_cards_home_instead_of_deleting(
     )
 
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     result = store.delete_deck("Cram")
     assert result == {

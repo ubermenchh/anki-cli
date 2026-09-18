@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.store import AnkiDirectStore
 from tests.conftest import new_collection
 
 _TYPE_FOR_QUEUE = {0: 0, 1: 1, 2: 2, 3: 1}
@@ -13,7 +13,7 @@ def _make_store(
     *,
     decks: list[tuple[int, str]],
     cards: list[tuple[int, int, int, int]],
-) -> AnkiDirectReadStore:
+) -> AnkiDirectStore:
     """``cards`` rows are ``(id, did, queue, due)``; ``type`` follows ``queue`` the
     way Anki sets it for an unsuspended card (suspended/buried -> new)."""
     col = new_collection(tmp_path / "collection.anki2", seed=False)

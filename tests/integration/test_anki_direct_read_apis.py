@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
 
-import anki_cli.db.anki_direct as direct_mod
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.store import AnkiDirectStore
 from anki_cli.models.entities import Deck, Notetype
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
 from anki_cli.proto.anki.decks import (
@@ -24,7 +24,7 @@ from anki_cli.proto.anki.notetypes import (
 from tests.conftest import Collection, new_collection
 
 
-def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
+def _make_store(tmp_path: Path) -> tuple[AnkiDirectStore, Path]:
     col = new_collection(tmp_path / "collection.anki2", seed=False)
     return col.store(writable=False), col.db_path
 
@@ -208,7 +208,7 @@ def test_get_deck_includes_due_counts_and_next_due(
     tmp_path: Path,
 ) -> None:
     store, db_path = _make_store(tmp_path)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_000_000)
 
     _insert_deck_config(
         db_path,
@@ -242,7 +242,7 @@ def test_get_deck_new_only_has_no_next_due(
     tmp_path: Path,
 ) -> None:
     store, db_path = _make_store(tmp_path)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_000_000)
 
     _insert_deck_config(
         db_path,
