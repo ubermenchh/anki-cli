@@ -78,8 +78,6 @@ exclude = ["anki_cli/proto/**"]
 testpaths = ["tests"]
 addopts = "-m 'not tui'"
 markers = [
-  "unit: fast unit tests",
-  "integration: integration tests",
+  "integration: drives the direct backend against a real schema-18 SQLite file",
   "tui: tests requiring optional TUI dependencies",
-  "slow: long-running tests",
 ]

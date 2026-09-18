@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -10,95 +9,26 @@ import pytest
 
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
-from anki_cli.proto.anki.decks import DeckFiltered, DeckKindContainer, DeckNormal
-from tests.integration.conftest import COL_TABLE_SQL, insert_col_row
+from anki_cli.proto.anki.decks import DeckFiltered, DeckKindContainer
+from tests.anki_schema import connect
+from tests.conftest import Collection, new_collection, seed_review_card
 
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    """Bare schema-18 collection (no deck_config row — tests assert the FSRS
+    fallback when it is absent) with one review card, id 100, in deck 1."""
+    col = new_collection(tmp_path / "collection.anki2", seed=False)
+    seed_review_card(col)
+    return col.store(writable=False), col.db_path
 
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            nid INTEGER NOT NULL,
-            did INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            mod INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            type INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL,
-            ivl INTEGER NOT NULL,
-            factor INTEGER NOT NULL,
-            reps INTEGER NOT NULL,
-            lapses INTEGER NOT NULL,
-            left INTEGER NOT NULL,
-            odue INTEGER NOT NULL,
-            odid INTEGER NOT NULL,
-            flags INTEGER NOT NULL,
-            data TEXT NOT NULL
-        );
 
-        CREATE TABLE decks (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            kind BLOB NOT NULL
-        );
-
-        CREATE TABLE revlog (
-            id INTEGER PRIMARY KEY,
-            cid INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            ease INTEGER NOT NULL,
-            ivl INTEGER NOT NULL,
-            lastIvl INTEGER NOT NULL,
-            factor INTEGER NOT NULL,
-            time INTEGER NOT NULL,
-            type INTEGER NOT NULL
-        );
-        """)
-    conn.executescript(COL_TABLE_SQL)
-    insert_col_row(conn, crt=0)
-    conn.execute(
-        """
-        INSERT INTO cards (
-            id, nid, did, ord, mod, usn, type, queue, due, ivl, factor, reps, lapses,
-            left, odue, odid, flags, data
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            100,  # id
-            1000,  # nid
-            1,  # did
-            0,  # ord
-            111,  # mod
-            0,  # usn
-            2,  # type
-            2,  # queue
-            30,  # due
-            10,  # ivl
-            2500,  # factor
-            20,  # reps
-            1,  # lapses
-            0,  # left
-            0,  # odue
-            0,  # odid
-            3,  # flags
-            "{}",  # data
-        ),
-    )
-    conn.commit()
-    conn.close()
-
-    return AnkiDirectReadStore(db_path), db_path
+def _assert_card_synced(db_path: Path, card_id: int = 100) -> dict[str, Any]:
+    """usn flagged, card mod moved off the seeded 111, col.mod moved (#47)."""
+    return Collection(db_path).assert_synced("cards", card_id, baseline=111)
 
 
 def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     row = conn.execute(
         """
         SELECT id, did, odid, odue, ord, type, queue, due, ivl, factor,
@@ -114,8 +44,7 @@ def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
 
 
 def _revlog_rows(db_path: Path) -> list[dict[str, Any]]:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    conn = connect(str(db_path))
     rows = conn.execute(
         "SELECT id, cid, usn, ease, ivl, lastIvl, factor, time, type FROM revlog ORDER BY id"
     ).fetchall()
@@ -193,7 +122,7 @@ def test_answer_card_updates_card_and_writes_revlog_non_lapse(
         "card_id": 100,
         "ease": 3,
         "answered": True,
-        "fsrs_params": "unknown",  # fixture has no deck_config table
+        "fsrs_params": "default",  # deck_config table present, no row for this deck
         "queue": 2,
         "type": 2,
         "due": 33,
@@ -209,8 +138,7 @@ def test_answer_card_updates_card_and_writes_revlog_non_lapse(
     assert row["reps"] == 21
     assert row["lapses"] == 1  # ease != 1
     assert row["left"] == 0
-    assert row["usn"] == -1
-    assert row["mod"] > 0
+    _assert_card_synced(db_path)
 
     data = json.loads(row["data"])
     assert data["pos"] == 0
@@ -288,7 +216,7 @@ def test_answer_card_lapse_increments_lapses_and_sets_relearn_type(
     assert result["due"] == 50
     assert result["interval"] == 60
 
-    row = _card_row(db_path, 100)
+    row = _assert_card_synced(db_path)
     assert row["reps"] == 21
     assert row["lapses"] == 2  # incremented when ease == 1
 
@@ -334,7 +262,7 @@ def test_answer_card_day_learn_step_writes_day_index_and_positive_revlog_ivl(
     monkeypatch.setattr(direct_mod, "datetime", _Now)
 
     # Card is already in day-learn: due tomorrow-ish (today + 1) -> lastIvl +1.
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     conn.execute(
         "UPDATE cards SET type = 1, queue = 3, due = ?, left = 1001 WHERE id = 100",
         (today + 1,),
@@ -373,7 +301,7 @@ def test_answer_card_day_learn_step_writes_day_index_and_positive_revlog_ivl(
 
     assert result["queue"] == 3
     assert result["due"] == today + 2
-    row = _card_row(db_path, 100)
+    row = _assert_card_synced(db_path)
     assert (row["type"], row["queue"], row["due"]) == (1, 3, today + 2)
 
     (entry,) = _revlog_rows(db_path)
@@ -385,19 +313,17 @@ def test_answer_card_day_learn_step_writes_day_index_and_positive_revlog_ivl(
 
 
 def _insert_deck(db_path: Path, *, did: int, name: str, filtered: bool, reschedule: bool = True):
-    kind = (
-        DeckKindContainer(filtered=DeckFiltered(reschedule=reschedule))
-        if filtered
-        else DeckKindContainer(normal=DeckNormal(config_id=1))
-    )
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("INSERT INTO decks (id, name, kind) VALUES (?, ?, ?)", (did, name, bytes(kind)))
-    conn.commit()
-    conn.close()
+    col = Collection(db_path)
+    if filtered:
+        # Bare filtered deck (no search terms), as before.
+        kind = bytes(DeckKindContainer(filtered=DeckFiltered(reschedule=reschedule)))
+        col.insert_deck(id=did, name=name, kind=kind)
+    else:
+        col.insert_deck(id=did, name=name)
 
 
 def _park_card_in_filtered_deck(db_path: Path, *, filtered_did: int, home_did: int, odue: int):
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     conn.execute(
         "UPDATE cards SET did = ?, odid = ?, odue = ?, due = -7 WHERE id = 100",
         (filtered_did, home_did, odue),
@@ -440,7 +366,7 @@ def test_answer_card_in_rescheduling_filtered_deck_sends_it_home(
 
     store.answer_card(100, ease=3)
 
-    row = _card_row(db_path, 100)
+    row = _assert_card_synced(db_path)
     assert (row["did"], row["odid"], row["odue"]) == (1, 0, 0)
     assert (row["type"], row["queue"], row["due"]) == (2, 2, 33)
     # Options come from the home deck, and FSRS saw the real due (odue = day 30
@@ -465,6 +391,7 @@ def test_answer_card_in_preview_filtered_deck_is_refused(
 
     assert _card_row(db_path, 100) == before
     assert _revlog_rows(db_path) == []
+    Collection(db_path).assert_untouched()  # a refusal leaves col.mod alone
 
 
 def test_undo_restores_filtered_deck_membership(
@@ -489,7 +416,7 @@ def test_undo_restores_filtered_deck_membership(
 
     store.restore_card_state(snapshot)
 
-    row = _card_row(db_path, 100)
+    row = _assert_card_synced(db_path)
     assert (row["did"], row["odid"], row["odue"], row["due"]) == (555, 1, 30, -7)
 
 
@@ -503,7 +430,7 @@ def test_answer_card_new_card_on_loan_records_original_position(
     monkeypatch.setattr(store, "_allocate_epoch_ms_id", lambda conn, table: 9020)
     _insert_deck(db_path, did=1, name="Home", filtered=False)
     _insert_deck(db_path, did=555, name="Cram", filtered=True)
-    conn = sqlite3.connect(str(db_path))
+    conn = connect(str(db_path))
     conn.execute(
         "UPDATE cards SET type = 0, queue = 0, did = 555, odid = 1, odue = 12, due = -99999 "
         "WHERE id = 100"

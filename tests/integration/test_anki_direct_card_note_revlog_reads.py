@@ -1,100 +1,31 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 import anki_cli.db.anki_direct as direct_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore
+from tests.conftest import Collection, new_collection
 
 
 def _make_store(tmp_path: Path, *, col_crt: int = 0) -> tuple[AnkiDirectReadStore, Path]:
-    db_path = tmp_path / "collection.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    """Bare schema-18 collection (no seeded rows); tests insert what they read."""
+    col = new_collection(tmp_path / "collection.anki2", crt=col_crt, seed=False)
+    return col.store(writable=False), col.db_path
 
-    conn = sqlite3.connect(str(db_path))
-    conn.executescript("""
-        CREATE TABLE col (
-            crt INTEGER NOT NULL
-        );
 
-        CREATE TABLE decks (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL
-        );
-
-        CREATE TABLE notetypes (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL
-        );
-
-        CREATE TABLE notes (
-            id INTEGER PRIMARY KEY,
-            guid TEXT NOT NULL,
-            mid INTEGER NOT NULL,
-            mod INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            tags TEXT NOT NULL,
-            flds TEXT NOT NULL,
-            sfld TEXT NOT NULL,
-            csum INTEGER NOT NULL,
-            flags INTEGER NOT NULL,
-            data TEXT NOT NULL
-        );
-
-        CREATE TABLE cards (
-            id INTEGER PRIMARY KEY,
-            nid INTEGER NOT NULL,
-            did INTEGER NOT NULL,
-            ord INTEGER NOT NULL,
-            mod INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            type INTEGER NOT NULL,
-            queue INTEGER NOT NULL,
-            due INTEGER NOT NULL,
-            ivl INTEGER NOT NULL,
-            factor INTEGER NOT NULL,
-            reps INTEGER NOT NULL,
-            lapses INTEGER NOT NULL,
-            left INTEGER NOT NULL,
-            odue INTEGER NOT NULL,
-            odid INTEGER NOT NULL,
-            flags INTEGER NOT NULL,
-            data TEXT NOT NULL
-        );
-
-        CREATE TABLE revlog (
-            id INTEGER PRIMARY KEY,
-            cid INTEGER NOT NULL,
-            usn INTEGER NOT NULL,
-            ease INTEGER NOT NULL,
-            ivl INTEGER NOT NULL,
-            lastIvl INTEGER NOT NULL,
-            factor INTEGER NOT NULL,
-            time INTEGER NOT NULL,
-            type INTEGER NOT NULL
-        );
-        """)
-    conn.execute("INSERT INTO col (crt) VALUES (?)", (col_crt,))
-    conn.commit()
-    conn.close()
-
-    return AnkiDirectReadStore(db_path), db_path
+# Thin adapters over the shared builders, keeping this file's explicit
+# every-column signatures (tests here pin exact read payloads, so they spell
+# every value out).
 
 
 def _insert_deck(db_path: Path, *, did: int, name: str) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("INSERT INTO decks (id, name) VALUES (?, ?)", (did, name))
-    conn.commit()
-    conn.close()
+    Collection(db_path).insert_deck(id=did, name=name)
 
 
 def _insert_notetype(db_path: Path, *, ntid: int, name: str) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("INSERT INTO notetypes (id, name) VALUES (?, ?)", (ntid, name))
-    conn.commit()
-    conn.close()
+    Collection(db_path).insert_notetype(id=ntid, name=name, fields=["Front", "Back"])
 
 
 def _insert_note(
@@ -112,18 +43,10 @@ def _insert_note(
     flags: int,
     data: str,
 ) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO notes (
-            id, guid, mid, mod, usn, tags, flds, sfld, csum, flags, data
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (note_id, guid, mid, mod, usn, tags, flds, sfld, csum, flags, data),
+    Collection(db_path).insert_note(
+        id=note_id, guid=guid, mid=mid, mod=mod, usn=usn, tags=tags,
+        fields=flds.split("\x1f"), sfld=sfld, csum=csum, flags=flags, data=data,
     )
-    conn.commit()
-    conn.close()
 
 
 def _insert_card(
@@ -148,38 +71,11 @@ def _insert_card(
     flags: int,
     data: str,
 ) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO cards (
-            id, nid, did, ord, mod, usn, type, queue, due, ivl, factor, reps,
-            lapses, left, odue, odid, flags, data
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            card_id,
-            nid,
-            did,
-            ord_,
-            mod,
-            usn,
-            card_type,
-            queue,
-            due,
-            ivl,
-            factor,
-            reps,
-            lapses,
-            left,
-            odue,
-            odid,
-            flags,
-            data,
-        ),
+    Collection(db_path).insert_card(
+        id=card_id, nid=nid, did=did, ord=ord_, mod=mod, usn=usn, type=card_type, queue=queue,
+        due=due, ivl=ivl, factor=factor, reps=reps, lapses=lapses, left=left, odue=odue,
+        odid=odid, flags=flags, data=data,
     )
-    conn.commit()
-    conn.close()
 
 
 def _insert_revlog(
@@ -195,16 +91,10 @@ def _insert_revlog(
     duration_ms: int,
     review_type: int,
 ) -> None:
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """
-        INSERT INTO revlog (id, cid, usn, ease, ivl, lastIvl, factor, time, type)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (rid, cid, usn, ease, ivl, last_ivl, factor, duration_ms, review_type),
+    Collection(db_path).insert_revlog(
+        id=rid, cid=cid, usn=usn, ease=ease, ivl=ivl, lastIvl=last_ivl, factor=factor,
+        time=duration_ms, type=review_type,
     )
-    conn.commit()
-    conn.close()
 
 
 def test_get_note_returns_parsed_payload(tmp_path: Path) -> None:
@@ -511,3 +401,13 @@ def test_get_revlog_empty_returns_empty_list(tmp_path: Path) -> None:
     store, _db_path = _make_store(tmp_path)
 
     assert store.get_revlog(123456) == []
+
+
+def test_get_note_numeric_sort_field_is_returned_as_text(tmp_path: Path) -> None:
+    """Anki declares ``sfld integer`` so numeric sort fields sort numerically;
+    the old per-file fixtures said ``TEXT`` and could never see SQLite hand an
+    int back. The API type is str regardless of the note's content."""
+    store, db_path = _make_store(tmp_path)
+    Collection(db_path).insert_note(id=7, fields=["42", "A"])
+
+    assert store.get_note(7)["sfld"] == "42"
