@@ -6,29 +6,10 @@ from typing import Any, cast
 import click
 
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError
-from anki_cli.backends.factory import (
-    BackendFactoryError,
-    backend_session_from_context,
-)
-from anki_cli.cli.dispatcher import register_command
-from anki_cli.cli.formatter import formatter_from_ctx
-
-
-def _emit_backend_unavailable(
-    *,
-    ctx: click.Context,
-    command: str,
-    obj: dict[str, Any],
-    error: Exception,
-) -> None:
-    formatter = formatter_from_ctx(ctx)
-    formatter.emit_error(
-        command=command,
-        code="BACKEND_UNAVAILABLE",
-        message=str(error),
-        details={"backend": str(obj.get("backend", "unknown"))},
-    )
-    raise click.exceptions.Exit(7) from error
+from anki_cli.backends.factory import backend_session_from_context  # noqa: F401  (patched by tests)
+from anki_cli.cli.command import CommandContext, ErrorMap, anki_command
+from anki_cli.cli.formatter import formatter_from_ctx  # noqa: F401  (patched by tests)
+from anki_cli.models.output import JSONValue
 
 
 def _default_templates(kind: str) -> tuple[str, str, str]:
@@ -55,67 +36,52 @@ def _schema_warnings(data: Mapping[str, Any]) -> list[str]:
     return [FULL_SYNC_WARNING] if data.get("full_sync_required") else []
 
 
-@click.command("notetypes")
-@click.pass_context
-def notetypes_cmd(ctx: click.Context) -> None:
+# Every mutating notetype command reports these as an operation failure.
+_MUTATION_ERRORS: ErrorMap = {
+    AnkiConnectAPIError: ("BACKEND_OPERATION_FAILED", 1),
+    LookupError: ("BACKEND_OPERATION_FAILED", 1),
+    ValueError: ("BACKEND_OPERATION_FAILED", 1),
+}
+
+
+def _require_name(cmd: CommandContext, notetype_name: str) -> str:
+    normalized = notetype_name.strip()
+    if not normalized:
+        raise cmd.invalid("Notetype name cannot be empty.")
+    return normalized
+
+
+def _require_pair(
+    cmd: CommandContext, notetype_name: str, other: str, label: str
+) -> tuple[str, str]:
+    name, value = notetype_name.strip(), other.strip()
+    if not name or not value:
+        raise cmd.invalid(f"Both --notetype and --{label} are required.")
+    return name, value
+
+
+@anki_command("notetypes")
+def notetypes_cmd(cmd: CommandContext) -> JSONValue:
     """List all note types."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            items = backend.get_notetypes()
-    except BackendFactoryError as exc:
-        _emit_backend_unavailable(ctx=ctx, command="notetypes", obj=obj, error=exc)
-
-    formatter.emit_success(
-        command="notetypes",
-        data={"count": len(items), "items": items},
-    )
+    items = cmd.backend.get_notetypes()
+    return {"count": len(items), "items": items}
 
 
-@click.command("notetype")
-@click.option(
-    "--notetype",
-    "--name",
-    "notetype_name",
-    required=True,
-    help="Notetype name, e.g. Basic",
+@anki_command(
+    "notetype",
+    errors={AnkiConnectAPIError: ("ENTITY_NOT_FOUND", 4), LookupError: ("ENTITY_NOT_FOUND", 4)},
 )
-@click.pass_context
-def notetype_cmd(ctx: click.Context, notetype_name: str) -> None:
+@click.option("--notetype", "--name", "notetype_name", required=True, help="Notetype name")
+def notetype_cmd(cmd: CommandContext, notetype_name: str) -> JSONValue:
     """Show details for a note type."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    normalized_name = notetype_name.strip()
-    if not normalized_name:
-        formatter.emit_error(
-            command="notetype",
-            code="INVALID_INPUT",
-            message="Notetype name cannot be empty.",
-            details={"notetype": notetype_name},
-        )
-        raise click.exceptions.Exit(2)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            item = backend.get_notetype(normalized_name)
-    except BackendFactoryError as exc:
-        _emit_backend_unavailable(ctx=ctx, command="notetype", obj=obj, error=exc)
-    except (AnkiConnectAPIError, LookupError) as exc:
-        formatter.emit_error(
-            command="notetype",
-            code="ENTITY_NOT_FOUND",
-            message=str(exc),
-            details={"notetype": normalized_name},
-        )
-        raise click.exceptions.Exit(4) from exc
-
-    formatter.emit_success(command="notetype", data=item)
+    normalized = notetype_name.strip()
+    if not normalized:
+        raise cmd.invalid("Notetype name cannot be empty.", details={"notetype": notetype_name})
+    with cmd.errors(details={"notetype": normalized}):
+        return cmd.backend.get_notetype(normalized)
 
 
-@click.command("notetype:create")
+@anki_command("notetype:create", errors=_MUTATION_ERRORS)
 @click.option("--notetype", "--name", "notetype_name", required=True, help="New notetype name")
 @click.option(
     "--kind",
@@ -128,9 +94,8 @@ def notetype_cmd(ctx: click.Context, notetype_name: str) -> None:
 @click.option("--front", "front_tmpl", default=None, help="Front template")
 @click.option("--back", "back_tmpl", default=None, help="Back template")
 @click.option("--css", default="", help="Optional notetype CSS")
-@click.pass_context
 def notetype_create_cmd(
-    ctx: click.Context,
+    cmd: CommandContext,
     notetype_name: str,
     kind: str,
     fields: tuple[str, ...],
@@ -138,20 +103,10 @@ def notetype_create_cmd(
     front_tmpl: str | None,
     back_tmpl: str | None,
     css: str,
-) -> None:
+) -> JSONValue:
     """Create a new note type with fields and templates."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-    normalized_name = notetype_name.strip()
+    normalized_name = _require_name(cmd, notetype_name)
     normalized_kind = kind.strip().lower()
-
-    if not normalized_name:
-        formatter.emit_error(
-            command="notetype:create",
-            code="INVALID_INPUT",
-            message="Notetype name cannot be empty.",
-        )
-        raise click.exceptions.Exit(2)
 
     cleaned_fields = [field.strip() for field in fields if field.strip()]
     if not cleaned_fields:
@@ -162,279 +117,94 @@ def notetype_create_cmd(
     front = front_tmpl if front_tmpl is not None else default_front
     back = back_tmpl if back_tmpl is not None else default_back
 
-    try:
-        with backend_session_from_context(obj) as backend:
-            data = backend.create_notetype(
-                name=normalized_name,
-                fields=cleaned_fields,
-                templates=[{"name": template, "front": front, "back": back}],
-                css=css,
-                kind=normalized_kind,
-            )
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="notetype:create", obj=obj, error=exc)
-    except (AnkiConnectAPIError, LookupError, ValueError) as exc:
-        formatter.emit_error(
-            command="notetype:create",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"notetype": normalized_name},
+    with cmd.errors(details={"notetype": normalized_name}):
+        return cmd.backend.create_notetype(
+            name=normalized_name,
+            fields=cleaned_fields,
+            templates=[{"name": template, "front": front, "back": back}],
+            css=css,
+            kind=normalized_kind,
         )
-        raise click.exceptions.Exit(1) from exc
-
-    formatter.emit_success(command="notetype:create", data=data)
 
 
-@click.command("notetype:field:add")
+@anki_command("notetype:field:add", errors=_MUTATION_ERRORS)
 @click.option("--notetype", "notetype_name", required=True, help="Notetype name")
 @click.option("--field", "field_name", required=True, help="Field name")
-@click.pass_context
-def notetype_field_add_cmd(ctx: click.Context, notetype_name: str, field_name: str) -> None:
+def notetype_field_add_cmd(cmd: CommandContext, notetype_name: str, field_name: str) -> JSONValue:
     """Add a field to a note type."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-    normalized_name = notetype_name.strip()
-    normalized_field = field_name.strip()
-
-    if not normalized_name or not normalized_field:
-        formatter.emit_error(
-            command="notetype:field:add",
-            code="INVALID_INPUT",
-            message="Both --notetype and --field are required.",
-        )
-        raise click.exceptions.Exit(2)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            data = backend.add_notetype_field(normalized_name, normalized_field)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="notetype:field:add", obj=obj, error=exc)
-    except (AnkiConnectAPIError, LookupError, ValueError) as exc:
-        formatter.emit_error(
-            command="notetype:field:add",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"notetype": normalized_name, "field": normalized_field},
-        )
-        raise click.exceptions.Exit(1) from exc
-
-    formatter.emit_success(command="notetype:field:add", data=data, warnings=_schema_warnings(data))
+    name, field = _require_pair(cmd, notetype_name, field_name, "field")
+    with cmd.errors(details={"notetype": name, "field": field}):
+        data = cmd.backend.add_notetype_field(name, field)
+    cmd.warnings.extend(_schema_warnings(data))
+    return data
 
 
-@click.command("notetype:field:remove")
+@anki_command("notetype:field:remove", errors=_MUTATION_ERRORS)
 @click.option("--notetype", "notetype_name", required=True, help="Notetype name")
 @click.option("--field", "field_name", required=True, help="Field name")
-@click.pass_context
-def notetype_field_remove_cmd(ctx: click.Context, notetype_name: str, field_name: str) -> None:
+def notetype_field_remove_cmd(
+    cmd: CommandContext, notetype_name: str, field_name: str
+) -> JSONValue:
     """Remove a field from a note type and its value from every note (requires --yes)."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-    normalized_name = notetype_name.strip()
-    normalized_field = field_name.strip()
-
-    if not normalized_name or not normalized_field:
-        formatter.emit_error(
-            command="notetype:field:remove",
-            code="INVALID_INPUT",
-            message="Both --notetype and --field are required.",
-        )
-        raise click.exceptions.Exit(2)
-
-    if not bool(obj.get("yes", False)):
-        formatter.emit_error(
-            command="notetype:field:remove",
-            code="CONFIRMATION_REQUIRED",
-            message=(
-                "Removing a field deletes its value from every note of the notetype; "
-                "requires --yes."
-            ),
-            details={
-                "notetype": normalized_name,
-                "field": normalized_field,
-                "hint": "Re-run with --yes.",
-            },
-        )
-        raise click.exceptions.Exit(2)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            data = backend.remove_notetype_field(normalized_name, normalized_field)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="notetype:field:remove", obj=obj, error=exc)
-    except (AnkiConnectAPIError, LookupError, ValueError) as exc:
-        formatter.emit_error(
-            command="notetype:field:remove",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"notetype": normalized_name, "field": normalized_field},
-        )
-        raise click.exceptions.Exit(1) from exc
-
-    formatter.emit_success(
-        command="notetype:field:remove", data=data, warnings=_schema_warnings(data)
+    name, field = _require_pair(cmd, notetype_name, field_name, "field")
+    cmd.require_yes(
+        "Removing a field deletes its value from every note of the notetype; requires --yes.",
+        details={"notetype": name, "field": field},
     )
+    with cmd.errors(details={"notetype": name, "field": field}):
+        data = cmd.backend.remove_notetype_field(name, field)
+    cmd.warnings.extend(_schema_warnings(data))
+    return data
 
 
-@click.command("notetype:template:add")
+@anki_command("notetype:template:add", errors=_MUTATION_ERRORS)
 @click.option("--notetype", "notetype_name", required=True, help="Notetype name")
 @click.option("--template", "template_name", required=True, help="Template name")
 @click.option("--front", "front_tmpl", required=True, help="Front template")
 @click.option("--back", "back_tmpl", required=True, help="Back template")
-@click.pass_context
 def notetype_template_add_cmd(
-    ctx: click.Context,
-    notetype_name: str,
-    template_name: str,
-    front_tmpl: str,
-    back_tmpl: str,
-) -> None:
+    cmd: CommandContext, notetype_name: str, template_name: str, front_tmpl: str, back_tmpl: str
+) -> JSONValue:
     """Add a card template to a note type."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-    normalized_name = notetype_name.strip()
-    normalized_template = template_name.strip()
-
-    if not normalized_name or not normalized_template:
-        formatter.emit_error(
-            command="notetype:template:add",
-            code="INVALID_INPUT",
-            message="Both --notetype and --template are required.",
-        )
-        raise click.exceptions.Exit(2)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            data = backend.add_notetype_template(
-                normalized_name,
-                normalized_template,
-                front_tmpl,
-                back_tmpl,
-            )
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="notetype:template:add", obj=obj, error=exc)
-    except (AnkiConnectAPIError, LookupError, ValueError) as exc:
-        formatter.emit_error(
-            command="notetype:template:add",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"notetype": normalized_name, "template": normalized_template},
-        )
-        raise click.exceptions.Exit(1) from exc
-
-    formatter.emit_success(
-        command="notetype:template:add", data=data, warnings=_schema_warnings(data)
-    )
+    name, template = _require_pair(cmd, notetype_name, template_name, "template")
+    with cmd.errors(details={"notetype": name, "template": template}):
+        data = cmd.backend.add_notetype_template(name, template, front_tmpl, back_tmpl)
+    cmd.warnings.extend(_schema_warnings(data))
+    return data
 
 
-@click.command("notetype:template:edit")
+@anki_command("notetype:template:edit", errors=_MUTATION_ERRORS)
 @click.option("--notetype", "notetype_name", required=True, help="Notetype name")
 @click.option("--template", "template_name", required=True, help="Template name")
 @click.option("--front", "front_tmpl", default=None, help="New front template")
 @click.option("--back", "back_tmpl", default=None, help="New back template")
-@click.pass_context
 def notetype_template_edit_cmd(
-    ctx: click.Context,
+    cmd: CommandContext,
     notetype_name: str,
     template_name: str,
     front_tmpl: str | None,
     back_tmpl: str | None,
-) -> None:
+) -> JSONValue:
     """Edit front/back of a card template."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-    normalized_name = notetype_name.strip()
-    normalized_template = template_name.strip()
-
-    if not normalized_name or not normalized_template:
-        formatter.emit_error(
-            command="notetype:template:edit",
-            code="INVALID_INPUT",
-            message="Both --notetype and --template are required.",
-        )
-        raise click.exceptions.Exit(2)
+    name, template = _require_pair(cmd, notetype_name, template_name, "template")
     if front_tmpl is None and back_tmpl is None:
-        formatter.emit_error(
-            command="notetype:template:edit",
-            code="INVALID_INPUT",
-            message="Provide at least one of --front or --back.",
-        )
-        raise click.exceptions.Exit(2)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            data = backend.edit_notetype_template(
-                normalized_name,
-                normalized_template,
-                front=front_tmpl,
-                back=back_tmpl,
-            )
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="notetype:template:edit", obj=obj, error=exc)
-    except (AnkiConnectAPIError, LookupError, ValueError) as exc:
-        formatter.emit_error(
-            command="notetype:template:edit",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"notetype": normalized_name, "template": normalized_template},
-        )
-        raise click.exceptions.Exit(1) from exc
-
-    formatter.emit_success(command="notetype:template:edit", data=data)
+        raise cmd.invalid("Provide at least one of --front or --back.")
+    with cmd.errors(details={"notetype": name, "template": template}):
+        return cmd.backend.edit_notetype_template(name, template, front=front_tmpl, back=back_tmpl)
 
 
-@click.command("notetype:css")
+@anki_command("notetype:css", errors=_MUTATION_ERRORS)
 @click.option("--notetype", "notetype_name", required=True, help="Notetype name")
 @click.option("--set", "css_value", default=None, help="Set CSS value")
-@click.pass_context
-def notetype_css_cmd(
-    ctx: click.Context,
-    notetype_name: str,
-    css_value: str | None,
-) -> None:
+def notetype_css_cmd(cmd: CommandContext, notetype_name: str, css_value: str | None) -> JSONValue:
     """Get or set CSS styling for a note type."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-    normalized_name = notetype_name.strip()
-
-    if not normalized_name:
-        formatter.emit_error(
-            command="notetype:css",
-            code="INVALID_INPUT",
-            message="Notetype name cannot be empty.",
-        )
-        raise click.exceptions.Exit(2)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            if css_value is None:
-                item = backend.get_notetype(normalized_name)
-                css = ""
-                styling = item.get("styling")
-                if isinstance(styling, dict):
-                    styling_map = cast(dict[str, Any], styling)
-                    css = str(styling_map.get("css") or "")
-                data: dict[str, Any] = {"name": normalized_name, "css": css}
-            else:
-                data = backend.set_notetype_css(normalized_name, css_value)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_unavailable(ctx=ctx, command="notetype:css", obj=obj, error=exc)
-    except (AnkiConnectAPIError, LookupError, ValueError) as exc:
-        formatter.emit_error(
-            command="notetype:css",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"notetype": normalized_name},
-        )
-        raise click.exceptions.Exit(1) from exc
-
-    formatter.emit_success(command="notetype:css", data=data)
-
-
-register_command("notetypes", notetypes_cmd)
-register_command("notetype", notetype_cmd)
-register_command("notetype:create", notetype_create_cmd)
-register_command("notetype:field:add", notetype_field_add_cmd)
-register_command("notetype:field:remove", notetype_field_remove_cmd)
-register_command("notetype:template:add", notetype_template_add_cmd)
-register_command("notetype:template:edit", notetype_template_edit_cmd)
-register_command("notetype:css", notetype_css_cmd)
+    name = _require_name(cmd, notetype_name)
+    with cmd.errors(details={"notetype": name}):
+        if css_value is not None:
+            return cmd.backend.set_notetype_css(name, css_value)
+        item = cmd.backend.get_notetype(name)
+        css = ""
+        styling = item.get("styling")
+        if isinstance(styling, dict):
+            css = str(cast(dict[str, Any], styling).get("css") or "")
+        return {"name": name, "css": css}

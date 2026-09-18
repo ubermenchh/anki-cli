@@ -8,29 +8,23 @@ import click
 
 from anki_cli import __version__
 from anki_cli.backends.detect import DetectionError, detect_backend
+from anki_cli.cli.command import CommandContext, anki_command
 from anki_cli.cli.dispatcher import register_command
 from anki_cli.cli.formatter import formatter_from_ctx
 from anki_cli.models.config import AppConfig
+from anki_cli.models.output import JSONValue
 
 
-@click.command("version")
-@click.pass_context
-def version_cmd(ctx: click.Context) -> None:
+@anki_command("version")
+def version_cmd(cmd: CommandContext) -> JSONValue:
     """Show version and environment info."""
-    obj: dict[str, Any] = ctx.obj or {}
-    backend = str(obj.get("backend", "none"))
-    col = obj.get("collection_path")
-
-    formatter = formatter_from_ctx(ctx)
-    formatter.emit_success(
-        command="version",
-        data={
-            "version": __version__,
-            "python": platform.python_version(),
-            "backend": backend,
-            "collection": str(col) if col is not None else None,
-        },
-    )
+    col = cmd.obj.get("collection_path")
+    return {
+        "version": __version__,
+        "python": platform.python_version(),
+        "backend": str(cmd.obj.get("backend", "none")),
+        "collection": str(col) if col is not None else None,
+    }
 
 
 @click.command("status")
@@ -75,13 +69,11 @@ def status_cmd(ctx: click.Context) -> None:
     formatter.emit_success(command="status", data=data)
 
 
-register_command("version", version_cmd)
 register_command("status", status_cmd)
 
 
-@click.command("commands")
-@click.pass_context
-def commands_cmd(ctx: click.Context) -> None:
+@anki_command("commands")
+def commands_cmd(cmd: CommandContext) -> JSONValue:
     """Machine-readable command reference: every command, its options, and the
     error / exit codes — generated from the registry so it cannot drift (#28)."""
     from anki_cli.cli.dispatcher import get_command, list_commands
@@ -89,11 +81,11 @@ def commands_cmd(ctx: click.Context) -> None:
 
     items: list[dict[str, Any]] = []
     for name in list_commands():
-        cmd = get_command(name)
-        if cmd is None:
+        command = get_command(name)
+        if command is None:
             continue
         options: list[dict[str, Any]] = []
-        for param in cmd.params:
+        for param in command.params:
             if not isinstance(param, click.Option):
                 continue
             options.append(
@@ -109,23 +101,16 @@ def commands_cmd(ctx: click.Context) -> None:
         items.append(
             {
                 "name": name,
-                "hidden": bool(cmd.hidden),
-                "help": (cmd.help or "").strip(),
+                "hidden": bool(command.hidden),
+                "help": (command.help or "").strip(),
                 "options": options,
             }
         )
 
-    formatter = formatter_from_ctx(ctx)
-    formatter.emit_success(
-        command="commands",
-        data={
-            "count": len(items),
-            "items": items,
-            "global_options": ["--format", "--backend", "--col", "--yes", "--copy", "--no-color"],
-            "exit_codes": {str(int(c)): EXIT_CODE_MEANINGS[c] for c in ExitCode},
-            "error_codes": [str(c) for c in ErrorCode],
-        },
-    )
-
-
-register_command("commands", commands_cmd)
+    return {
+        "count": len(items),
+        "items": items,
+        "global_options": ["--format", "--backend", "--col", "--yes", "--copy", "--no-color"],
+        "exit_codes": {str(int(c)): EXIT_CODE_MEANINGS[c] for c in ExitCode},
+        "error_codes": [str(c) for c in ErrorCode],
+    }

@@ -1,34 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
-
 import click
 
-from anki_cli.backends.factory import (
-    BackendFactoryError,
-    backend_session_from_context,
-)
+from anki_cli.backends.factory import backend_session_from_context  # noqa: F401  (patched by tests)
 from anki_cli.backends.protocol import JSONValue
-from anki_cli.cli.dispatcher import register_command
-from anki_cli.cli.formatter import formatter_from_ctx
-
-
-def _emit_backend_error(
-    *,
-    ctx: click.Context,
-    command: str,
-    obj: dict[str, Any],
-    error: Exception,
-    exit_code: int,
-) -> None:
-    formatter = formatter_from_ctx(ctx)
-    formatter.emit_error(
-        command=command,
-        code="BACKEND_UNAVAILABLE",
-        message=str(error),
-        details={"backend": str(obj.get("backend", "unknown"))},
-    )
-    raise click.exceptions.Exit(exit_code) from error
+from anki_cli.cli.command import CommandContext, anki_command
+from anki_cli.cli.formatter import formatter_from_ctx  # noqa: F401  (patched by tests)
 
 
 def _deck_chain(name: str) -> list[str]:
@@ -55,255 +32,124 @@ def _parse_step_values(raw: str | None) -> list[float] | None:
     return [float(value) for value in cleaned]
 
 
-@click.command("decks")
-@click.pass_context
-def decks_cmd(ctx: click.Context) -> None:
-    """List all decks with due counts."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            decks = backend.get_decks()
-            # One canonical shape for every --format (#28). The table renderer
-            # indents ``name`` by ``level`` itself; data never changes with format.
-            items: list[dict[str, JSONValue]] = []
-            for deck in decks:
-                deck_name = str(deck.get("name", "")).replace("\x1f", "::")
-                due = backend.get_due_counts(deck=deck_name)
-                parts = [part for part in deck_name.split("::") if part]
-                items.append(
-                    {
-                        **deck,
-                        "name": deck_name,
-                        "new": due.get("new", 0),
-                        "learn": due.get("learn", 0),
-                        "review": due.get("review", 0),
-                        "total_due": due.get("total", 0),
-                        "level": max(0, len(parts) - 1),
-                    }
-                )
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_error(ctx=ctx, command="decks", obj=obj, error=exc, exit_code=7)
-
-    formatter.emit_success(
-        command="decks",
-        data={"count": len(items), "items": items},
-    )
-
-
-@click.command("deck")
-@click.option("--deck", "deck_name", required=True, help="Deck name")
-@click.pass_context
-def deck_cmd(ctx: click.Context, deck_name: str) -> None:
-    """Show details for a single deck."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
+def _require_deck_name(cmd: CommandContext, deck_name: str) -> str:
     normalized = deck_name.strip()
-
     if not normalized:
-        formatter.emit_error(
-            command="deck",
-            code="INVALID_INPUT",
-            message="Deck name cannot be empty.",
+        raise cmd.invalid("Deck name cannot be empty.")
+    return normalized
+
+
+@anki_command("decks")
+def decks_cmd(cmd: CommandContext) -> JSONValue:
+    """List all decks with due counts."""
+    backend = cmd.backend
+    # One canonical shape for every --format (#28). The table renderer
+    # indents ``name`` by ``level`` itself; data never changes with format.
+    items: list[dict[str, JSONValue]] = []
+    for deck in backend.get_decks():
+        deck_name = str(deck.get("name", "")).replace("\x1f", "::")
+        due = backend.get_due_counts(deck=deck_name)
+        parts = [part for part in deck_name.split("::") if part]
+        items.append(
+            {
+                **deck,
+                "name": deck_name,
+                "new": due.get("new", 0),
+                "learn": due.get("learn", 0),
+                "review": due.get("review", 0),
+                "total_due": due.get("total", 0),
+                "level": max(0, len(parts) - 1),
+            }
         )
-        raise click.exceptions.Exit(2)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            deck = backend.get_deck(normalized)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_error(ctx=ctx, command="deck", obj=obj, error=exc, exit_code=7)
-    except LookupError as exc:
-        formatter.emit_error(
-            command="deck",
-            code="ENTITY_NOT_FOUND",
-            message=str(exc),
-            details={"deck": normalized},
-        )
-        raise click.exceptions.Exit(4) from exc
-
-    formatter.emit_success(
-        command="deck",
-        data=deck,
-    )
+    return {"count": len(items), "items": items}
 
 
-@click.command("deck:create")
+@anki_command("deck", errors={LookupError: ("ENTITY_NOT_FOUND", 4)})
+@click.option("--deck", "deck_name", required=True, help="Deck name")
+def deck_cmd(cmd: CommandContext, deck_name: str) -> JSONValue:
+    """Show details for a single deck."""
+    normalized = _require_deck_name(cmd, deck_name)
+    with cmd.errors(details={"deck": normalized}):
+        return cmd.backend.get_deck(normalized)
+
+
+@anki_command("deck:create")
 @click.option("--deck", "--name", "name", required=True, help="Deck name, e.g. Japanese::Vocab")
-@click.pass_context
-def deck_create_cmd(ctx: click.Context, name: str) -> None:
+def deck_create_cmd(cmd: CommandContext, name: str) -> JSONValue:
     """Create a new deck (supports A::B hierarchy)."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    if not name.strip():
-        formatter.emit_error(
-            command="deck:create",
-            code="INVALID_INPUT",
-            message="Deck name cannot be empty.",
-        )
-        raise click.exceptions.Exit(2)
-
+    _require_deck_name(cmd, name)
     try:
         chain = _deck_chain(name)
     except ValueError as exc:
-        formatter.emit_error(
-            command="deck:create",
-            code="INVALID_INPUT",
-            message=str(exc),
-        )
-        raise click.exceptions.Exit(2) from exc
+        raise cmd.invalid(str(exc)) from exc
 
     created: list[dict[str, JSONValue]] = []
     existing: list[dict[str, JSONValue]] = []
-    try:
-        with backend_session_from_context(obj) as backend:
-            for item in chain:
-                result = backend.create_deck(name=item)
-                if bool(result.get("created", True)):
-                    created.append(result)
-                else:
-                    existing.append(result)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_error(ctx=ctx, command="deck:create", obj=obj, error=exc, exit_code=7)
-
-    formatter.emit_success(
-        command="deck:create",
-        data={
-            "requested": name.strip(),
-            "chain": chain,
-            "created_count": len(created),
-            "existing_count": len(existing),
-            "created": created,
-            "existing": existing,
-        },
-    )
+    for item in chain:
+        result = cmd.backend.create_deck(name=item)
+        if bool(result.get("created", True)):
+            created.append(result)
+        else:
+            existing.append(result)
+    return {
+        "requested": name.strip(),
+        "chain": chain,
+        "created_count": len(created),
+        "existing_count": len(existing),
+        "created": created,
+        "existing": existing,
+    }
 
 
-@click.command("deck:rename")
+@anki_command(
+    "deck:rename",
+    errors={LookupError: ("ENTITY_NOT_FOUND", 4), ValueError: ("INVALID_INPUT", 2)},
+)
 @click.option("--from", "from_name", required=True, help="Current deck name")
 @click.option("--to", "to_name", required=True, help="New deck name")
-@click.pass_context
-def deck_rename_cmd(ctx: click.Context, from_name: str, to_name: str) -> None:
+def deck_rename_cmd(cmd: CommandContext, from_name: str, to_name: str) -> JSONValue:
     """Rename an existing deck."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
     source = from_name.strip()
     target = to_name.strip()
-
     if not source or not target:
-        formatter.emit_error(
-            command="deck:rename",
-            code="INVALID_INPUT",
-            message="Both --from and --to are required.",
-        )
-        raise click.exceptions.Exit(2)
-
+        raise cmd.invalid("Both --from and --to are required.")
     try:
         _deck_chain(target)
     except ValueError as exc:
-        formatter.emit_error(
-            command="deck:rename",
-            code="INVALID_INPUT",
-            message=str(exc),
-        )
-        raise click.exceptions.Exit(2) from exc
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            result = backend.rename_deck(old_name=source, new_name=target)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_error(ctx=ctx, command="deck:rename", obj=obj, error=exc, exit_code=7)
-    except LookupError as exc:
-        formatter.emit_error(
-            command="deck:rename",
-            code="ENTITY_NOT_FOUND",
-            message=str(exc),
-            details={"from": source, "to": target},
-        )
-        raise click.exceptions.Exit(4) from exc
-    except ValueError as exc:
-        formatter.emit_error(
-            command="deck:rename",
-            code="INVALID_INPUT",
-            message=str(exc),
-            details={"from": source, "to": target},
-        )
-        raise click.exceptions.Exit(2) from exc
-
-    formatter.emit_success(command="deck:rename", data=result)
+        raise cmd.invalid(str(exc)) from exc
+    with cmd.errors(details={"from": source, "to": target}):
+        return cmd.backend.rename_deck(old_name=source, new_name=target)
 
 
-@click.command("deck:delete")
+@anki_command("deck:delete", errors={ValueError: ("INVALID_INPUT", 2)})
 @click.option("--deck", "deck_name", required=True, help="Deck name to delete")
-@click.pass_context
-def deck_delete_cmd(ctx: click.Context, deck_name: str) -> None:
+def deck_delete_cmd(cmd: CommandContext, deck_name: str) -> JSONValue:
     """Delete a deck (requires --yes)."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-
-    if not bool(obj.get("yes", False)):
-        formatter.emit_error(
-            command="deck:delete",
-            code="CONFIRMATION_REQUIRED",
-            message="Deleting a deck requires --yes.",
-            details={"hint": "Re-run with --yes."},
-        )
-        raise click.exceptions.Exit(2)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            result = backend.delete_deck(name=deck_name.strip())
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_error(ctx=ctx, command="deck:delete", obj=obj, error=exc, exit_code=7)
-    except ValueError as exc:
-        formatter.emit_error(
-            command="deck:delete",
-            code="INVALID_INPUT",
-            message=str(exc),
-            details={"deck": deck_name.strip()},
-        )
-        raise click.exceptions.Exit(2) from exc
-
-    formatter.emit_success(command="deck:delete", data=result)
+    cmd.require_yes("Deleting a deck requires --yes.")
+    stripped = deck_name.strip()
+    with cmd.errors(details={"deck": stripped}):
+        return cmd.backend.delete_deck(name=stripped)
 
 
-@click.command("deck:config")
+@anki_command(
+    "deck:config",
+    errors={LookupError: ("ENTITY_NOT_FOUND", 4), ValueError: ("ENTITY_NOT_FOUND", 4)},
+)
 @click.option("--deck", "deck_name", required=True, help="Deck name")
-@click.pass_context
-def deck_config_cmd(ctx: click.Context, deck_name: str) -> None:
+def deck_config_cmd(cmd: CommandContext, deck_name: str) -> JSONValue:
     """Show scheduler config for a deck."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-    normalized = deck_name.strip()
-
-    if not normalized:
-        formatter.emit_error(
-            command="deck:config",
-            code="INVALID_INPUT",
-            message="Deck name cannot be empty.",
-        )
-        raise click.exceptions.Exit(2)
-
-    try:
-        with backend_session_from_context(obj) as backend:
-            data = backend.get_deck_config(normalized)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_error(ctx=ctx, command="deck:config", obj=obj, error=exc, exit_code=7)
-    except (LookupError, ValueError) as exc:
-        formatter.emit_error(
-            command="deck:config",
-            code="ENTITY_NOT_FOUND",
-            message=str(exc),
-            details={"deck": normalized},
-        )
-        raise click.exceptions.Exit(4) from exc
-
-    formatter.emit_success(command="deck:config", data=data)
+    normalized = _require_deck_name(cmd, deck_name)
+    with cmd.errors(details={"deck": normalized}):
+        return cmd.backend.get_deck_config(normalized)
 
 
-@click.command("deck:config:set")
+@anki_command(
+    "deck:config:set",
+    errors={
+        LookupError: ("BACKEND_OPERATION_FAILED", 1),
+        ValueError: ("BACKEND_OPERATION_FAILED", 1),
+    },
+)
 @click.option("--deck", "deck_name", required=True, help="Deck name")
 @click.option("--new-per-day", type=int, default=None)
 @click.option("--reviews-per-day", type=int, default=None)
@@ -311,9 +157,8 @@ def deck_config_cmd(ctx: click.Context, deck_name: str) -> None:
 @click.option("--maximum-review-interval", type=int, default=None)
 @click.option("--learn-steps", default=None, help="Comma-separated values, in minutes.")
 @click.option("--relearn-steps", default=None, help="Comma-separated values, in minutes.")
-@click.pass_context
 def deck_config_set_cmd(
-    ctx: click.Context,
+    cmd: CommandContext,
     deck_name: str,
     new_per_day: int | None,
     reviews_per_day: int | None,
@@ -321,29 +166,14 @@ def deck_config_set_cmd(
     maximum_review_interval: int | None,
     learn_steps: str | None,
     relearn_steps: str | None,
-) -> None:
+) -> JSONValue:
     """Update scheduler settings for a deck."""
-    obj: dict[str, Any] = ctx.obj or {}
-    formatter = formatter_from_ctx(ctx)
-    normalized = deck_name.strip()
-    if not normalized:
-        formatter.emit_error(
-            command="deck:config:set",
-            code="INVALID_INPUT",
-            message="Deck name cannot be empty.",
-        )
-        raise click.exceptions.Exit(2)
-
+    normalized = _require_deck_name(cmd, deck_name)
     try:
         parsed_learn_steps = _parse_step_values(learn_steps)
         parsed_relearn_steps = _parse_step_values(relearn_steps)
     except ValueError as exc:
-        formatter.emit_error(
-            command="deck:config:set",
-            code="INVALID_INPUT",
-            message=f"Failed to parse step values: {exc}",
-        )
-        raise click.exceptions.Exit(2) from exc
+        raise cmd.invalid(f"Failed to parse step values: {exc}") from exc
 
     updates: dict[str, JSONValue] = {}
     if new_per_day is not None:
@@ -358,36 +188,8 @@ def deck_config_set_cmd(
         updates["learn_steps"] = parsed_learn_steps
     if parsed_relearn_steps is not None:
         updates["relearn_steps"] = parsed_relearn_steps
-
     if not updates:
-        formatter.emit_error(
-            command="deck:config:set",
-            code="INVALID_INPUT",
-            message="Provide at least one update option.",
-        )
-        raise click.exceptions.Exit(2)
+        raise cmd.invalid("Provide at least one update option.")
 
-    try:
-        with backend_session_from_context(obj) as backend:
-            data = backend.set_deck_config(normalized, updates)
-    except (BackendFactoryError, NotImplementedError) as exc:
-        _emit_backend_error(ctx=ctx, command="deck:config:set", obj=obj, error=exc, exit_code=7)
-    except (LookupError, ValueError) as exc:
-        formatter.emit_error(
-            command="deck:config:set",
-            code="BACKEND_OPERATION_FAILED",
-            message=str(exc),
-            details={"deck": normalized, "updates": updates},
-        )
-        raise click.exceptions.Exit(1) from exc
-
-    formatter.emit_success(command="deck:config:set", data=data)
-
-
-register_command("decks", decks_cmd)
-register_command("deck", deck_cmd)
-register_command("deck:create", deck_create_cmd)
-register_command("deck:rename", deck_rename_cmd)
-register_command("deck:delete", deck_delete_cmd)
-register_command("deck:config", deck_config_cmd)
-register_command("deck:config:set", deck_config_set_cmd)
+    with cmd.errors(details={"deck": normalized, "updates": updates}):
+        return cmd.backend.set_deck_config(normalized, updates)

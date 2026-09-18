@@ -143,7 +143,7 @@ def test_render_card_missing_note_id_raises() -> None:
 
     app = review_mod.ReviewApp(backend=Backend(), deck=None)
 
-    with pytest.raises(RuntimeError, match="card has no note id"):
+    with pytest.raises(RuntimeError, match=r"(?i)card has no note id"):
         app._render_card(4, reveal_answer=True)
 
 
@@ -163,7 +163,7 @@ def test_render_card_no_templates_raises() -> None:
 
     app = review_mod.ReviewApp(backend=Backend(), deck=None)
 
-    with pytest.raises(RuntimeError, match="no templates found"):
+    with pytest.raises(RuntimeError, match=r"(?i)no templates found"):
         app._render_card(5, reveal_answer=True)
 
 

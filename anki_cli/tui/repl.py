@@ -666,93 +666,15 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
             close()
 
 
-def _render_card_inline(
-    backend: Any, card_id: int
-) -> tuple[str, str] | None:
-    from anki_cli.core.template import render_template
+def _render_card_inline(backend: Any, card_id: int) -> tuple[str, str] | None:
+    """Plain-text ``(question, answer)`` for the inline reviewer, or ``None`` if
+    the card cannot be rendered (no note, unknown notetype, no templates)."""
+    from anki_cli.core.render import render_card
 
-    card_obj = backend.get_card(card_id)
-    card_map = (
-        cast(Mapping[str, Any], card_obj)
-        if isinstance(card_obj, Mapping) else {}
-    )
-
-    note_id: int | None = None
-    for key in ("note", "nid", "noteId", "note_id"):
-        v = card_map.get(key)
-        if isinstance(v, int):
-            note_id = v
-            break
-    if note_id is None:
+    result = render_card(backend, card_id)
+    if result.rendered is None:
         return None
-
-    raw_ord = card_map.get("ord")
-    ord_ = int(raw_ord) if isinstance(raw_ord, int) else 0
-    fields_map = backend.get_note_fields(note_id=note_id, fields=None)
-
-    notetype_name: str | None = None
-    raw_nt = card_map.get("notetype_name")
-    if isinstance(raw_nt, str) and raw_nt.strip():
-        notetype_name = raw_nt.strip()
-    else:
-        note_obj = backend.get_note(note_id)
-        if (
-            isinstance(note_obj, Mapping)
-            and isinstance(note_obj.get("modelName"), str)
-        ):
-            notetype_name = str(note_obj["modelName"]).strip()
-    if not notetype_name:
-        return None
-
-    nt_detail = backend.get_notetype(notetype_name)
-    kind = str(nt_detail.get("kind", "normal")).lower()
-
-    templates_raw = nt_detail.get("templates")
-    templates_map: Mapping[str, Any]
-    if isinstance(templates_raw, Mapping):
-        templates_map = cast(Mapping[str, Any], templates_raw)
-    else:
-        templates_map = {}
-    items = list(templates_map.items())
-
-    tpl: Mapping[str, Any] | None = None
-    for _name, t in items:
-        if (
-            isinstance(t, Mapping)
-            and isinstance(t.get("ord"), int)
-            and t["ord"] == ord_
-        ):
-            tpl = cast(Mapping[str, Any], t)
-            break
-    if tpl is None and 0 <= ord_ < len(items):
-        _name, t = items[ord_]
-        tpl = t if isinstance(t, Mapping) else {}
-    if tpl is None and items:
-        _name, t = items[0]
-        tpl = t if isinstance(t, Mapping) else {}
-    if tpl is None:
-        return None
-
-    front_tmpl = str(tpl.get("Front") or "")
-    back_tmpl = str(tpl.get("Back") or "")
-
-    if kind == "cloze":
-        cloze_index = ord_ + 1
-        question = render_template(
-            front_tmpl, fields_map,
-            cloze_index=cloze_index, reveal_cloze=False,
-        )
-        answer = render_template(
-            back_tmpl, fields_map, front_side=question,
-            cloze_index=cloze_index, reveal_cloze=True,
-        )
-    else:
-        question = render_template(front_tmpl, fields_map)
-        answer = render_template(
-            back_tmpl, fields_map, front_side=question
-        )
-
-    return _strip_html(question), _strip_html(answer)
+    return _strip_html(result.rendered.question), _strip_html(result.rendered.answer)
 
 
 def _render_header(

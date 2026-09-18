@@ -16,8 +16,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
 from anki_cli import __version__
+from anki_cli.core.render import extract_note_id, extract_ord, pick_template, render_card
 from anki_cli.core.scheduler import pick_next_due_card_id
-from anki_cli.core.template import render_template
 from anki_cli.core.undo import UndoItem, UndoStore, now_epoch_ms
 from anki_cli.tui._utils import due_day_label, relative_eta, to_int
 from anki_cli.tui.colors import (
@@ -46,37 +46,15 @@ def _strip_html_basic(value: str) -> str:
     return _html.unescape(text).strip()
 
 
-def _extract_note_id(card: Mapping[str, Any]) -> int | None:
-    for key in ("note", "nid", "noteId", "note_id"):
-        v = card.get(key)
-        if isinstance(v, int):
-            return v
-    return None
-
-
-def _extract_ord(card: Mapping[str, Any]) -> int:
-    v = card.get("ord")
-    return int(v) if isinstance(v, int) else 0
+# Kept under their old private names: tests import them from here.
+_extract_note_id = extract_note_id
+_extract_ord = extract_ord
 
 
 def _pick_template(templates: Mapping[str, Any], ord_: int) -> Mapping[str, Any] | None:
-    items = list(templates.items())
+    picked = pick_template(templates, ord_)
+    return picked[1] if picked is not None else None
 
-    # Prefer explicit ord (direct backend provides it).
-    for _name, tmpl in items:
-        if isinstance(tmpl, Mapping) and isinstance(tmpl.get("ord"), int) and tmpl["ord"] == ord_:
-            return cast(Mapping[str, Any], tmpl)
-
-    # Fallback: index into insertion order.
-    if 0 <= ord_ < len(items):
-        _name, tmpl = items[ord_]
-        return tmpl if isinstance(tmpl, Mapping) else {}
-
-    if items:
-        _name, tmpl = items[0]
-        return tmpl if isinstance(tmpl, Mapping) else {}
-
-    return None
 
 def _format_due_info_short(due_info: Any) -> str:
     if isinstance(due_info, Mapping):
@@ -734,64 +712,8 @@ class ReviewApp(App[None]):
         self._refresh_chrome()
 
     def _render_card(self, card_id: int, *, reveal_answer: bool) -> dict[str, Any]:
-        card_obj = self._backend.get_card(int(card_id))
-        card_map = cast(Mapping[str, Any], card_obj) if isinstance(card_obj, Mapping) else {}
-
-        note_id = _extract_note_id(card_map)
-        ord_ = _extract_ord(card_map)
-        if note_id is None:
-            raise RuntimeError("card has no note id")
-
-        fields_map = self._backend.get_note_fields(note_id=int(note_id), fields=None)
-
-        notetype_name: str | None = None
-        raw_nt = card_map.get("notetype_name")
-        if isinstance(raw_nt, str) and raw_nt.strip():
-            notetype_name = raw_nt.strip()
-        else:
-            note_obj = self._backend.get_note(int(note_id))
-            if isinstance(note_obj, Mapping) and isinstance(note_obj.get("modelName"), str):
-                notetype_name = str(note_obj["modelName"]).strip()
-
-        if not notetype_name:
-            raise RuntimeError("unable to determine notetype")
-
-        nt_detail = self._backend.get_notetype(notetype_name)
-        kind = str(nt_detail.get("kind", "normal")).lower()
-
-        templates_raw = nt_detail.get("templates")
-        templates_map: Mapping[str, Any]
-        if isinstance(templates_raw, Mapping):
-            templates_map = cast(Mapping[str, Any], templates_raw)
-        else:
-            templates_map = {}
-        tpl = _pick_template(templates_map, ord_)
-        if tpl is None:
-            raise RuntimeError(f"no templates found for notetype {notetype_name}")
-
-        front_tmpl = str(tpl.get("Front") or "")
-        back_tmpl = str(tpl.get("Back") or "")
-
-        if kind == "cloze":
-            cloze_index = ord_ + 1
-            question = render_template(
-                front_tmpl,
-                fields_map,
-                cloze_index=cloze_index,
-                reveal_cloze=False,
-            )
-            answer = render_template(
-                back_tmpl,
-                fields_map,
-                front_side=question,
-                cloze_index=cloze_index,
-                reveal_cloze=True,
-            )
-        else:
-            question = render_template(front_tmpl, fields_map)
-            answer = render_template(back_tmpl, fields_map, front_side=question)
-
-        return {"question": question, "answer": answer if reveal_answer else ""}
+        rendered = render_card(self._backend, int(card_id)).raise_for_error()
+        return {"question": rendered.question, "answer": rendered.answer if reveal_answer else ""}
 
     def _run_command(self, line: str) -> None:
         try:
