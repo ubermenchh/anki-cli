@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 import anki_cli.db.anki_direct as direct_mod
-from anki_cli.core.search import SearchParseError
 from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.search_sql import SearchParseError
 from tests.conftest import new_collection
 
 _TYPE_FOR_QUEUE = {0: 0, 1: 1, 2: 2, 3: 1}
@@ -286,7 +286,7 @@ def test_tag_filter_matches_children_and_tag_none(tmp_path: Path) -> None:
 
 
 def test_note_prefix_is_an_alias_for_notetype(tmp_path: Path) -> None:
-    from anki_cli.core.search import FilterNode, parse
+    from anki_cli.db.search_sql import FilterNode, parse
 
     assert parse("note:Basic") == FilterNode(kind="notetype", value="Basic")
     assert parse("notetype:Basic") == FilterNode(kind="notetype", value="Basic")

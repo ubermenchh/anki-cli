@@ -22,12 +22,6 @@ from fsrs.scheduler import LOWER_BOUNDS_PARAMETERS, UPPER_BOUNDS_PARAMETERS
 from anki_cli.core.due import LEARN_DUE_EPOCH_THRESHOLD as _LEARN_DUE_EPOCH_THRESHOLD
 from anki_cli.core.due import decode_due, decode_left
 from anki_cli.core.due import is_intraday_learn_due as _is_intraday_learn_due
-from anki_cli.core.search import (
-    SearchContext,
-    compile_card_query,
-    compile_note_query,
-    escape_like,
-)
 from anki_cli.core.template import (
     _CLOZE_RE,
     SPECIAL_FIELDS,
@@ -37,6 +31,13 @@ from anki_cli.core.template import (
     remove_field_from_template,
     template_renders_with_fields,
     template_requirements,
+)
+from anki_cli.db import lock
+from anki_cli.db.search_sql import (
+    SearchContext,
+    compile_card_query,
+    compile_note_query,
+    escape_like,
 )
 from anki_cli.db.timing import (
     DEFAULT_ROLLOVER_HOUR,
@@ -3117,11 +3118,11 @@ class AnkiDirectReadStore:
         }
 
     def _ensure_write_safe(self) -> None:
-        from anki_cli.backends.detect import _anki_process_running, _sqlite_write_locked
-
-        running = _anki_process_running()
+        # Module attribute lookups on purpose: tests stub the probes on
+        # ``anki_cli.db.lock`` and the guard must see the stubs.
+        running = lock.anki_process_running()
         try:
-            locked = _sqlite_write_locked(self.db_path)
+            locked = lock.sqlite_write_locked(self.db_path)
         except sqlite3.Error as exc:
             # Fail closed, but as the typed refusal: an inconclusive probe is
             # "blocked", not a raw sqlite3 traceback out of the write path.

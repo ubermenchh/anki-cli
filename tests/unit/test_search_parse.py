@@ -1,4 +1,4 @@
-"""Parser-level pins for ``core.search``: prefix detection, the ``\\:`` escape and
+"""Parser-level pins for ``db.search_sql``: prefix detection, the ``\\:`` escape and
 quoting. These are pure string logic, so they live here rather than behind SQLite.
 """
 
@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from anki_cli.core.search import (
+from anki_cli.db.search_sql import (
     AndNode,
     FilterNode,
     NotNode,

@@ -43,7 +43,7 @@ from anki_cli.backends.ankiconnect import AnkiConnectAPIError
 from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.cli import formatter as formatter_mod
 from anki_cli.cli.dispatcher import register_command
-from anki_cli.core.search import SearchParseError
+from anki_cli.db.search_sql import SearchParseError
 from anki_cli.models.output import JSONValue
 
 # exception type -> (error code, exit status)

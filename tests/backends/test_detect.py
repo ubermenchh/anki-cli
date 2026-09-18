@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -422,35 +421,3 @@ def test_require_direct_collection_override_missing_raises(tmp_path: Path) -> No
 
     assert exc_info.value.exit_code == 3
     assert "does not exist" in str(exc_info.value)
-
-
-def test_sqlite_write_locked_false_when_db_missing(tmp_path: Path) -> None:
-    assert detect_mod._sqlite_write_locked(tmp_path / "missing.db") is False
-
-
-def test_sqlite_write_locked_false_when_db_is_writable(tmp_path: Path) -> None:
-    db_path = tmp_path / "collection.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
-    conn.commit()
-    conn.close()
-
-    assert detect_mod._sqlite_write_locked(db_path) is False
-
-
-def test_sqlite_write_locked_true_when_other_connection_holds_immediate_lock(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "collection.db"
-    setup = sqlite3.connect(str(db_path))
-    setup.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
-    setup.commit()
-    setup.close()
-
-    locker = sqlite3.connect(str(db_path), isolation_level=None, timeout=1.0)
-    locker.execute("BEGIN IMMEDIATE")
-    try:
-        assert detect_mod._sqlite_write_locked(db_path) is True
-    finally:
-        locker.execute("ROLLBACK")
-        locker.close()

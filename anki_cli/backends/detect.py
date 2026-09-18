@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from anki_cli.db.lock import anki_process_running as _anki_process_running
+from anki_cli.db.lock import sqlite_write_locked as _sqlite_write_locked
 from anki_cli.models.config import (
     DEFAULT_ANKICONNECT_URL,
     BackendPreference,
@@ -230,89 +232,6 @@ def _anki_data_roots() -> list[Path]:
     return roots
 
 
-def _anki_process_running() -> bool:
-    import sys
-
-    if sys.platform == "win32":
-        return _anki_process_running_windows()
-    if sys.platform == "darwin":
-        return _anki_process_running_macos()
-    return _anki_process_running_linux()
-
-
-def _anki_process_running_linux() -> bool:
-    proc_root = Path("/proc")
-    if not proc_root.exists():
-        return False
-
-    current_pid = str(os.getpid())
-    desktop_names = {"anki", "anki-bin", "anki.exe"}
-    flatpak_app_id = "net.ankiweb.anki"
-
-    for entry in proc_root.iterdir():
-        if not entry.name.isdigit() or entry.name == current_pid:
-            continue
-
-        comm = entry / "comm"
-        cmdline = entry / "cmdline"
-
-        try:
-            if comm.exists():
-                name = comm.read_text(encoding="utf-8", errors="ignore").strip().lower()
-                if name in desktop_names:
-                    return True
-
-            if cmdline.exists():
-                raw = cmdline.read_bytes().split(b"\x00")
-                argv = [
-                    part.decode("utf-8", errors="ignore").strip().lower() for part in raw if part
-                ]
-                if not argv:
-                    continue
-
-                argv0_name = Path(argv[0]).name.lower()
-                if argv0_name in desktop_names:
-                    return True
-
-                if argv0_name == "flatpak" and any(tok == flatpak_app_id for tok in argv[1:]):
-                    return True
-
-        except OSError:
-            continue
-
-    return False
-
-
-def _anki_process_running_macos() -> bool:
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            ["pgrep", "-xi", "anki"],
-            capture_output=True,
-            timeout=2,
-        )
-        return result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
-
-
-def _anki_process_running_windows() -> bool:
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq anki.exe", "/NH"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        output = result.stdout.lower()
-        return "anki.exe" in output
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
-
-
 def _probe_write_lock(db_path: Path) -> bool:
     """``_sqlite_write_locked`` for ``detect_backend``, failures translated.
 
@@ -328,27 +247,3 @@ def _probe_write_lock(db_path: Path) -> bool:
             f"Cannot probe the collection lock state at {db_path}: {exc}",
             exit_code=7,
         ) from exc
-
-
-def _sqlite_write_locked(db_path: Path) -> bool:
-    if not db_path.exists():
-        return False
-
-    conn: sqlite3.Connection | None = None
-    try:
-        # ``as_uri`` percent-encodes the path: a raw ``?``/``#``/``%`` in
-        # ``db_path`` would corrupt the URI and make the probe fail with
-        # "unable to open", which must not be read as "not locked".
-        conn = sqlite3.connect(db_path.resolve().as_uri() + "?mode=rw", uri=True, timeout=0.05)
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("ROLLBACK")
-        return False
-    except sqlite3.OperationalError as exc:
-        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
-            return True
-        # Fail closed: an unexpected probe error means the lock state is
-        # unknown, not that the collection is safe to write.
-        raise
-    finally:
-        if conn is not None:
-            conn.close()

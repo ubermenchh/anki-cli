@@ -3,16 +3,13 @@
 Every other write-path test monkeypatches the guard away
 (``monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)``), so the
 ``or`` of the two refusal conditions — and the ``raise`` itself — had no
-coverage. These tests keep the guard intact: ``_anki_process_running`` is
+coverage. These tests keep the guard intact: ``anki_process_running`` is
 stubbed for determinism (a dev box with Anki open must not flake the suite),
-while ``_sqlite_write_locked`` runs for real against the tmp collection.
+while ``sqlite_write_locked`` runs for real against the tmp collection.
 
-The ``monkeypatch.setattr(detect_mod, ...)`` stubs below work only because
-``_ensure_write_safe`` resolves both probes through a call-time
-``from anki_cli.backends.detect import ...`` in ``anki_direct.py``. If that
-import is ever hoisted to module scope, the stubs must move to
-``anki_cli.db.anki_direct._anki_process_running`` / ``._sqlite_write_locked``
-instead.
+The stubs target ``anki_cli.db.lock`` because ``_ensure_write_safe`` looks
+both probes up as attributes of that module at call time (rather than
+binding them at import), precisely so they can be stubbed in one place.
 """
 
 from __future__ import annotations
@@ -23,7 +20,7 @@ from typing import Any
 
 import pytest
 
-import anki_cli.backends.detect as detect_mod
+import anki_cli.db.lock as lock_mod
 from anki_cli.db.anki_direct import AnkiDirectReadStore, DirectWriteBlockedError
 from tests.anki_schema import connect
 from tests.conftest import Collection, new_collection
@@ -67,14 +64,14 @@ def test_write_refused_while_anki_process_running(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """``_anki_process_running()`` true must refuse the write on its own.
+    """``anki_process_running()`` true must refuse the write on its own.
 
-    ``_sqlite_write_locked`` is left real: the tmp DB is unlocked, so a
+    ``sqlite_write_locked`` is left real: the tmp DB is unlocked, so a
     mutated ``and`` falls through and this test goes red.
     """
     store, db_path = _make_store(tmp_path)
     _insert_note(db_path, note_id=1001)
-    monkeypatch.setattr(detect_mod, "_anki_process_running", lambda: True)
+    monkeypatch.setattr(lock_mod, "anki_process_running", lambda: True)
 
     with pytest.raises(DirectWriteBlockedError):
         store.update_note(note_id=1001, fields={"Front": "F1"}, tags=None)
@@ -89,13 +86,13 @@ def test_write_refused_while_db_is_write_locked(
 ) -> None:
     """A second connection holding ``BEGIN IMMEDIATE`` must refuse the write.
 
-    ``_anki_process_running`` is pinned to ``False`` so only the real
-    ``_sqlite_write_locked`` probe can trip the guard; a mutated ``and``
+    ``anki_process_running`` is pinned to ``False`` so only the real
+    ``sqlite_write_locked`` probe can trip the guard; a mutated ``and``
     (``False and locked``) falls through and this test goes red.
     """
     store, db_path = _make_store(tmp_path)
     _insert_note(db_path, note_id=1001)
-    monkeypatch.setattr(detect_mod, "_anki_process_running", lambda: False)
+    monkeypatch.setattr(lock_mod, "anki_process_running", lambda: False)
 
     locker = sqlite3.connect(str(db_path), isolation_level=None, timeout=1.0)
     locker.execute("BEGIN IMMEDIATE")
@@ -116,7 +113,7 @@ def test_write_refused_when_lock_probe_is_inconclusive(
 ) -> None:
     """An unopenable collection must refuse as ``DirectWriteBlockedError``.
 
-    ``_sqlite_write_locked`` re-raises non-lock ``sqlite3.Error`` (fail
+    ``sqlite_write_locked`` re-raises non-lock ``sqlite3.Error`` (fail
     closed); ``_ensure_write_safe`` translates that into the typed refusal —
     an inconclusive probe is "blocked", not a raw ``sqlite3`` traceback out
     of the write path. A directory passes ``exists()`` but
@@ -125,7 +122,7 @@ def test_write_refused_when_lock_probe_is_inconclusive(
     bad = tmp_path / "collection.anki2"
     bad.mkdir()
     store = AnkiDirectReadStore(bad)
-    monkeypatch.setattr(detect_mod, "_anki_process_running", lambda: False)
+    monkeypatch.setattr(lock_mod, "anki_process_running", lambda: False)
 
     with pytest.raises(DirectWriteBlockedError, match="Cannot verify the collection lock state"):
         store.update_note(note_id=1, fields={"Front": "F1"}, tags=None)
@@ -146,15 +143,15 @@ def test_write_allowed_when_no_anki_process_and_db_unlocked(
     _insert_note(db_path, note_id=1001)
 
     consulted: list[str] = []
-    real_locked = detect_mod._sqlite_write_locked
+    real_locked = lock_mod.sqlite_write_locked
     monkeypatch.setattr(
-        detect_mod,
-        "_anki_process_running",
+        lock_mod,
+        "anki_process_running",
         lambda: consulted.append("running") or False,
     )
     monkeypatch.setattr(
-        detect_mod,
-        "_sqlite_write_locked",
+        lock_mod,
+        "sqlite_write_locked",
         lambda path: consulted.append("locked") or real_locked(path),
     )
 
@@ -185,7 +182,7 @@ def test_failed_write_rolls_back_and_leaves_note_byte_identical(
     """
     store, db_path = _make_store(tmp_path)
     _insert_note(db_path, note_id=1001)
-    monkeypatch.setattr(detect_mod, "_anki_process_running", lambda: False)
+    monkeypatch.setattr(lock_mod, "anki_process_running", lambda: False)
     before = _note_row(db_path, 1001)
 
     def _boom(_first_field: str) -> int:
@@ -213,7 +210,7 @@ def test_failed_second_write_rolls_back_the_first(
     """
     store, db_path = _make_store(tmp_path)
     _insert_note(db_path, note_id=1001)
-    monkeypatch.setattr(detect_mod, "_anki_process_running", lambda: False)
+    monkeypatch.setattr(lock_mod, "anki_process_running", lambda: False)
     before = _note_row(db_path, 1001)
 
     def _boom(_tags: list[str]) -> str:
