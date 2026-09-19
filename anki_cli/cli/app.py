@@ -11,6 +11,7 @@ from click.core import ParameterSource
 
 from anki_cli import __version__
 from anki_cli.backends.detect import DetectionError, detect_backend
+from anki_cli.backends.factory import DETECTION_PENDING
 from anki_cli.cli.dispatcher import get_command, list_commands
 from anki_cli.cli.errors import classify, debug_tracebacks_enabled
 from anki_cli.cli.formatter import OutputFormatter, formatter_from_ctx
@@ -276,7 +277,20 @@ def main(
                 "backend_reason": "not required",
             }
         )
+    elif ctx.invoked_subcommand is not None:
+        # Detect on first use (#32): the factory probes when the command
+        # actually opens a session and writes the result back here, so the
+        # HTTP probe / process scan / lock probe run once and only if needed.
+        ctx.obj.update(
+            {
+                "collection_path": runtime.collection_override,
+                "backend": runtime.backend,
+                "backend_reason": DETECTION_PENDING,
+            }
+        )
     else:
+        # Bare ``anki`` opens the REPL, which shows the backend in its header
+        # and must warn up front when there is none: detect eagerly here.
         try:
             detection = detect_backend(
                 forced_backend=runtime.backend,
@@ -286,36 +300,27 @@ def main(
                 allow_non_localhost=runtime.app.backend.allow_non_localhost,
             )
         except DetectionError as exc:
-            if ctx.invoked_subcommand is None:
-                # Bare `anki` still opens the REPL on a host with no Anki —
-                # the warning explains why, and backend commands surface
-                # the failure via the backend factory. Degrade, don't exit.
-                click.echo(
-                    f"warning: {exc} (backend commands unavailable)",
-                    err=True,
-                )
-                ctx.obj.update(
-                    {
-                        "collection_path": runtime.collection_override,
-                        "backend": "none",
-                        "backend_reason": str(exc),
-                    }
-                )
-            else:
-                formatter = formatter_from_ctx(ctx)
-                formatter.emit_error(
-                    command="bootstrap",
-                    code="BACKEND_UNAVAILABLE",
-                    message=str(exc),
-                    details={"forced_backend": runtime.backend},
-                )
-                raise click.exceptions.Exit(exc.exit_code) from exc
+            # The REPL still opens on a host with no Anki — the warning
+            # explains why, and backend commands surface the failure via the
+            # backend factory. Degrade, don't exit.
+            click.echo(
+                f"warning: {exc} (backend commands unavailable)",
+                err=True,
+            )
+            ctx.obj.update(
+                {
+                    "collection_path": runtime.collection_override,
+                    "backend": "none",
+                    "backend_reason": str(exc),
+                }
+            )
         else:
             ctx.obj.update(
                 {
                     "collection_path": detection.collection_path,
                     "backend": detection.backend,
                     "backend_reason": detection.reason,
+                    "ankiconnect_version": detection.ankiconnect_version,
                 }
             )
 

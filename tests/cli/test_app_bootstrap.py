@@ -46,12 +46,21 @@ def _error_payload(result) -> dict[str, Any]:
     return payload
 
 
-def _install_dummy_command(monkeypatch):
+def _never_detect(**kwargs: Any):
+    raise AssertionError("detect_backend must not run here")
+
+
+def _install_dummy_command(monkeypatch, *, opens_session: bool = False):
+    """A subcommand that records ``ctx.obj``; with ``opens_session`` it also
+    opens a backend session, which is what triggers lazy detection (#32)."""
     captured: dict[str, Any] = {}
 
     @click.command("dummy")
     @click.pass_context
     def dummy_cmd(ctx: click.Context) -> None:
+        if opens_session:
+            with factory_mod.backend_session_from_context(ctx.obj) as backend:
+                captured["backend"] = backend
         captured["obj"] = dict(ctx.obj or {})
         click.echo("dummy-ran")
 
@@ -98,14 +107,18 @@ def test_config_error_emits_invalid_config_exit_2(monkeypatch) -> None:
 
 
 def test_detection_error_emits_backend_unavailable_with_exit_code(monkeypatch) -> None:
-    _install_dummy_command(monkeypatch)
+    """Detection runs when the command first opens a session (#32); its exit
+    code survives the trip through the factory, and the envelope names the
+    command rather than "bootstrap"."""
+    _install_dummy_command(monkeypatch, opens_session=True)
     runtime = _runtime(backend="direct", output_format="json")
     monkeypatch.setattr(app_mod, "resolve_runtime_config", lambda **kwargs: runtime)
 
     def fail_detect(**kwargs: Any):
         raise DetectionError("backend unavailable", exit_code=9)
 
-    monkeypatch.setattr(app_mod, "detect_backend", fail_detect)
+    monkeypatch.setattr(app_mod, "detect_backend", _never_detect)
+    monkeypatch.setattr(factory_mod, "detect_backend", fail_detect)
 
     runner = CliRunner()
     result = runner.invoke(app_mod.main, ["--format", "json", "dummy"])
@@ -113,8 +126,24 @@ def test_detection_error_emits_backend_unavailable_with_exit_code(monkeypatch) -
     payload = _error_payload(result)
     assert result.exit_code == 9
     assert payload["error"]["code"] == "BACKEND_UNAVAILABLE"
-    assert payload["error"]["details"] == {"forced_backend": "direct"}
-    assert payload["meta"]["command"] == "bootstrap"
+    assert payload["error"]["message"] == "backend unavailable"
+    assert payload["meta"]["command"] == "dummy"
+
+
+def test_subcommand_that_never_opens_a_session_never_detects(monkeypatch) -> None:
+    """The whole point of lazy detection: no HTTP probe, no pgrep, no lock
+    probe unless a backend is actually needed."""
+    captured = _install_dummy_command(monkeypatch)
+    runtime = _runtime(backend="auto", output_format="json")
+    monkeypatch.setattr(app_mod, "resolve_runtime_config", lambda **kwargs: runtime)
+    monkeypatch.setattr(app_mod, "detect_backend", _never_detect)
+    monkeypatch.setattr(factory_mod, "detect_backend", _never_detect)
+
+    result = CliRunner().invoke(app_mod.main, ["dummy"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["obj"]["backend"] == "auto"
+    assert captured["obj"]["backend_reason"] == factory_mod.DETECTION_PENDING
 
 
 def test_cli_unopenable_collection_emits_backend_unavailable(tmp_path: Path) -> None:
@@ -239,12 +268,7 @@ def test_bootstrap_success_passes_context_to_subcommand(monkeypatch) -> None:
     )
     monkeypatch.setattr(app_mod, "resolve_runtime_config", lambda **kwargs: runtime)
 
-    detection = DetectionResult(
-        backend="direct",
-        collection_path=Path("/tmp/detected.db"),
-        reason="forced",
-    )
-    monkeypatch.setattr(app_mod, "detect_backend", lambda **kwargs: detection)
+    monkeypatch.setattr(app_mod, "detect_backend", _never_detect)
 
     runner = CliRunner()
     result = runner.invoke(app_mod.main, ["dummy"])
@@ -259,14 +283,102 @@ def test_bootstrap_success_passes_context_to_subcommand(monkeypatch) -> None:
     assert obj["config_path"] == Path("/tmp/config.toml")
     assert isinstance(obj["app_config"], AppConfig)
     assert obj["collection_override"] == Path("/tmp/override.db")
-    assert obj["collection_path"] == Path("/tmp/detected.db")
+    # Not yet detected: the override is the best-known collection and the
+    # requested backend stands in until a session resolves it.
+    assert obj["collection_path"] == Path("/tmp/override.db")
     assert obj["backend"] == "direct"
+    assert obj["backend_reason"] == factory_mod.DETECTION_PENDING
+
+
+def test_first_session_detects_once_and_caches_the_result(monkeypatch, tmp_path: Path) -> None:
+    """Two sessions in one process (the REPL opens one per action) probe once;
+    the resolved backend/collection are written back for the envelope."""
+    from tests.conftest import new_collection
+
+    col = new_collection(tmp_path / "collection.anki2")
+    calls: list[dict[str, Any]] = []
+
+    def fake_detect(**kwargs: Any):
+        calls.append(kwargs)
+        return DetectionResult(backend="direct", collection_path=col.db_path, reason="forced")
+
+    monkeypatch.setattr(factory_mod, "detect_backend", fake_detect)
+    obj: dict[str, Any] = {
+        "backend": "direct",
+        "requested_backend": "direct",
+        "backend_reason": factory_mod.DETECTION_PENDING,
+        "collection_override": None,
+        "app_config": AppConfig(),
+    }
+
+    with factory_mod.backend_session_from_context(obj) as first:
+        pass
+    with factory_mod.backend_session_from_context(obj) as second:
+        pass
+
+    assert len(calls) == 1
+    assert first.name == second.name == "direct"
+    assert obj["backend"] == "direct"
+    assert obj["collection_path"] == col.db_path
     assert obj["backend_reason"] == "forced"
 
 
+def test_failed_detection_is_cached_as_no_backend(monkeypatch) -> None:
+    calls = 0
+
+    def fail_detect(**kwargs: Any):
+        nonlocal calls
+        calls += 1
+        raise DetectionError("no AnkiConnect and no collection", exit_code=3)
+
+    monkeypatch.setattr(factory_mod, "detect_backend", fail_detect)
+    obj: dict[str, Any] = {"backend": "auto", "backend_reason": factory_mod.DETECTION_PENDING}
+
+    with pytest.raises(factory_mod.BackendFactoryError) as first:
+        factory_mod.create_backend_from_context(obj)
+    with pytest.raises(factory_mod.BackendFactoryError) as second:
+        factory_mod.create_backend_from_context(obj)
+
+    assert calls == 1
+    assert first.value.exit_code == 3
+    assert "no AnkiConnect" in str(first.value)
+    assert obj["backend"] == "none"
+    assert "no AnkiConnect" in str(second.value)
+
+
+def test_ankiconnect_version_from_detection_skips_the_second_probe(monkeypatch) -> None:
+    """Detection already got ``version`` back; the backend must not ask again."""
+    import anki_cli.backends.ankiconnect as ac_mod
+
+    seen: dict[str, Any] = {}
+
+    class FakeBackend:
+        name = "ankiconnect"
+
+        def __init__(self, **kwargs: Any) -> None:
+            seen.update(kwargs)
+
+    monkeypatch.setattr(factory_mod, "AnkiConnectBackend", FakeBackend)
+    FakeBackend.API_VERSION = ac_mod.AnkiConnectBackend.API_VERSION  # type: ignore[attr-defined]
+    base: dict[str, Any] = {
+        "backend": "ankiconnect",
+        "backend_reason": "ankiconnect reachable",
+        "collection_path": None,
+    }
+
+    factory_mod.create_backend_from_context({**base, "ankiconnect_version": 6})
+    assert seen["verify_version"] is False
+
+    factory_mod.create_backend_from_context({**base, "ankiconnect_version": 5})
+    assert seen["verify_version"] is True  # too old: let the backend explain
+
+    factory_mod.create_backend_from_context(dict(base))
+    assert seen["verify_version"] is True  # hand-built obj, never probed
+
+
 def test_bootstrap_forwards_anki_profile_to_detect(monkeypatch) -> None:
-    # Pins the anki_profile= kwarg at the detect_backend call site.
-    _install_dummy_command(monkeypatch)
+    # Pins the anki_profile= kwarg at the (now lazy) detect_backend call site.
+    _install_dummy_command(monkeypatch, opens_session=True)
 
     runtime = _runtime(backend="direct", output_format="json")
     runtime.app.collection.anki_profile = "Work"
@@ -282,7 +394,12 @@ def test_bootstrap_forwards_anki_profile_to_detect(monkeypatch) -> None:
             reason="forced",
         )
 
-    monkeypatch.setattr(app_mod, "detect_backend", fake_detect)
+    monkeypatch.setattr(app_mod, "detect_backend", _never_detect)
+    monkeypatch.setattr(factory_mod, "detect_backend", fake_detect)
+    # Detection must be the only thing that ran: the fake path does not exist.
+    monkeypatch.setattr(
+        factory_mod, "DirectBackend", lambda path: types.SimpleNamespace(name="direct")
+    )
 
     result = CliRunner().invoke(app_mod.main, ["dummy"])
 

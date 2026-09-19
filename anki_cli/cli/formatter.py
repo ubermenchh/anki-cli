@@ -3,9 +3,8 @@ from __future__ import annotations
 import csv
 import io
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, cast
 
 import click
@@ -34,15 +33,32 @@ class OutputFormatter:
         no_color: bool,
         copy_output: bool,
         warnings: Sequence[str] = (),
+        live_from: Mapping[str, Any] | None = None,
     ) -> None:
         self.output_format = output_format.lower()
-        self.backend = backend
-        self.collection_path = collection_path
+        self._backend = backend
+        self._collection_path = collection_path
+        # With lazy detection (#32) the backend is resolved *after* the
+        # formatter exists; reading ``meta.backend`` / ``meta.collection`` from
+        # the context object at emit time keeps the envelope truthful.
+        self._live_from = live_from
         self.no_color = no_color
         self.copy_output = copy_output
         # Notices collected during bootstrap/config load; folded into every
         # response's meta.warnings so stderr stays clean for error envelopes.
         self.bootstrap_warnings = list(warnings)
+
+    @property
+    def backend(self) -> str:
+        if self._live_from is not None:
+            return str(self._live_from.get("backend", self._backend))
+        return self._backend
+
+    @property
+    def collection_path(self) -> str | None:
+        if self._live_from is not None:
+            return _collection_path_str(self._live_from.get("collection_path"))
+        return self._collection_path
 
     def emit_success(
         self,
@@ -330,23 +346,21 @@ class OutputFormatter:
             click.echo("warning: clipboard is unavailable on this system", err=True)
 
 
+def _collection_path_str(raw: object) -> str | None:
+    if raw is None:
+        return None
+    return str(raw)
+
+
 def formatter_from_ctx(ctx: click.Context) -> OutputFormatter:
     obj: dict[str, Any] = ctx.obj or {}
-
-    collection_path: str | None
-    raw_collection = obj.get("collection_path")
-    if isinstance(raw_collection, Path):
-        collection_path = str(raw_collection)
-    elif raw_collection is None:
-        collection_path = None
-    else:
-        collection_path = str(raw_collection)
 
     return OutputFormatter(
         output_format=str(obj.get("format", "table")),
         backend=str(obj.get("backend", "none")),
-        collection_path=collection_path,
+        collection_path=_collection_path_str(obj.get("collection_path")),
         no_color=bool(obj.get("no_color", False)),
         copy_output=bool(obj.get("copy", False)),
         warnings=obj.get("warnings") or [],
+        live_from=obj,
     )
