@@ -34,6 +34,11 @@ def _ankiconnect(monkeypatch: pytest.MonkeyPatch) -> AnkiConnectBackend:
     backend = AnkiConnectBackend.__new__(AnkiConnectBackend)
 
     def fake_invoke(action: str, **params: Any) -> Any:
+        if action == "multi":  # dispatch each sub-action, envelope each answer
+            return [
+                {"result": fake_invoke(sub["action"], **sub.get("params", {})), "error": None}
+                for sub in params["actions"]
+            ]
         return {
             "cardsInfo": [{"cardId": 200, "note": 100, "deckName": "Default",
                            "modelName": "Basic", "ord": 0, "type": 2, "queue": 2, "due": 40,
@@ -53,6 +58,7 @@ def _ankiconnect(monkeypatch: pytest.MonkeyPatch) -> AnkiConnectBackend:
             "findCards": [],
         }[action]
 
+    backend._api_version = AnkiConnectBackend.API_VERSION  # __new__ skipped __init__
     monkeypatch.setattr(backend, "_invoke", fake_invoke)
     monkeypatch.setattr(backend, "get_due_counts", lambda deck=None: {"new": 0, "learn": 0,
                                                                         "review": 0, "total": 0})

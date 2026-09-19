@@ -261,8 +261,8 @@ anki card:suspend --query "deck:Old"
 anki card:unsuspend --id <card_id>
 anki card:move --query "tag:relocate" --deck "Archive"
 anki card:flag --id <card_id> --flag 3
-anki card:bury --query "deck:Default"
-anki card:unbury --deck "Default"
+anki card:bury --query "deck:Default"        # direct backend only
+anki card:unbury --deck "Default"           # direct backend only
 anki card:reschedule --query "tag:reset" --days 5
 anki card:reset --query "tag:relearn"
 anki card:revlog --id <card_id> --limit 20

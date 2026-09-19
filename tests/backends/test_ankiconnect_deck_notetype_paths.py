@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
@@ -19,6 +19,27 @@ def backend() -> Iterator[AnkiConnectBackend]:
         yield instance
     finally:
         instance.close()
+
+
+def _server(handle: Callable[[str, dict[str, Any]], Any]) -> Callable[..., Any]:
+    """An ``_invoke`` stand-in that behaves like AnkiConnect for ``multi``:
+    each sub-action is dispatched to ``handle`` and answered with its own
+    ``{"result", "error"}`` envelope, an ``AnkiConnectAPIError`` becoming the
+    ``error`` text rather than escaping the batch."""
+
+    def invoke(action: str, **params: Any) -> Any:
+        if action != "multi":
+            return handle(action, params)
+        out = []
+        for sub in params["actions"]:
+            assert sub["version"] == 6, sub
+            try:
+                out.append({"result": handle(sub["action"], sub.get("params", {})), "error": None})
+            except AnkiConnectAPIError as exc:
+                out.append({"result": None, "error": exc.api_message})
+        return out
+
+    return invoke
 
 
 def test_get_decks_sorted_and_coerced(
@@ -120,39 +141,16 @@ def test_rename_deck_validates_non_empty_names(backend: AnkiConnectBackend) -> N
         backend.rename_deck("Old", " ")
 
 
-def test_rename_deck_primary_strategy_fallback_to_second_signature(
+def test_rename_deck_emulates_via_create_move_delete(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """AnkiConnect has no rename action (v6 API), so there is nothing to try
+    first: the emulation *is* the implementation (#32)."""
     calls: list[tuple[str, dict[str, Any]]] = []
 
     def fake_invoke(action: str, **params: Any) -> Any:
         calls.append((action, params))
-        if action == "renameDeck" and params == {"old": "Old", "new": "New"}:
-            raise AnkiConnectAPIError("renameDeck", "unsupported")
-        return None
-
-    monkeypatch.setattr(backend, "_invoke", fake_invoke)
-
-    out = backend.rename_deck(" Old ", " New ")
-
-    assert out == {"from": "Old", "to": "New", "renamed_decks": 1}
-    assert calls[:2] == [
-        ("renameDeck", {"old": "Old", "new": "New"}),
-        ("renameDeck", {"deck": "Old", "newName": "New"}),
-    ]
-
-
-def test_rename_deck_fallback_subtree_rename_flow(
-    backend: AnkiConnectBackend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    def fake_invoke(action: str, **params: Any) -> Any:
-        calls.append((action, params))
-        if action == "renameDeck":
-            raise AnkiConnectAPIError("renameDeck", "unsupported")
         return None
 
     monkeypatch.setattr(backend, "_invoke", fake_invoke)
@@ -174,42 +172,72 @@ def test_rename_deck_fallback_subtree_rename_flow(
 
     monkeypatch.setattr(backend, "find_cards", fake_find_cards)
 
-    out = backend.rename_deck("Old", "New")
+    out = backend.rename_deck(" Old ", " New ")
 
     assert out == {"from": "Old", "to": "New", "renamed_decks": 2, "moved_cards": 3}
     assert queries == ['deck:"Old"', 'deck:"Old::Child"']
-
-    assert [entry for entry in calls if entry[0] == "createDeck"] == [
+    assert not any(entry[0] == "renameDeck" for entry in calls)
+    assert calls == [
         ("createDeck", {"deck": "New"}),
         ("createDeck", {"deck": "New::Child"}),
-    ]
-    assert [entry for entry in calls if entry[0] == "changeDeck"] == [
         ("changeDeck", {"cards": [11], "deck": "New"}),
         ("changeDeck", {"cards": [21, 22], "deck": "New::Child"}),
-    ]
-    assert [entry for entry in calls if entry[0] == "deleteDecks"] == [
         ("deleteDecks", {"decks": ["Old::Child"], "cardsToo": False}),
         ("deleteDecks", {"decks": ["Old"], "cardsToo": False}),
     ]
 
 
-def test_rename_deck_fallback_missing_source_raises_lookup_error(
+def test_rename_deck_missing_source_raises_lookup_error(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        backend,
-        "_invoke",
-        lambda action, **params: (
-            (_ for _ in ()).throw(AnkiConnectAPIError("renameDeck", "unsupported"))
-            if action == "renameDeck"
-            else None
-        ),
-    )
+    monkeypatch.setattr(backend, "_invoke", lambda action, **params: pytest.fail(action))
     monkeypatch.setattr(backend, "get_decks", lambda: [{"name": "Else"}])
 
     with pytest.raises(LookupError, match="Deck not found"):
         backend.rename_deck("Old", "New")
+
+
+@pytest.mark.parametrize("target", ["Taken", "Taken::Sub"])
+def test_rename_deck_refuses_an_occupied_target_before_touching_anything(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+) -> None:
+    """The emulation is not atomic; refusing up front is what stops a partial
+    run from merging Old's cards into an unrelated deck. Same error as the
+    direct backend."""
+    monkeypatch.setattr(backend, "_invoke", lambda action, **params: pytest.fail(action))
+    monkeypatch.setattr(
+        backend, "get_decks", lambda: [{"name": "Old"}, {"name": "Taken"}, {"name": "Taken::Sub"}]
+    )
+
+    with pytest.raises(ValueError, match="Target deck path already exists"):
+        backend.rename_deck("Old", target)
+
+
+def test_rename_deck_into_its_own_subtree_is_refused(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``Old -> Old::New`` would create ``Old::New`` and then delete ``Old`` —
+    taking the new subtree with it. Refuse before any request."""
+    monkeypatch.setattr(backend, "_invoke", lambda action, **params: pytest.fail(action))
+    monkeypatch.setattr(backend, "get_decks", lambda: [{"name": "Old"}, {"name": "Old::Child"}])
+
+    with pytest.raises(ValueError, match="into its own subtree"):
+        backend.rename_deck("Old", "Old::New")
+
+
+def test_rename_deck_onto_an_ancestor_is_an_occupied_target(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(backend, "_invoke", lambda action, **params: pytest.fail(action))
+    monkeypatch.setattr(backend, "get_decks", lambda: [{"name": "A"}, {"name": "A::B"}])
+
+    with pytest.raises(ValueError, match="Target deck path already exists"):
+        backend.rename_deck("A::B", "A")
 
 
 def test_get_deck_config_success(
@@ -269,7 +297,7 @@ def test_get_notetypes_success_and_sorting(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_invoke(action: str, **params: Any) -> Any:
+    def handle(action: str, params: dict[str, Any]) -> Any:
         if action == "modelNamesAndIds":
             return {"cloze": 200, "Basic": 100}
         if action == "modelFieldNames" and params["modelName"] == "Basic":
@@ -282,10 +310,19 @@ def test_get_notetypes_success_and_sorting(
             return {"Cloze": {}}
         raise AssertionError(f"unexpected action={action} params={params}")
 
-    monkeypatch.setattr(backend, "_invoke", fake_invoke)
+    top_level: list[str] = []
+    server = _server(handle)
+
+    def counting_invoke(action: str, **params: Any) -> Any:
+        top_level.append(action)
+        return server(action, **params)
+
+    monkeypatch.setattr(backend, "_invoke", counting_invoke)
 
     out = backend.get_notetypes()
 
+    # Two round trips for any number of models (was 1 + 2 per model, #32).
+    assert top_level == ["modelNamesAndIds", "multi"]
     assert out == [
         {
             "id": 100,
@@ -316,51 +353,74 @@ def test_get_notetypes_requires_model_map(
         backend.get_notetypes()
 
 
-def test_get_notetypes_degrades_to_names_only_on_old_ankiconnect(
+def test_get_notetypes_api_error_propagates(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """``modelNamesAndIds`` is part of the v6 API ``check_version`` pins, so an
+    error from it is a real error, not a cue to degrade to ``modelNames``."""
+
+    def handle(action: str, params: dict[str, Any]) -> Any:
+        raise AnkiConnectAPIError(action, "collection is not open")
+
+    monkeypatch.setattr(backend, "_invoke", _server(handle))
+
+    with pytest.raises(AnkiConnectAPIError, match="collection is not open"):
+        backend.get_notetypes()
+
+
+def test_get_notetypes_with_no_models_makes_one_request(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
     def fake_invoke(action: str, **params: Any) -> Any:
-        if action == "modelNamesAndIds":
-            raise AnkiConnectAPIError("modelNamesAndIds", "unsupported action")
-        if action == "modelNames":
-            return ["Basic"]
-        if action == "modelFieldNames":
-            return ["Front"]
-        if action == "modelTemplates":
-            return {"Card 1": {}}
-        raise AssertionError(action)
+        calls.append(action)
+        return {}
 
     monkeypatch.setattr(backend, "_invoke", fake_invoke)
 
-    out = backend.get_notetypes()
-    assert [(n["name"], n["id"]) for n in out] == [("Basic", None)]
+    assert backend.get_notetypes() == []
+    assert calls == ["modelNamesAndIds"]  # no empty multi
 
 
-def test_get_notetype_cloze_and_styling_fallback(
+def test_get_notetype_is_one_multi_and_detects_cloze(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_invoke(action: str, **params: Any) -> Any:
+    def handle(action: str, params: dict[str, Any]) -> Any:
         if action == "modelFieldNames":
             return ["Text"]
         if action == "modelTemplates":
             return {"Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}"}}
         if action == "modelStyling":
-            raise AnkiConnectAPIError("modelStyling", "unsupported")
+            return {"css": ".cloze {}"}
         if action == "modelNamesAndIds":
             return {"Cloze": 55}
         raise AssertionError(f"unexpected action={action}")
 
-    monkeypatch.setattr(backend, "_invoke", fake_invoke)
+    top_level: list[tuple[str, list[str]]] = []
+    server = _server(handle)
+
+    def counting_invoke(action: str, **params: Any) -> Any:
+        subs = [a["action"] for a in params["actions"]] if action == "multi" else []
+        top_level.append((action, subs))
+        return server(action, **params)
+
+    monkeypatch.setattr(backend, "_invoke", counting_invoke)
 
     out = backend.get_notetype("Cloze")
 
+    # One round trip (was 4 sequential requests, #32).
+    assert top_level == [
+        ("multi", ["modelFieldNames", "modelTemplates", "modelStyling", "modelNamesAndIds"])
+    ]
     assert out["id"] == 55
     assert out["name"] == "Cloze"
     assert out["fields"] == ["Text"]
     assert out["kind"] == "cloze"
-    assert out["styling"] == {}
+    assert out["styling"] == {"css": ".cloze {}"}
     # Templates carry the direct backend's ``ord`` (insertion order on AnkiConnect).
     assert out["templates"] == {
         "Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}", "ord": 0}
@@ -371,25 +431,41 @@ def test_get_notetype_non_dict_templates_and_styling_dict(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_invoke(action: str, **params: Any) -> Any:
+    def handle(action: str, params: dict[str, Any]) -> Any:
         if action == "modelFieldNames":
             return ["Front"]
         if action == "modelTemplates":
             return ["not-a-dict"]
         if action == "modelStyling":
-            return {"css": ".card {}"}
+            return "not-a-dict-either"
         if action == "modelNamesAndIds":
-            raise AnkiConnectAPIError("modelNamesAndIds", "unsupported")
+            return {"Other": 1}  # this model is not in the map
         raise AssertionError(f"unexpected action={action}")
 
-    monkeypatch.setattr(backend, "_invoke", fake_invoke)
+    monkeypatch.setattr(backend, "_invoke", _server(handle))
 
     out = backend.get_notetype("Basic")
 
     assert out["templates"] == {}
     assert out["kind"] == "normal"
-    assert out["styling"] == {"css": ".card {}"}
-    assert out["id"] is None  # id lookup failed; the rest still works
+    assert out["styling"] == {}
+    assert out["id"] is None  # unknown to the id map; the rest still works
+
+
+def test_get_notetype_sub_action_error_names_the_action(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handle(action: str, params: dict[str, Any]) -> Any:
+        if action == "modelTemplates":
+            raise AnkiConnectAPIError(action, "model was not found: Nope")
+        return {} if action != "modelFieldNames" else []
+
+    monkeypatch.setattr(backend, "_invoke", _server(handle))
+
+    with pytest.raises(AnkiConnectAPIError) as excinfo:
+        backend.get_notetype("Nope")
+    assert excinfo.value.action == "modelTemplates"
 
 
 @pytest.mark.parametrize(
@@ -492,7 +568,7 @@ def test_field_template_mutator_validation_and_invocations(
     ]
 
 
-def test_edit_notetype_template_validation_missing_and_fallback_update(
+def test_edit_notetype_template_validation_missing_and_documented_update(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -509,8 +585,6 @@ def test_edit_notetype_template_validation_missing_and_fallback_update(
         calls.append((action, params))
         if action == "modelTemplates":
             return {"Card 1": {"Front": "Q0", "Back": "A0"}}
-        if action == "updateModelTemplates" and "templates" in params:
-            raise AnkiConnectAPIError("updateModelTemplates", "legacy shape required")
         return None
 
     monkeypatch.setattr(backend, "_invoke", fake_invoke)
@@ -518,12 +592,10 @@ def test_edit_notetype_template_validation_missing_and_fallback_update(
     out = backend.edit_notetype_template("Basic", "Card 1", front="Q1")
 
     assert out == {"name": "Basic", "template": "Card 1", "updated": True}
+    # The v6 shape is ``model: {name, templates}``; the old first attempt with
+    # ``model=<name>, templates=...`` always failed and hid real errors (#32).
     assert calls == [
         ("modelTemplates", {"modelName": "Basic"}),
-        (
-            "updateModelTemplates",
-            {"model": "Basic", "templates": {"Card 1": {"Front": "Q1", "Back": "A0"}}},
-        ),
         (
             "updateModelTemplates",
             {"model": {"name": "Basic", "templates": {"Card 1": {"Front": "Q1", "Back": "A0"}}}},
@@ -531,7 +603,22 @@ def test_edit_notetype_template_validation_missing_and_fallback_update(
     ]
 
 
-def test_set_notetype_css_fallback(
+def test_edit_notetype_template_api_error_is_not_swallowed(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_invoke(action: str, **params: Any) -> Any:
+        if action == "modelTemplates":
+            return {"Card 1": {"Front": "Q0", "Back": "A0"}}
+        raise AnkiConnectAPIError(action, "model was not found: Basic")
+
+    monkeypatch.setattr(backend, "_invoke", fake_invoke)
+
+    with pytest.raises(AnkiConnectAPIError, match="model was not found"):
+        backend.edit_notetype_template("Basic", "Card 1", front="Q1")
+
+
+def test_set_notetype_css_sends_the_documented_shape_once(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -539,8 +626,6 @@ def test_set_notetype_css_fallback(
 
     def fake_invoke(action: str, **params: Any) -> Any:
         calls.append((action, params))
-        if action == "updateModelStyling" and isinstance(params.get("model"), str):
-            raise AnkiConnectAPIError("updateModelStyling", "legacy shape required")
         return None
 
     monkeypatch.setattr(backend, "_invoke", fake_invoke)
@@ -549,11 +634,7 @@ def test_set_notetype_css_fallback(
 
     assert out == {"name": "Basic", "updated": True, "css": ".card{color:red}"}
     assert calls == [
-        ("updateModelStyling", {"model": "Basic", "css": ".card{color:red}"}),
-        (
-            "updateModelStyling",
-            {"model": {"name": "Basic", "css": ".card{color:red}"}},
-        ),
+        ("updateModelStyling", {"model": {"name": "Basic", "css": ".card{color:red}"}}),
     ]
 
 
@@ -629,7 +710,6 @@ def test_card_operation_wrappers_and_tag_noops(
     assert backend.suspend_cards([]) == {"suspended": 0}
     assert backend.unsuspend_cards([]) == {"unsuspended": 0}
     assert backend.move_cards([], "DeckA") == {"moved": 0, "card_ids": []}
-    assert backend.bury_cards([]) == {"buried": 0, "card_ids": []}
     assert backend.reschedule_cards([], 3) == {"rescheduled": 0, "card_ids": []}
     assert backend.reset_cards([]) == {"reset": 0, "card_ids": []}
     assert backend.add_tags([], ["x"]) == {"updated": 0}
@@ -660,7 +740,6 @@ def test_card_operation_wrappers_and_tag_noops(
         "card_ids": [3, 1],
         "deck": "DeckA",
     }
-    assert backend.bury_cards([3, 1, 3]) == {"buried": 2, "card_ids": [3, 1]}
     assert backend.reschedule_cards([3, 1, 3], 5) == {
         "rescheduled": 2,
         "card_ids": [3, 1],

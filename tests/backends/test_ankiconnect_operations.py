@@ -249,30 +249,39 @@ def test_answer_card_requires_matching_gui_card(
         backend.answer_card(card_id=11, ease=3)
 
 
-def test_answer_card_fallbacks_to_answer_ease(
+def test_answer_card_sends_the_documented_ease_param_only(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """``guiAnswerCard`` takes ``ease`` (v6 docs); the old ``answerEase`` retry
+    masked real failures behind a second, equally failing request (#32)."""
     calls: list[tuple[str, dict[str, Any]]] = []
 
     def fake_invoke(action: str, **params: Any) -> Any:
         calls.append((action, params))
-        if action == "guiCurrentCard":
-            return {"cardId": 22}
-        if action == "guiAnswerCard" and "ease" in params:
-            raise AnkiConnectAPIError("guiAnswerCard", "legacy param required")
-        return None
+        return {"cardId": 22} if action == "guiCurrentCard" else None
 
     monkeypatch.setattr(backend, "_invoke", fake_invoke)
 
     out = backend.answer_card(card_id=22, ease=4)
 
     assert out == {"card_id": 22, "ease": 4, "answered": True}
-    assert calls == [
-        ("guiCurrentCard", {}),
-        ("guiAnswerCard", {"ease": 4}),
-        ("guiAnswerCard", {"answerEase": 4}),
-    ]
+    assert calls == [("guiCurrentCard", {}), ("guiAnswerCard", {"ease": 4})]
+
+
+def test_answer_card_api_error_propagates_untouched(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_invoke(action: str, **params: Any) -> Any:
+        if action == "guiCurrentCard":
+            return {"cardId": 22}
+        raise AnkiConnectAPIError("guiAnswerCard", "answer not shown yet")
+
+    monkeypatch.setattr(backend, "_invoke", fake_invoke)
+
+    with pytest.raises(AnkiConnectAPIError, match="answer not shown yet"):
+        backend.answer_card(card_id=22, ease=4)
 
 
 def test_set_card_flag_range_validation(backend: AnkiConnectBackend) -> None:
@@ -282,7 +291,11 @@ def test_set_card_flag_range_validation(backend: AnkiConnectBackend) -> None:
         backend.set_card_flag([1], 8)
 
 
-def test_set_card_flag_success(
+def _multi_ok(*results: Any) -> list[dict[str, Any]]:
+    return [{"result": r, "error": None} for r in results]
+
+
+def test_set_card_flag_batches_every_card_into_one_multi(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -290,92 +303,57 @@ def test_set_card_flag_success(
 
     def fake_invoke(action: str, **params: Any) -> Any:
         calls.append((action, params))
-        return [True]
+        return _multi_ok([True], [True])
 
     monkeypatch.setattr(backend, "_invoke", fake_invoke)
 
     out = backend.set_card_flag([3, 1, 3], 2)
 
     assert out == {"updated": 2, "card_ids": [3, 1], "flag": 2}
-    assert calls == [
-        (
-            "setSpecificValueOfCard",
-            {"card": 3, "keys": ["flags"], "newValues": [2], "warning_check": True},
-        ),
-        (
-            "setSpecificValueOfCard",
-            {"card": 1, "keys": ["flags"], "newValues": [2], "warning_check": True},
-        ),
-    ]
+    spec = {"keys": ["flags"], "newValues": [2], "warning_check": True}
+
+    def action(cid: int) -> dict[str, Any]:
+        return {"action": "setSpecificValueOfCard", "version": 6, "params": {"card": cid, **spec}}
+
+    assert calls == [("multi", {"actions": [action(3), action(1)]})]
 
 
 def test_set_card_flag_protocol_and_api_failures(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(backend, "_invoke", lambda action, **params: True)
+    monkeypatch.setattr(backend, "_invoke", lambda action, **params: _multi_ok(True))
     with pytest.raises(AnkiConnectProtocolError, match="non-empty list"):
         backend.set_card_flag([1], 1)
 
-    monkeypatch.setattr(backend, "_invoke", lambda action, **params: [False])
+    monkeypatch.setattr(backend, "_invoke", lambda action, **params: _multi_ok([False]))
     with pytest.raises(AnkiConnectAPIError, match="Failed to set flags"):
         backend.set_card_flag([1], 1)
 
 
-def test_unbury_cards_all_primary_and_fallback(
+@pytest.mark.parametrize(
+    ("method", "args"),
+    [("bury_cards", ([1, 2],)), ("unbury_cards", ()), ("unbury_cards", ("DeckA",))],
+)
+def test_bury_and_unbury_are_unsupported_on_ankiconnect(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    args: tuple[Any, ...],
 ) -> None:
-    calls: list[tuple[str, dict[str, Any]]] = []
+    """AnkiConnect has suspend/unsuspend but no bury action; the old
+    ``bury``/``unbury``/``unburyCards`` calls were always "unsupported action".
+    Say so by type, without a request (#32)."""
+    from anki_cli.backends.protocol import BackendUnsupportedError
 
-    def fake_invoke_ok(action: str, **params: Any) -> Any:
-        calls.append((action, params))
-        return None
+    monkeypatch.setattr(
+        backend, "_invoke", lambda action, **params: pytest.fail(f"unexpected request {action}")
+    )
 
-    monkeypatch.setattr(backend, "_invoke", fake_invoke_ok)
-    out = backend.unbury_cards()
-    assert out == {"unburied": True, "scope": "all"}
-    assert calls == [("unbury", {})]
-
-    calls.clear()
-
-    def fake_invoke_fallback(action: str, **params: Any) -> Any:
-        calls.append((action, params))
-        if action == "unbury":
-            raise AnkiConnectAPIError("unbury", "unsupported")
-        return None
-
-    monkeypatch.setattr(backend, "_invoke", fake_invoke_fallback)
-    out2 = backend.unbury_cards()
-    assert out2 == {"unburied": True, "scope": "all"}
-    assert calls == [("unbury", {}), ("unburyCards", {"cards": []})]
-
-
-def test_unbury_cards_deck_scope(
-    backend: AnkiConnectBackend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(backend, "find_cards", lambda query: [])
-    out = backend.unbury_cards(deck="DeckA")
-    assert out == {"unburied": 0, "deck": "DeckA", "card_ids": []}
-
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    def fake_invoke(action: str, **params: Any) -> Any:
-        calls.append((action, params))
-        if action == "unburyCards":
-            raise AnkiConnectAPIError("unburyCards", "unsupported")
-        return None
-
-    monkeypatch.setattr(backend, "find_cards", lambda query: [7, 8])
-    monkeypatch.setattr(backend, "_invoke", fake_invoke)
-
-    out2 = backend.unbury_cards(deck="DeckA")
-    assert out2 == {"unburied": 2, "deck": "DeckA", "card_ids": [7, 8]}
-    assert calls == [
-        ("unburyCards", {"cards": [7, 8]}),
-        ("unbury", {}),
-    ]
+    with pytest.raises(BackendUnsupportedError) as excinfo:
+        getattr(backend, method)(*args)
+    assert excinfo.value.operation == method
+    assert "--backend direct" in str(excinfo.value)
 
 
 def test_add_remove_tags_and_rename_tag(
@@ -419,23 +397,44 @@ def test_add_remove_tags_and_rename_tag(
     ]
 
 
-def test_get_tag_counts_sorts_and_counts(
+def test_get_tag_counts_sorts_and_counts_in_one_request(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queries: list[str] = []
-
+    calls: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr(backend, "get_tags", lambda: ["beta", "Alpha"])
 
-    def fake_find_notes(query: str) -> list[int]:
-        queries.append(query)
-        return [1] if "Alpha" in query else [1, 2, 3]
+    def fake_invoke(action: str, **params: Any) -> Any:
+        calls.append((action, params))
+        return _multi_ok([1], [1, 2, 3])  # Alpha, beta (sorted order)
 
-    monkeypatch.setattr(backend, "find_notes", fake_find_notes)
+    monkeypatch.setattr(backend, "_invoke", fake_invoke)
 
     out = backend.get_tag_counts()
+
     assert out == [{"tag": "Alpha", "count": 1}, {"tag": "beta", "count": 3}]
-    assert queries == ['tag:"Alpha"', 'tag:"beta"']
+    assert calls == [
+        (
+            "multi",
+            {
+                "actions": [
+                    {"action": "findNotes", "version": 6, "params": {"query": 'tag:"Alpha"'}},
+                    {"action": "findNotes", "version": 6, "params": {"query": 'tag:"beta"'}},
+                ]
+            },
+        )
+    ]
+
+
+def test_get_tag_counts_with_no_tags_makes_no_second_request(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(backend, "get_tags", lambda: [])
+    monkeypatch.setattr(
+        backend, "_invoke", lambda action, **params: pytest.fail(f"unexpected {action}")
+    )
+    assert backend.get_tag_counts() == []
 
 
 def test_get_note_fields_parses_mapping_values_and_filter(

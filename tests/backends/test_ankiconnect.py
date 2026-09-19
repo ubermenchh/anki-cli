@@ -198,31 +198,169 @@ def test_deck_query_prefix_none_and_escaping() -> None:
     assert backend._deck_query_prefix(r"C:\Anki\Deck") == 'deck:"C:\\\\Anki\\\\Deck" '
 
 
-def test_get_due_counts_uses_expected_queries() -> None:
-    backend = _backend_with_handler(_json_handler({"error": None, "result": 6}))
-    seen: list[str] = []
+def _multi_envelope(results: list[Any]) -> dict[str, Any]:
+    """What AnkiConnect returns for ``multi`` when every sub-action carries a
+    version: one ``{"result", "error"}`` object per action."""
+    return {"error": None, "result": [{"result": r, "error": None} for r in results]}
 
-    def fake_find_cards(query: str) -> list[int]:
-        seen.append(query)
-        # endswith() would also accept the old "is:due is:new"; the ``seen``
-        # assertion below is what pins the exact query strings.
-        if query.endswith("is:new"):
-            return [1, 2]
-        if query.endswith("is:learn"):
-            return [3]
-        if query.endswith("is:review"):
-            return [4, 5, 6]
-        return []
 
-    backend.find_cards = fake_find_cards  # type: ignore[method-assign]
+def test_get_due_counts_uses_expected_queries_in_one_request() -> None:
+    requests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        requests.append(payload)
+        return httpx.Response(200, json=_multi_envelope([[1, 2], [3], [4, 5, 6]]))
+
+    backend = _backend_with_handler(handler)
 
     counts = backend.get_due_counts(deck='Deck "A"')
 
     assert counts == {"new": 2, "learn": 1, "review": 3, "total": 6}
-    # Anki's is:due excludes new cards, so the new count must not be gated on it
-    # (the old "is:due is:new" query always returned 0).
-    assert seen == [
+    # Three findCards in one round trip (#32). Anki's is:due excludes new
+    # cards, so the new count must not be gated on it (the old "is:due is:new"
+    # query always returned 0).
+    assert len(requests) == 1
+    assert requests[0]["action"] == "multi"
+    assert [a["action"] for a in requests[0]["params"]["actions"]] == ["findCards"] * 3
+    assert [a["version"] for a in requests[0]["params"]["actions"]] == [6, 6, 6]
+    assert [a["params"]["query"] for a in requests[0]["params"]["actions"]] == [
         'deck:"Deck \\"A\\"" is:new',
         'deck:"Deck \\"A\\"" is:due is:learn',
         'deck:"Deck \\"A\\"" is:due is:review',
     ]
+
+
+# ---- transport hygiene (#32) --------------------------------------------------------
+
+
+def test_requests_reuse_the_connection_and_do_not_ask_to_close() -> None:
+    headers: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers.append(dict(request.headers))
+        return httpx.Response(200, json={"error": None, "result": 6})
+
+    backend = _backend_with_handler(handler)
+    backend._invoke("version")
+    backend._invoke("version")
+
+    assert all(h.get("connection", "").lower() != "close" for h in headers)
+
+
+def test_default_client_connects_fast_and_reads_patiently() -> None:
+    backend = AnkiConnectBackend(verify_version=False, timeout_seconds=1.5, read_timeout_seconds=45)
+    try:
+        timeout = backend._client.timeout
+        assert timeout.connect == 1.5
+        assert timeout.read == 45
+        assert timeout.write == 45
+        assert timeout.pool == 1.5
+    finally:
+        backend.close()
+
+
+def test_remote_protocol_error_is_retried_once_on_a_fresh_request() -> None:
+    """A stale keep-alive socket fails before Anki sees the request; the retry
+    is what replaces the old blanket ``Connection: close``."""
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.RemoteProtocolError("Server disconnected", request=request)
+        return httpx.Response(200, json={"error": None, "result": 6})
+
+    backend = _backend_with_handler(handler)
+
+    assert backend._invoke("version") == 6
+    assert attempts == 2
+
+
+def test_remote_protocol_error_twice_is_unavailable() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.RemoteProtocolError("Server disconnected", request=request)
+
+    backend = _backend_with_handler(handler)
+
+    with pytest.raises(AnkiConnectUnavailableError, match="disconnected unexpectedly"):
+        backend._invoke("version")
+    assert attempts == 2  # exactly one retry, never a loop
+
+
+def test_other_transport_errors_are_not_retried() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ReadTimeout("slow", request=request)
+
+    backend = _backend_with_handler(handler)
+
+    with pytest.raises(AnkiConnectUnavailableError):
+        backend._invoke("findCards", query="deck:*")
+    assert attempts == 1
+
+
+# ---- multi -----------------------------------------------------------------------------
+
+
+def test_multi_labels_every_action_with_the_version_and_unwraps_in_order() -> None:
+    requests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json=_multi_envelope([["a"], {"k": 1}]))
+
+    backend = _backend_with_handler(handler)
+
+    out = backend._multi([("deckNames", {}), ("getDeckConfig", {"deck": "D"})])
+
+    assert out == [["a"], {"k": 1}]
+    assert requests[0]["params"]["actions"] == [
+        {"action": "deckNames", "version": 6, "params": {}},
+        {"action": "getDeckConfig", "version": 6, "params": {"deck": "D"}},
+    ]
+
+
+def test_multi_with_no_actions_makes_no_request() -> None:
+    backend = _backend_with_handler(lambda request: pytest.fail("no request expected"))
+    assert backend._multi([]) == []
+
+
+def test_multi_sub_action_error_names_that_action() -> None:
+    body = {
+        "error": None,
+        "result": [
+            {"result": ["Default"], "error": None},
+            {"result": None, "error": "deck was not found: Nope"},
+        ],
+    }
+    backend = _backend_with_handler(_json_handler(body))
+
+    with pytest.raises(AnkiConnectAPIError) as excinfo:
+        backend._multi([("deckNames", {}), ("getDeckConfig", {"deck": "Nope"})])
+    assert excinfo.value.action == "getDeckConfig"
+    assert "deck was not found" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        [{"result": 1, "error": None}],  # one item for two actions
+        "nope",  # not a list
+        [["bare"], ["bare"]],  # unlabelled sub-results (server ignored version)
+    ],
+    ids=["short", "not-a-list", "unwrapped-items"],
+)
+def test_multi_rejects_malformed_responses(result: Any) -> None:
+    backend = _backend_with_handler(_json_handler({"error": None, "result": result}))
+
+    with pytest.raises(AnkiConnectProtocolError):
+        backend._multi([("deckNames", {}), ("deckNames", {})])
