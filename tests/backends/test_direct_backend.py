@@ -35,6 +35,8 @@ def test_init_sets_identity_and_resolved_collection_path(tmp_path: Path) -> None
     assert backend.collection_path == col.db_path.resolve()
     assert backend.db_path == backend.collection_path
     assert isinstance(backend, AnkiDirectStore)
+    # One real call through the backend: the store is the backend, no forwarding.
+    assert [d["name"] for d in backend.get_decks()] == ["Default"]
 
 
 def _protocol_methods() -> list[str]:
@@ -45,16 +47,38 @@ def _protocol_methods() -> list[str]:
     )
 
 
+def test_protocol_exposes_the_expected_surface() -> None:
+    """Guards the parametrize below against silently collecting nothing."""
+    methods = _protocol_methods()
+    assert len(methods) > 40
+    assert {"answer_card", "find_notes", "find_cards", "add_note"} <= set(methods)
+
+
 @pytest.mark.parametrize("method", _protocol_methods())
 def test_store_signature_accepts_the_protocol_calling_convention(method: str) -> None:
     """Every parameter the protocol lets callers pass positionally must be
-    positional on the store too, defaults must match, and the store may not
-    demand anything the protocol does not name."""
-    proto = inspect.signature(getattr(AnkiBackend, method))
-    impl = inspect.signature(getattr(DirectBackend, method))
+    positional on the store too, in the same order, defaults must match, and
+    the store may not demand anything the protocol does not name."""
+    proto_fn = getattr(AnkiBackend, method)
+    # Resolve on the store, not on DirectBackend: a method missing from the
+    # store would otherwise fall through the MRO to the protocol's own stub and
+    # compare equal to itself.
+    impl_fn = getattr(AnkiDirectStore, method)
+    assert impl_fn is not proto_fn, f"{method}: store does not implement it"
+
+    proto = inspect.signature(proto_fn)
+    impl = inspect.signature(impl_fn)
 
     proto_params = list(proto.parameters.values())[1:]  # drop self
-    impl_params = {p.name: p for p in list(impl.parameters.values())[1:]}
+    impl_param_list = list(impl.parameters.values())[1:]
+    impl_params = {p.name: p for p in impl_param_list}
+
+    positional = inspect.Parameter.POSITIONAL_OR_KEYWORD
+    proto_order = [p.name for p in proto_params if p.kind is positional]
+    impl_order = [p.name for p in impl_param_list if p.kind is positional]
+    assert impl_order[: len(proto_order)] == proto_order, (
+        f"{method}: positional order differs ({impl_order} vs {proto_order})"
+    )
 
     for p in proto_params:
         got = impl_params.get(p.name)
