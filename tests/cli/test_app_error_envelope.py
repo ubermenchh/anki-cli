@@ -92,7 +92,9 @@ def test_unknown_option_after_subcommand_is_a_json_envelope(monkeypatch, runner)
     assert "No such option: --bogus" in payload["error"]["message"]
     assert payload["error"]["details"]["usage"].startswith("Usage:")
     assert payload["meta"]["command"] == "probe"
-    assert payload["meta"]["backend"] == "direct"
+    # Detection is lazy (#32): a command that never opened a session has no
+    # resolved backend, and the preference must not leak in as one.
+    assert payload["meta"]["backend"] == "none"
 
 
 @pytest.mark.parametrize("fmt", ["json", "JSON", "Json"])
@@ -175,8 +177,9 @@ def test_escaping_exception_becomes_envelope(
     monkeypatch, runner, exc, code, exit_code, argv
 ) -> None:
     """Domain exceptions carry no Click ctx; the envelope must still use the
-    format and backend the group callback resolved (the ``["probe"]`` case
-    only knows about JSON through the stubbed config)."""
+    format the group callback resolved (the ``["probe"]`` case only knows
+    about JSON through the stubbed config). The backend is "none": detection
+    is lazy (#32) and ``probe`` raised before opening a session."""
     _install(monkeypatch, _raising("probe", exc))  # fmt="json" = config says json
 
     result = runner.invoke(app_mod.main, argv)
@@ -186,7 +189,7 @@ def test_escaping_exception_becomes_envelope(
     assert payload["error"]["code"] == code
     assert str(exc) in payload["error"]["message"] or code == "INTERNAL_ERROR"
     assert payload["meta"]["command"] == "probe"
-    assert payload["meta"]["backend"] == "direct"  # resolved runtime, not the argv peek
+    assert payload["meta"]["backend"] == "none"  # never resolved: no session was opened
     assert "Traceback" not in result.stderr
 
 
