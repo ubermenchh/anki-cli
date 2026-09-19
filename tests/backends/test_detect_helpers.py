@@ -74,6 +74,37 @@ def test_ankiconnect_reachable_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.captured_json == {"action": "version", "version": 6}
 
 
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (6, 6),
+        (7, 7),
+        ("6", -1),  # reachable, but not a usable version: backend re-checks
+        (True, -1),
+        (None, -1),
+    ],
+)
+def test_ankiconnect_version_reports_what_the_server_said(
+    monkeypatch: pytest.MonkeyPatch, result: object, expected: int
+) -> None:
+    """The factory skips its own ``version`` round trip only for a real int
+    >= 6; anything else must make it ask again so the descriptive
+    ``check_version`` error surfaces (#32)."""
+    client = _FakeClient(response=_FakeResponse(payload={"error": None, "result": result}))
+    monkeypatch.setattr(detect_mod.httpx, "Client", lambda timeout: client)
+
+    assert detect_mod._ankiconnect_version("http://localhost:8765") == expected
+
+
+def test_ankiconnect_version_none_when_server_reports_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient(response=_FakeResponse(payload={"error": "nope", "result": None}))
+    monkeypatch.setattr(detect_mod.httpx, "Client", lambda timeout: client)
+
+    assert detect_mod._ankiconnect_version("http://localhost:8765") is None
+
+
 def test_ankiconnect_reachable_false_on_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _FakeClient(post_error=detect_mod.httpx.HTTPError("boom"))
     monkeypatch.setattr(detect_mod.httpx, "Client", lambda timeout: client)

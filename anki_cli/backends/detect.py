@@ -35,6 +35,9 @@ class DetectionResult:
     profile: str | None = None
     """Profile directory that owns ``collection_path`` when one was
     discovered (never set for an explicit ``--col``/``collection.path``)."""
+    ankiconnect_version: int | None = None
+    """What AnkiConnect's ``version`` action returned during the probe, so the
+    backend factory need not ask again (#32)."""
 
 
 def detect_backend(
@@ -56,7 +59,8 @@ def detect_backend(
     profile = anki_profile.strip() if anki_profile else ""
 
     if forced == "ankiconnect":
-        if not _ankiconnect_reachable(ankiconnect_url, allow_non_localhost):
+        version = _ankiconnect_version(ankiconnect_url, allow_non_localhost)
+        if version is None:
             raise DetectionError(
                 f"AnkiConnect backend forced, but it is not reachable at {ankiconnect_url}.",
                 exit_code=7,
@@ -69,6 +73,7 @@ def detect_backend(
             info,
             "forced",
             profile=info.parent.name if info is not None and col_override is None else None,
+            ankiconnect_version=version,
         )
 
     if forced == "direct":
@@ -77,7 +82,7 @@ def detect_backend(
             profile,
             empty_message="Direct backend forced, but no Anki collection DB was found.",
         )
-        if _anki_process_running() or _probe_write_lock(path):
+        if _probe_write_lock(path) or _anki_process_running():
             raise DetectionError(
                 "Anki Desktop appears to be running while AnkiConnect is unavailable. "
                 "Close Anki Desktop or use --backend ankiconnect.",
@@ -90,13 +95,15 @@ def detect_backend(
             profile=path.parent.name if col_override is None else None,
         )
 
-    if _ankiconnect_reachable(ankiconnect_url, allow_non_localhost):
+    version = _ankiconnect_version(ankiconnect_url, allow_non_localhost)
+    if version is not None:
         info = _pick_collection(_discover_collections(col_override), profile)
         return DetectionResult(
             "ankiconnect",
             info,
             "ankiconnect reachable",
             profile=info.parent.name if info is not None and col_override is None else None,
+            ankiconnect_version=version,
         )
 
     direct_path = _require_direct_collection(
@@ -104,7 +111,9 @@ def detect_backend(
         profile,
         empty_message="No AnkiConnect and no collection found.",
     )
-    if _anki_process_running() or _probe_write_lock(direct_path):
+    # Lock probe first: it is a local SQLite open (microseconds) and is the
+    # authoritative signal; the process scan shells out to pgrep/tasklist.
+    if _probe_write_lock(direct_path) or _anki_process_running():
         raise DetectionError(
             "Anki is running but AnkiConnect is unavailable. "
             "Install AnkiConnect or close Anki Desktop.",
@@ -118,12 +127,17 @@ def detect_backend(
     )
 
 
-def _ankiconnect_reachable(url: str, allow_non_localhost: bool = False) -> bool:
+def _ankiconnect_version(url: str, allow_non_localhost: bool = False) -> int | None:
+    """AnkiConnect's API version if it answers at ``url``, else ``None``.
+
+    Returning the version lets the backend skip its own ``version`` round trip
+    when detection already made one (#32).
+    """
     host = urlparse(url).hostname or ""
     if not allow_non_localhost and host not in _LOCAL_HOSTS:
         # Don't leak a probe to a host the config hasn't allowed; data ops
         # would refuse it anyway via AnkiConnectBackend._validate_url.
-        return False
+        return None
 
     payload = {"action": "version", "version": 6}
     try:
@@ -132,8 +146,17 @@ def _ankiconnect_reachable(url: str, allow_non_localhost: bool = False) -> bool:
             response.raise_for_status()
             data = response.json()
     except (httpx.HTTPError, ValueError):
-        return False
-    return isinstance(data, dict) and data.get("error") is None and "result" in data
+        return None
+    if not isinstance(data, dict) or data.get("error") is not None or "result" not in data:
+        return None
+    result = data["result"]
+    # A reachable server whose version is not an int still counts as
+    # reachable; the backend's check_version reports the protocol problem.
+    return result if isinstance(result, int) and not isinstance(result, bool) else -1
+
+
+def _ankiconnect_reachable(url: str, allow_non_localhost: bool = False) -> bool:
+    return _ankiconnect_version(url, allow_non_localhost) is not None
 
 
 def _discover_collections(col_override: Path | None) -> list[Path]:

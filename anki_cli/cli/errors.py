@@ -73,7 +73,7 @@ def classify(exc: BaseException) -> ClassifiedError:
     """Map any exception to an envelope code, exit code, message and details."""
     details: dict[str, JSONValue] = {}
 
-    if isinstance(exc, DetectionError):
+    if isinstance(exc, (DetectionError, BackendFactoryError)):
         # Carries its own exit code (3 = nothing found, 7 = forced backend down).
         return ClassifiedError(
             ErrorCode.BACKEND_UNAVAILABLE, int(exc.exit_code), str(exc), details

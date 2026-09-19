@@ -43,13 +43,16 @@ class AnkiConnectBackend(AnkiBackend):
     supports_scheduler_introspection = False
 
     name = "ankiconnect"
+    API_VERSION = 6
+    """The AnkiConnect API level every request is labelled with and the
+    minimum ``version`` the server must report."""
 
     def __init__(
         self,
         *,
         url: str = "http://localhost:8765",
         timeout_seconds: float = 2.0,
-        api_version: int = 6,
+        api_version: int = API_VERSION,
         verify_version: bool = True,
         allow_non_localhost: bool = False,
         collection_path: Path | None = None,

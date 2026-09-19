@@ -186,3 +186,30 @@ def test_formatter_from_ctx_coerces_path_values() -> None:
     assert formatter.collection_path == "/tmp/test.db"
     assert formatter.no_color is True
     assert formatter.copy_output is False
+
+
+def test_formatter_from_ctx_reads_backend_and_collection_at_emit_time(capsys) -> None:
+    """Lazy detection (#32) resolves the backend after the command's formatter
+    exists; ``meta`` must report what was resolved, not the placeholder."""
+    obj = {
+        "format": "json",
+        "backend": "auto",
+        "collection_path": None,
+        "no_color": True,
+        "copy": False,
+    }
+    formatter = formatter_from_ctx(click.Context(click.Command("dummy"), obj=obj))
+
+    obj.update({"backend": "direct", "collection_path": Path("/tmp/resolved.db")})
+    formatter.emit_success(command="decks", data=[])
+
+    meta = json.loads(capsys.readouterr().out)["meta"]
+    assert meta["backend"] == "direct"
+    assert meta["collection"] == "/tmp/resolved.db"
+
+
+def test_formatter_without_context_keeps_its_constructor_values(capsys) -> None:
+    formatter = _formatter("json")
+    formatter.emit_success(command="x", data=None)
+    meta = json.loads(capsys.readouterr().out)["meta"]
+    assert (meta["backend"], meta["collection"]) == ("direct", "/tmp/collection.db")

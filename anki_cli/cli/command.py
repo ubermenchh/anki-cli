@@ -155,13 +155,14 @@ class CommandContext:
             raise self.fail("CONFIRMATION_REQUIRED", message, exit_code=2, details=merged)
 
     def backend_unavailable(self, exc: BaseException) -> CommandExit:
-        code, exit_code = BACKEND_UNAVAILABLE
-        return self.fail(
-            code,
-            str(exc),
-            exit_code=exit_code,
-            details={"backend": str(self.obj.get("backend", "unknown"))},
-        )
+        code, default_exit = BACKEND_UNAVAILABLE
+        # A detection failure carries its own exit code (3 = nothing found,
+        # 7 = backend present but unavailable); the factory forwards it.
+        exit_code = int(getattr(exc, "exit_code", default_exit))
+        details: dict[str, JSONValue] = {"backend": str(self.obj.get("backend", "unknown"))}
+        if "requested_backend" in self.obj:
+            details["requested_backend"] = str(self.obj["requested_backend"])
+        return self.fail(code, str(exc), exit_code=exit_code, details=details)
 
     @contextmanager
     def errors(self, *, details: Mapping[str, JSONValue] | None = None) -> Iterator[None]:

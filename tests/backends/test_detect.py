@@ -36,8 +36,8 @@ def _patch_detect_helpers(
 
     monkeypatch.setattr(
         detect_mod,
-        "_ankiconnect_reachable",
-        lambda url, allow_non_localhost=False: reachable,
+        "_ankiconnect_version",
+        lambda url, allow_non_localhost=False: 6 if reachable else None,
     )
     monkeypatch.setattr(detect_mod, "_discover_collections", _discover_spy)
     monkeypatch.setattr(detect_mod, "_pick_collection", _pick_spy)
@@ -126,6 +126,42 @@ def test_forced_direct_refuses_when_anki_running(
     assert "Anki Desktop appears to be running" in str(exc_info.value)
 
 
+@pytest.mark.parametrize("forced", ["direct", "auto"])
+def test_lock_probe_runs_before_the_process_scan(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, forced: str
+) -> None:
+    """The SQLite lock probe is microseconds and authoritative; pgrep/tasklist
+    is a subprocess. A locked collection must refuse without ever spawning it
+    (#32)."""
+    _patch_detect_helpers(
+        monkeypatch,
+        reachable=False,
+        direct_path=tmp_path / "collection.anki2",
+        running=False,
+        locked=True,
+    )
+
+    def never_scan() -> bool:
+        raise AssertionError("process scan must not run when the lock probe already refused")
+
+    monkeypatch.setattr(detect_mod, "_anki_process_running", never_scan)
+
+    with pytest.raises(DetectionError) as exc_info:
+        detect_backend(forced_backend=forced)
+
+    assert exc_info.value.exit_code == 7
+
+
+def test_detection_carries_the_probed_ankiconnect_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_detect_helpers(monkeypatch, reachable=True, direct_path=tmp_path / "c.anki2")
+    monkeypatch.setattr(detect_mod, "_ankiconnect_version", lambda *a, **k: 7)
+
+    assert detect_backend(forced_backend="auto").ankiconnect_version == 7
+    assert detect_backend(forced_backend="ankiconnect").ankiconnect_version == 7
+
+
 def test_forced_direct_refuses_when_db_locked(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -176,7 +212,7 @@ def test_auto_unopenable_collection_raises_detection_error(
     ``collection_path`` pointing at an unopenable file)."""
     bad = tmp_path / "collection.anki2"
     bad.mkdir()
-    monkeypatch.setattr(detect_mod, "_ankiconnect_reachable", lambda *a, **k: False)
+    monkeypatch.setattr(detect_mod, "_ankiconnect_version", lambda *a, **k: None)
     monkeypatch.setattr(detect_mod, "_anki_process_running", lambda: False)
 
     with pytest.raises(DetectionError) as exc_info:
@@ -308,7 +344,7 @@ def test_forced_ankiconnect_with_unmatched_profile_still_succeeds(
     (profile_dir / "collection.anki2").touch()
 
     monkeypatch.setattr(detect_mod, "_anki_data_roots", lambda: [root])
-    monkeypatch.setattr(detect_mod, "_ankiconnect_reachable", lambda *a, **k: True)
+    monkeypatch.setattr(detect_mod, "_ankiconnect_version", lambda *a, **k: 6)
 
     result = detect_backend(forced_backend="ankiconnect", anki_profile="Work")
 
@@ -327,7 +363,7 @@ def test_auto_ankiconnect_reachable_with_unmatched_profile_still_succeeds(
     (profile_dir / "collection.anki2").touch()
 
     monkeypatch.setattr(detect_mod, "_anki_data_roots", lambda: [root])
-    monkeypatch.setattr(detect_mod, "_ankiconnect_reachable", lambda *a, **k: True)
+    monkeypatch.setattr(detect_mod, "_ankiconnect_version", lambda *a, **k: 6)
 
     result = detect_backend(forced_backend="auto", anki_profile="Work")
 
@@ -343,7 +379,7 @@ def test_missing_col_override_fails_loudly(
 ) -> None:
     # An explicit --col to a nonexistent file must name the path, not fall
     # through to a generic "no collection found".
-    monkeypatch.setattr(detect_mod, "_ankiconnect_reachable", lambda *a, **k: False)
+    monkeypatch.setattr(detect_mod, "_ankiconnect_version", lambda *a, **k: None)
     missing = tmp_path / "missing.anki2"
 
     with pytest.raises(DetectionError) as exc_info:
@@ -358,7 +394,7 @@ def test_missing_col_override_is_informational_on_ankiconnect(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(detect_mod, "_ankiconnect_reachable", lambda *a, **k: True)
+    monkeypatch.setattr(detect_mod, "_ankiconnect_version", lambda *a, **k: 6)
 
     result = detect_backend(forced_backend="ankiconnect", col_override=tmp_path / "missing.anki2")
 
