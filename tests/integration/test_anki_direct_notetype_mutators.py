@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-import anki_cli.db.anki_direct as direct_mod
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.store import AnkiDirectStore
 from anki_cli.proto.anki.notetypes import (
     NotetypeConfig,
     NotetypeConfigCardRequirement,
@@ -19,7 +19,7 @@ from tests.conftest import Collection, new_collection
 from tests.integration.conftest import CSUM_A, CSUM_B, assert_col_modified, col_row
 
 
-def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
+def _make_store(tmp_path: Path) -> tuple[AnkiDirectStore, Path]:
     """Bare schema; every notetype here is created through the store."""
     col = new_collection(tmp_path / "collection.anki2", seed=False)
     return col.store(writable=False), col.db_path
@@ -42,11 +42,11 @@ def _note_row(db_path: Path, note_id: int) -> dict[str, Any]:
     return dict(row)
 
 
-def _enable_writes(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectReadStore) -> None:
+def _enable_writes(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectStore) -> None:
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
 
 
-def _create_basic_notetype(store: AnkiDirectReadStore, *, name: str = "Basic") -> int:
+def _create_basic_notetype(store: AnkiDirectStore, *, name: str = "Basic") -> int:
     result = store.create_notetype(
         name=name,
         fields=["Front", "Back"],
@@ -128,7 +128,7 @@ def test_create_notetype_normal_persists_schema_and_requirements(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     _enable_writes(monkeypatch, store)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     result = store.create_notetype(
         name="  Basic  ",
@@ -367,7 +367,7 @@ def test_remove_notetype_field_removes_and_reorders(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     _enable_writes(monkeypatch, store)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     store.create_notetype(
         name="Tri",
@@ -399,7 +399,7 @@ def test_remove_notetype_field_rewrites_note_field_values(
     """Regression for #17: notes.flds is positional and must drop the removed slot."""
     store, db_path = _make_store(tmp_path)
     _enable_writes(monkeypatch, store)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     store.create_notetype(
         name="Tri",
@@ -580,7 +580,7 @@ def test_remove_notetype_field_updates_sort_field_idx_when_out_of_range(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     _enable_writes(monkeypatch, store)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     store.create_notetype(
         name="Sorty",
@@ -629,7 +629,7 @@ def test_add_notetype_template_adds_next_ord_and_duplicate_noop(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     _enable_writes(monkeypatch, store)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     ntid = _create_basic_notetype(store)
 
@@ -687,7 +687,7 @@ def test_edit_notetype_template_updates_front_and_back(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     _enable_writes(monkeypatch, store)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     ntid = _create_basic_notetype(store)
 
@@ -743,7 +743,7 @@ def test_set_notetype_css_updates_config(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     _enable_writes(monkeypatch, store)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     ntid = _create_basic_notetype(store)
 

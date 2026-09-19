@@ -15,12 +15,9 @@ import pytest
 from fsrs import Card as FSRSCard
 from fsrs import State
 
-from anki_cli.db.anki_direct import (
-    LEARN_DUE_EPOCH_THRESHOLD,
-    AnkiDirectReadStore,
-    is_intraday_learn_due,
-    queue_from_type_sql,
-)
+from anki_cli.core.due import LEARN_DUE_EPOCH_THRESHOLD, is_intraday_learn_due
+from anki_cli.db.cards import queue_from_type_sql
+from anki_cli.db.store import AnkiDirectStore
 from anki_cli.db.timing import SchedTiming, sched_timing_today_v1
 from tests.anki_schema import connect
 from tests.conftest import Collection, new_collection
@@ -37,7 +34,7 @@ def _day_start(idx: int) -> int:
     return CRT + idx * 86400
 
 
-def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
+def _make_store(tmp_path: Path) -> tuple[AnkiDirectStore, Path]:
     col = new_collection(tmp_path / "collection.anki2", crt=CRT, seed=False)
     col.insert_deck(id=1, name="Default")
     col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])

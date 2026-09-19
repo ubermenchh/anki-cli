@@ -12,14 +12,16 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from fsrs import Card as FSRSCard
 from fsrs import Rating, Scheduler, State
 
-import anki_cli.db.anki_direct as direct_mod
-from anki_cli.db.anki_direct import (
+import anki_cli.db.scheduling as scheduling_mod
+from anki_cli.db.scheduling import (
     FSRS6_DEFAULT_PARAMETERS,
     REVLOG_KIND_FILTERED,
     REVLOG_KIND_LEARNING,
@@ -87,8 +89,8 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
         def now(cls, tz=None):  # type: ignore[override]
             return now
 
-    monkeypatch.setattr(direct_mod, "datetime", _Now)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: NOW)
+    monkeypatch.setattr(scheduling_mod, "datetime", _Now)
+    monkeypatch.setattr(time, "time", lambda: NOW)
     return now
 
 
@@ -280,7 +282,7 @@ def test_fuzz_is_actually_applied_and_deterministic(tmp_path: Path) -> None:
     store, _ = _make_store(tmp_path)
     scheduler = Scheduler(learning_steps=[timedelta(minutes=1)], enable_fuzzing=True)
     now = datetime.fromtimestamp(NOW, tz=UTC)
-    card = direct_mod.FSRSCard(
+    card = FSRSCard(
         card_id=42,
         state=State.Review,
         stability=200.0,

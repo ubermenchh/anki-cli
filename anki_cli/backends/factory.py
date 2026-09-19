@@ -8,7 +8,7 @@ from typing import Any
 from anki_cli.backends.ankiconnect import AnkiConnectBackend, AnkiConnectError
 from anki_cli.backends.direct import DirectBackend
 from anki_cli.backends.protocol import AnkiBackend
-from anki_cli.db.anki_direct import UnsupportedCollectionError
+from anki_cli.db.errors import UnsupportedCollectionError
 from anki_cli.models.config import DEFAULT_ANKICONNECT_URL, AppConfig
 
 

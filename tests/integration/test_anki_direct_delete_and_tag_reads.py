@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.store import AnkiDirectStore
 from tests.conftest import COL_BASE_MOD_MS, Collection, new_collection
 
 
-def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
+def _make_store(tmp_path: Path) -> tuple[AnkiDirectStore, Path]:
     col = new_collection(tmp_path / "collection.anki2", seed=False)
     return col.store(writable=False), col.db_path
 

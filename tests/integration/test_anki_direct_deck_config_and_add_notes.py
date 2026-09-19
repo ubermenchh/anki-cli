@@ -1,19 +1,19 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-import anki_cli.db.anki_direct as direct_mod
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.store import AnkiDirectStore
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
 from anki_cli.proto.anki.decks import DeckFiltered, DeckKindContainer
 from tests.anki_schema import connect
 from tests.conftest import Collection, new_collection, normal_deck_kind
 
 
-def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
+def _make_store(tmp_path: Path) -> tuple[AnkiDirectStore, Path]:
     col = new_collection(tmp_path / "collection.anki2", seed=False)
     return col.store(writable=False), col.db_path
 
@@ -171,7 +171,7 @@ def test_set_deck_config_updates_fields_and_persists(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     _insert_deck_config(
         db_path,
@@ -272,7 +272,7 @@ def test_create_deck_alias_creates_deck(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     # write_deck/create_deck require at least one template deck row.
     _insert_deck_normal(db_path, did=1, name="Default", config_id=1)
@@ -293,7 +293,7 @@ def test_add_notes_returns_id_or_none_per_input_item(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     _insert_deck_normal(db_path, did=1, name="Default", config_id=1)
 

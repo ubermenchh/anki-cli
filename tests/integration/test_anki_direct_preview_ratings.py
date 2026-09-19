@@ -1,18 +1,19 @@
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fsrs import State
 
-import anki_cli.db.anki_direct as direct_mod
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.store import AnkiDirectStore
 from tests.conftest import Collection, new_collection
 
 
-def _make_store(tmp_path: Path, *, col_crt: int = 0) -> tuple[AnkiDirectReadStore, Path]:
+def _make_store(tmp_path: Path, *, col_crt: int = 0) -> tuple[AnkiDirectStore, Path]:
     """Bare schema-18 collection: no deck_config row, so preview uses the FSRS
     defaults exactly as the old fixture did."""
     col = new_collection(tmp_path / "collection.anki2", crt=col_crt, seed=False)
@@ -61,10 +62,10 @@ def test_preview_ratings_returns_four_ease_options_with_decoded_due_info(
         def review_card(self, card, rating, review_datetime):
             ease = int(rating)
             state_by_ease = {
-                1: direct_mod.State.Relearning,
-                2: direct_mod.State.Learning,
-                3: direct_mod.State.Review,
-                4: direct_mod.State.Review,
+                1: State.Relearning,
+                2: State.Learning,
+                3: State.Review,
+                4: State.Review,
             }
             return (SimpleNamespace(state=state_by_ease[ease], ease_marker=ease), None)
 
@@ -77,7 +78,7 @@ def test_preview_ratings_returns_four_ease_options_with_decoded_due_info(
         store,
         "_card_row_to_fsrs",
         lambda row, *, timing, now_dt, **_steps: SimpleNamespace(
-            state=direct_mod.State.Review,
+            state=State.Review,
             step=None,
             stability=None,
             difficulty=None,
@@ -113,7 +114,7 @@ def test_preview_ratings_returns_four_ease_options_with_decoded_due_info(
     assert out[0]["type"] == 3
     assert out[0]["queue"] == 1
     assert out[0]["due"] == 1_700_000_001
-    assert out[0]["state"] == str(direct_mod.State.Relearning)
+    assert out[0]["state"] == str(State.Relearning)
     assert out[0]["due_info"] == {
         "kind": "learn_epoch_secs",
         "raw": 1_700_000_001,
@@ -122,12 +123,12 @@ def test_preview_ratings_returns_four_ease_options_with_decoded_due_info(
 
     assert out[1]["type"] == 1
     assert out[1]["queue"] == 1
-    assert out[1]["state"] == str(direct_mod.State.Learning)
+    assert out[1]["state"] == str(State.Learning)
 
     assert out[2]["type"] == 2
     assert out[2]["queue"] == 2
     assert out[2]["interval"] == 12
-    today = store._today_due_index(int(direct_mod.time.time()))
+    today = store._today_due_index(int(time.time()))
     assert out[2]["due_info"] == {
         "kind": "review_day_index",
         "raw": 5,
@@ -160,7 +161,7 @@ def test_preview_ratings_sets_relearning_step_zero_when_missing(
     class FakeScheduler:
         def review_card(self, card, rating, review_datetime):
             seen_steps.append(card.step)
-            return (SimpleNamespace(state=direct_mod.State.Learning, ease_marker=int(rating)), None)
+            return (SimpleNamespace(state=State.Learning, ease_marker=int(rating)), None)
 
     monkeypatch.setattr(
         store,
@@ -171,7 +172,7 @@ def test_preview_ratings_sets_relearning_step_zero_when_missing(
         store,
         "_card_row_to_fsrs",
         lambda row, *, timing, now_dt, **_steps: SimpleNamespace(
-            state=direct_mod.State.Relearning,
+            state=State.Relearning,
             step=None,
             stability=2.0,
             difficulty=5.0,
@@ -212,7 +213,7 @@ def test_preview_ratings_falls_back_when_seed_unavailable(
             observed["stability"] = card.stability
             observed["difficulty"] = card.difficulty
             observed["last_review"] = card.last_review
-            return (SimpleNamespace(state=direct_mod.State.Review, ease_marker=int(rating)), None)
+            return (SimpleNamespace(state=State.Review, ease_marker=int(rating)), None)
 
     monkeypatch.setattr(
         store,
@@ -223,7 +224,7 @@ def test_preview_ratings_falls_back_when_seed_unavailable(
         store,
         "_card_row_to_fsrs",
         lambda row, *, timing, now_dt, **_steps: SimpleNamespace(
-            state=direct_mod.State.Review,
+            state=State.Review,
             step=0,
             stability=None,
             difficulty=None,

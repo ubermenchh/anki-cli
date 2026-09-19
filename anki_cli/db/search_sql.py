@@ -1,3 +1,9 @@
+"""Anki search syntax -> SQL ``WHERE`` fragments for the direct backend.
+
+The only consumer is the direct SQLite store; AnkiConnect takes the query
+string verbatim. Lives under ``db`` for that reason (#31).
+"""
+
 from __future__ import annotations
 
 import re

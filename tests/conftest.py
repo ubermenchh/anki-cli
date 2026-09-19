@@ -35,7 +35,7 @@ from typing import Any
 
 import pytest
 
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.store import AnkiDirectStore
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
 from anki_cli.proto.anki.decks import (
     DeckCommon,
@@ -145,11 +145,11 @@ class Collection:
         finally:
             conn.close()
 
-    def store(self, *, writable: bool = True) -> AnkiDirectReadStore:
+    def store(self, *, writable: bool = True) -> AnkiDirectStore:
         """The store under test. ``writable`` bypasses the "is Anki running"
         guard, which is what every mutator test wants; pass ``False`` to test
         the guard itself."""
-        store = AnkiDirectReadStore(self.db_path)
+        store = AnkiDirectStore(self.db_path)
         if writable:
             store._ensure_write_safe = lambda: None  # type: ignore[method-assign]
         return store

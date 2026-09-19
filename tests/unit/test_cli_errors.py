@@ -11,13 +11,13 @@ from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.cli.errors import classify
 from anki_cli.cli.params import command_name_from_argv, peek_output_options
 from anki_cli.config_runtime import ConfigError
-from anki_cli.core.search import SearchParseError
 from anki_cli.core.template import TemplateParseError
-from anki_cli.db.anki_direct import (
+from anki_cli.db.errors import (
     DuplicateNoteError,
     EmptyNoteError,
     UnsupportedCollectionError,
 )
+from anki_cli.db.search_sql import SearchParseError
 from anki_cli.models.output import ErrorCode, ExitCode
 
 

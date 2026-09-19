@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-import anki_cli.db.anki_direct as direct_mod
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.store import AnkiDirectStore
 from anki_cli.proto.anki.decks import DeckFiltered, DeckKindContainer, DeckNormal
 from tests.anki_schema import connect
 from tests.conftest import COL_BASE_MOD_MS, Collection, new_collection
@@ -15,7 +15,7 @@ _NORMAL_KIND = bytes(DeckKindContainer(normal=DeckNormal(config_id=1)))
 _FILTERED_KIND = bytes(DeckKindContainer(filtered=DeckFiltered(reschedule=True)))
 
 
-def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
+def _make_store(tmp_path: Path) -> tuple[AnkiDirectStore, Path]:
     col = new_collection(tmp_path / "collection.anki2", seed=False)
     for did, name in ((1, "Default"), (2, "Target"), (10, "Lang"), (11, "Lang::Child"),
                       (12, "Other")):
@@ -81,7 +81,7 @@ def test_move_cards_updates_existing_ids_only(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_000_000)
 
     _insert_card(db_path, card_id=10, did=1)
     _insert_card(db_path, card_id=30, did=1)
@@ -132,7 +132,7 @@ def test_set_card_flag_updates_existing_ids_only(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_000_000)
 
     _insert_card(db_path, card_id=1, flags=0)
     _insert_card(db_path, card_id=2, flags=4)
@@ -158,7 +158,7 @@ def test_bury_then_unbury_all_restores_queue_by_type(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_000_000)
 
     _insert_card(db_path, card_id=1, card_type=0, queue=0)  # new
     _insert_card(db_path, card_id=2, card_type=2, queue=2)  # review
@@ -209,7 +209,7 @@ def test_unbury_deck_scope_includes_children(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_000_000)
 
     _insert_card(db_path, card_id=101, did=10, card_type=2, queue=-2)
     _insert_card(db_path, card_id=102, did=11, card_type=0, queue=-3)
@@ -236,7 +236,7 @@ def test_reschedule_cards_sets_review_state_and_due(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_000_000)
 
     _insert_card(db_path, card_id=1, card_type=0, queue=0, due=2, ivl=0)
     _insert_card(db_path, card_id=5, card_type=1, queue=1, due=100, ivl=0)
@@ -276,7 +276,7 @@ def test_reset_cards_reinitializes_state_and_assigns_new_due_sequence(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_000_000)
 
     _insert_card(
         db_path,
@@ -402,7 +402,7 @@ def test_reschedule_cards_sends_a_filtered_deck_card_home(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_000_000)
     _insert_card(db_path, card_id=1, did=555, card_type=2, queue=2, due=-5, odid=10, odue=19_700)
 
     store.reschedule_cards(card_ids=[1], days=3)

@@ -21,7 +21,7 @@ from click.testing import CliRunner
 import anki_cli.cli.app as app_mod
 from anki_cli.backends.ankiconnect import AnkiConnectUnavailableError
 from anki_cli.backends.detect import DetectionResult
-from anki_cli.db.anki_direct import DirectWriteBlockedError
+from anki_cli.db.errors import DirectWriteBlockedError
 from anki_cli.models.config import AppConfig
 
 

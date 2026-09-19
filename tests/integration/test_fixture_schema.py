@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from anki_cli.db.anki_direct import MIN_SUPPORTED_SCHEMA_VERSION
+from anki_cli.db.errors import MIN_SUPPORTED_SCHEMA_VERSION
 from tests.anki_schema import SCHEMA_VERSION, TABLES
 from tests.conftest import (
     COL_BASE_MOD_MS,

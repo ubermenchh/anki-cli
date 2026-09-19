@@ -9,7 +9,7 @@ from anki_cli.backends.ankiconnect import AnkiConnectAPIError
 from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.cli.commands.search import search_cmd
 from anki_cli.cli.dispatcher import get_command
-from anki_cli.core.search import SearchParseError
+from anki_cli.db.search_sql import SearchParseError
 from tests.cli.conftest import base_obj as _base_obj
 from tests.cli.conftest import error_payload as _error_payload
 from tests.cli.conftest import patch_session as _patch_session

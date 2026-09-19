@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-import anki_cli.db.anki_direct as direct_mod
-from anki_cli.db.anki_direct import AnkiDirectReadStore
+from anki_cli.db.store import AnkiDirectStore
 from tests.anki_schema import connect
 from tests.conftest import Collection, new_collection
 from tests.integration.conftest import assert_col_modified, assert_col_untouched, col_row
 
 
-def _make_store(tmp_path: Path) -> tuple[AnkiDirectReadStore, Path]:
+def _make_store(tmp_path: Path) -> tuple[AnkiDirectStore, Path]:
     col = new_collection(tmp_path / "collection.anki2", seed=False)
     return col.store(writable=False), col.db_path
 
@@ -65,7 +65,7 @@ def test_suspend_cards_updates_existing_cards_only(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     _insert_card(db_path, card_id=1, card_type=0, queue=0)
     _insert_card(db_path, card_id=2, card_type=2, queue=2)
@@ -99,7 +99,7 @@ def test_col_mod_uses_millisecond_epoch(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000.5)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000.5)
     _insert_card(db_path, card_id=1, card_type=0, queue=0)
 
     store.suspend_cards([1])
@@ -113,7 +113,7 @@ def test_unsuspend_cards_restores_queue_by_type(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     _insert_card(db_path, card_id=11, card_type=0, queue=-1, due=5)
     _insert_card(db_path, card_id=12, card_type=2, queue=-1, due=19_800)
@@ -188,7 +188,7 @@ def test_add_tags_merges_case_insensitive_and_updates_existing_notes(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     _insert_note(db_path, note_id=10, tags=" alpha Old ", mod=10)
     _insert_note(db_path, note_id=20, tags=" gamma ", mod=20)
@@ -232,7 +232,7 @@ def test_remove_tags_is_case_insensitive(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     _insert_note(db_path, note_id=1, tags=" A b c ", mod=10)
     _insert_note(db_path, note_id=2, tags=" x y ", mod=20)
@@ -270,7 +270,7 @@ def test_rename_tag_is_exact_case_sensitive_and_deduplicates(
 ) -> None:
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
-    monkeypatch.setattr(direct_mod.time, "time", lambda: 1_700_000_000)
+    monkeypatch.setattr(time, "time", lambda: 1_700_000_000)
 
     _insert_note(db_path, note_id=1, tags=" foo baz ", mod=10)
     _insert_note(db_path, note_id=2, tags=" bar foo ", mod=20)

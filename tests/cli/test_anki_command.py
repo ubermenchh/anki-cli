@@ -17,7 +17,7 @@ from anki_cli.backends.ankiconnect import AnkiConnectAPIError
 from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.cli import command as command_mod
 from anki_cli.cli.command import CommandContext, anki_command, id_or_query
-from anki_cli.core.search import SearchParseError
+from anki_cli.db.search_sql import SearchParseError
 
 
 def _obj(**over: Any) -> dict[str, Any]:
