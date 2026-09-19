@@ -141,12 +141,15 @@ def test_rename_deck_validates_non_empty_names(backend: AnkiConnectBackend) -> N
         backend.rename_deck("Old", " ")
 
 
-def test_rename_deck_emulates_via_create_move_delete(
+def test_rename_deck_emulates_via_create_move_verify_delete(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """AnkiConnect has no rename action (v6 API), so there is nothing to try
-    first: the emulation *is* the implementation (#32)."""
+    first: the emulation *is* the implementation (#32). Each deck's *own*
+    cards move (``deck:"X"`` alone would sweep the subdecks' cards into X's
+    new home), the old subtree is proven empty, then deleted with
+    ``cardsToo=true`` — the only value deleteDecks accepts."""
     calls: list[tuple[str, dict[str, Any]]] = []
 
     def fake_invoke(action: str, **params: Any) -> Any:
@@ -161,30 +164,101 @@ def test_rename_deck_emulates_via_create_move_delete(
     )
 
     queries: list[str] = []
+    moved: set[int] = set()
 
     def fake_find_cards(query: str) -> list[int]:
         queries.append(query)
-        if query == 'deck:"Old"':
+        if query == 'deck:"Old" -deck:"Old::*"':
             return [11]
-        if query == 'deck:"Old::Child"':
+        if query == 'deck:"Old::Child" -deck:"Old::Child::*"':
             return [21, 22]
+        if query == 'deck:"Old"':  # whole subtree, after the moves
+            return [cid for cid in (11, 21, 22) if cid not in moved]
         return []
 
+    real_invoke = fake_invoke
+
+    def tracking_invoke(action: str, **params: Any) -> Any:
+        if action == "changeDeck":
+            moved.update(params["cards"])
+        return real_invoke(action, **params)
+
+    monkeypatch.setattr(backend, "_invoke", tracking_invoke)
     monkeypatch.setattr(backend, "find_cards", fake_find_cards)
 
     out = backend.rename_deck(" Old ", " New ")
 
     assert out == {"from": "Old", "to": "New", "renamed_decks": 2, "moved_cards": 3}
-    assert queries == ['deck:"Old"', 'deck:"Old::Child"']
-    assert not any(entry[0] == "renameDeck" for entry in calls)
+    assert queries == [
+        'deck:"Old" -deck:"Old::*"',
+        'deck:"Old::Child" -deck:"Old::Child::*"',
+        'deck:"Old"',
+    ]
     assert calls == [
         ("createDeck", {"deck": "New"}),
         ("createDeck", {"deck": "New::Child"}),
         ("changeDeck", {"cards": [11], "deck": "New"}),
         ("changeDeck", {"cards": [21, 22], "deck": "New::Child"}),
-        ("deleteDecks", {"decks": ["Old::Child"], "cardsToo": False}),
-        ("deleteDecks", {"decks": ["Old"], "cardsToo": False}),
+        ("deleteDecks", {"decks": ["Old::Child"], "cardsToo": True}),
+        ("deleteDecks", {"decks": ["Old"], "cardsToo": True}),
     ]
+
+
+def test_rename_deck_never_deletes_a_subtree_that_still_has_cards(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A card that arrives in the old deck between the move and the delete
+    would be destroyed by ``cardsToo=true``; stop before deleteDecks."""
+    calls: list[str] = []
+    monkeypatch.setattr(backend, "_invoke", lambda action, **params: calls.append(action))
+    monkeypatch.setattr(backend, "get_decks", lambda: [{"name": "Old"}])
+    monkeypatch.setattr(
+        backend, "find_cards", lambda query: [11] if query == 'deck:"Old" -deck:"Old::*"' else [99]
+    )
+
+    with pytest.raises(AnkiConnectAPIError, match="1 card\\(s\\) still in 'Old'"):
+        backend.rename_deck("Old", "New")
+
+    assert "deleteDecks" not in calls
+    assert calls == ["createDeck", "changeDeck"]
+
+
+def test_rename_deck_slices_suffixes_from_the_stored_spelling(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``rename_deck("old", "New")`` on a stored ``Old::Child``: Anki matches
+    the source case-insensitively, and the child path must come out as
+    ``New::Child``, not ``New::Child`` computed from the wrong offset."""
+    created: list[str] = []
+
+    def fake_invoke(action: str, **params: Any) -> Any:
+        if action == "createDeck":
+            created.append(params["deck"])
+        return None
+
+    monkeypatch.setattr(backend, "_invoke", fake_invoke)
+    monkeypatch.setattr(backend, "get_decks", lambda: [{"name": "Old"}, {"name": "Old::Child"}])
+    monkeypatch.setattr(backend, "find_cards", lambda query: [])
+
+    out = backend.rename_deck("old", "New")
+
+    assert out["renamed_decks"] == 2
+    assert created == ["New", "New::Child"]
+
+
+def test_rename_deck_case_only_change_is_refused(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``createDeck("old")`` resolves to the existing ``Old``; the trailing
+    ``deleteDecks(["Old"], cardsToo=true)`` would then delete the cards."""
+    monkeypatch.setattr(backend, "_invoke", lambda action, **params: pytest.fail(action))
+    monkeypatch.setattr(backend, "get_decks", lambda: pytest.fail("no request expected"))
+
+    with pytest.raises(ValueError, match="only the case"):
+        backend.rename_deck("Old", "old")
 
 
 def test_rename_deck_missing_source_raises_lookup_error(
@@ -198,7 +272,7 @@ def test_rename_deck_missing_source_raises_lookup_error(
         backend.rename_deck("Old", "New")
 
 
-@pytest.mark.parametrize("target", ["Taken", "Taken::Sub"])
+@pytest.mark.parametrize("target", ["Taken", "taken", "Taken::Sub", "TAKEN::sub"])
 def test_rename_deck_refuses_an_occupied_target_before_touching_anything(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
@@ -206,7 +280,9 @@ def test_rename_deck_refuses_an_occupied_target_before_touching_anything(
 ) -> None:
     """The emulation is not atomic; refusing up front is what stops a partial
     run from merging Old's cards into an unrelated deck. Same error as the
-    direct backend."""
+    direct backend. Anki resolves names case-insensitively, so ``taken`` is
+    just as occupied as ``Taken`` (``createDeck("taken")`` would return the
+    existing deck and the cards would silently merge into it)."""
     monkeypatch.setattr(backend, "_invoke", lambda action, **params: pytest.fail(action))
     monkeypatch.setattr(
         backend, "get_decks", lambda: [{"name": "Old"}, {"name": "Taken"}, {"name": "Taken::Sub"}]

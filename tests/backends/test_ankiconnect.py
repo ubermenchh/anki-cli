@@ -293,6 +293,50 @@ def test_remote_protocol_error_twice_is_unavailable() -> None:
     assert attempts == 2  # exactly one retry, never a loop
 
 
+@pytest.mark.parametrize(
+    ("action", "params"),
+    [("addNote", {"note": {}}), ("guiAnswerCard", {"ease": 3}), ("deleteDecks", {"decks": ["x"]})],
+)
+def test_non_idempotent_actions_are_not_retried(action: str, params: dict[str, Any]) -> None:
+    """Anki may have executed the request before the socket died; replaying
+    addNote makes a duplicate and guiAnswerCard rates the *next* card."""
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.RemoteProtocolError("Server disconnected", request=request)
+
+    backend = _backend_with_handler(handler)
+
+    with pytest.raises(AnkiConnectUnavailableError, match=f"Not retrying '{action}'"):
+        backend._invoke(action, **params)
+    assert attempts == 1
+
+
+def test_multi_is_retried_only_when_every_sub_action_is_safe() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.RemoteProtocolError("Server disconnected", request=request)
+        return httpx.Response(200, json=_multi_envelope([[1], [2]]))
+
+    backend = _backend_with_handler(handler)
+    assert backend._multi([("findCards", {"query": "a"}), ("findNotes", {"query": "b"})]) == [
+        [1],
+        [2],
+    ]
+    assert attempts == 2
+
+    attempts = 0
+    with pytest.raises(AnkiConnectUnavailableError, match="Not retrying 'multi'"):
+        backend._multi([("findCards", {"query": "a"}), ("addNote", {"note": {}})])
+    assert attempts == 1
+
+
 def test_other_transport_errors_are_not_retried() -> None:
     attempts = 0
 
@@ -364,3 +408,19 @@ def test_multi_rejects_malformed_responses(result: Any) -> None:
 
     with pytest.raises(AnkiConnectProtocolError):
         backend._multi([("deckNames", {}), ("deckNames", {})])
+
+
+def test_multi_outcomes_reports_every_sub_action_without_raising() -> None:
+    body = {
+        "error": None,
+        "result": [
+            {"result": [True], "error": None},
+            {"result": None, "error": "card was not found: 999"},
+            {"result": [True], "error": None},
+        ],
+    }
+    backend = _backend_with_handler(_json_handler(body))
+
+    outcomes = backend._multi_outcomes([("x", {}), ("x", {}), ("x", {})])
+
+    assert outcomes == [([True], None), (None, "card was not found: 999"), ([True], None)]

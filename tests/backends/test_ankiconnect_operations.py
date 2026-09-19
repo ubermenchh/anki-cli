@@ -318,6 +318,27 @@ def test_set_card_flag_batches_every_card_into_one_multi(
     assert calls == [("multi", {"actions": [action(3), action(1)]})]
 
 
+def test_set_card_flag_reports_every_failed_card_after_the_batch_ran(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``multi`` runs the whole batch server-side, so the good cards *were*
+    flagged; the error must name exactly the ones that were not."""
+    monkeypatch.setattr(
+        backend,
+        "_invoke",
+        lambda action, **params: [
+            {"result": [True], "error": None},
+            {"result": None, "error": "card was not found: 999999"},
+            {"result": [False], "error": None},
+            {"result": [True], "error": None},
+        ],
+    )
+
+    with pytest.raises(AnkiConnectAPIError, match=r"2 of 4 card\(s\): 999999, 7\."):
+        backend.set_card_flag([1, 999999, 7, 2], 3)
+
+
 def test_set_card_flag_protocol_and_api_failures(
     backend: AnkiConnectBackend,
     monkeypatch: pytest.MonkeyPatch,
