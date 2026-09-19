@@ -171,8 +171,8 @@ anki card:suspend --query "is:due"
 anki card:unsuspend --id 123
 anki card:move --query "tag:to-move" --deck "Archive"
 anki card:flag --query "is:review" --flag 3
-anki card:bury --query "deck:Default"
-anki card:unbury --deck "Default"
+anki card:bury --query "deck:Default"        # direct backend only
+anki card:unbury --deck "Default"           # direct backend only
 anki card:reschedule --query "tag:reset-me" --days 3
 anki card:reset --query "tag:relearn"
 anki card:revlog --id 123 --limit 20
