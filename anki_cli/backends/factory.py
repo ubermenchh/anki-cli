@@ -42,7 +42,8 @@ def _resolve_pending_detection(obj: dict[str, Any]) -> None:
 
     Success writes ``backend`` / ``collection_path`` / ``backend_reason`` /
     ``ankiconnect_version``; failure writes ``backend = "none"`` with the
-    reason, so a second call reports the same failure without re-probing.
+    reason and exit code, so a second call reports the same failure without
+    re-probing.
     """
     if obj.get("backend_reason") != DETECTION_PENDING:
         return
@@ -51,14 +52,16 @@ def _resolve_pending_detection(obj: dict[str, Any]) -> None:
     col_override = obj.get("collection_override")
     try:
         detection = detect_backend(
-            forced_backend=str(obj.get("requested_backend") or obj.get("backend") or "auto"),
+            forced_backend=str(obj.get("requested_backend") or "auto"),
             col_override=col_override if isinstance(col_override, Path) else None,
             ankiconnect_url=cfg.backend.ankiconnect_url,
             anki_profile=cfg.collection.anki_profile,
             allow_non_localhost=cfg.backend.allow_non_localhost,
         )
     except DetectionError as exc:
-        obj.update({"backend": "none", "backend_reason": str(exc)})
+        obj.update(
+            {"backend": "none", "backend_reason": str(exc), "backend_exit_code": exc.exit_code}
+        )
         raise BackendFactoryError(str(exc), exit_code=exc.exit_code) from exc
     obj.update(
         {
@@ -112,7 +115,11 @@ def create_backend_from_context(obj: dict[str, Any]) -> AnkiBackend:
         # surface the recorded detection failure, not a cryptic name error.
         reason = str(obj.get("backend_reason") or "").strip().rstrip(".")
         detail = f": {reason}" if reason and reason != "not required" else ""
-        raise BackendFactoryError(f"No Anki backend available{detail}.")
+        exit_code = obj.get("backend_exit_code")
+        raise BackendFactoryError(
+            f"No Anki backend available{detail}.",
+            exit_code=exit_code if isinstance(exit_code, int) else ExitCode.BACKEND_UNAVAILABLE,
+        )
 
     raise BackendFactoryError(f"Unknown backend '{backend_name}'.")
 

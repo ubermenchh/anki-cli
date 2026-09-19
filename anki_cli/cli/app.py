@@ -44,6 +44,9 @@ def _is_set_on_cli(ctx: click.Context, param_name: str) -> bool:
 # (invoked_subcommand=None) is NOT here: it must detect up front, degrading
 # to a warning + backend="none" when detection fails instead of exiting.
 _BACKENDLESS = {"version", "status", "config", "config:path", "config:set", "commands"}
+# Bare ``anki`` and ``anki shell`` both open the REPL, which shows the backend
+# in its header and must warn up front when there is none (#32).
+_REPL_LAUNCHERS = {None, "shell"}
 
 
 class NamespaceGroup(click.Group):
@@ -277,7 +280,7 @@ def main(
                 "backend_reason": "not required",
             }
         )
-    elif ctx.invoked_subcommand is not None:
+    elif ctx.invoked_subcommand not in _REPL_LAUNCHERS:
         # Detect on first use (#32): the factory probes when the command
         # actually opens a session and writes the result back here, so the
         # HTTP probe / process scan / lock probe run once and only if needed.
@@ -289,8 +292,7 @@ def main(
             }
         )
     else:
-        # Bare ``anki`` opens the REPL, which shows the backend in its header
-        # and must warn up front when there is none: detect eagerly here.
+        # REPL: detect eagerly so the header and the startup warning are right.
         try:
             detection = detect_backend(
                 forced_backend=runtime.backend,

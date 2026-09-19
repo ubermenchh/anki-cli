@@ -13,6 +13,7 @@ from rich.box import SIMPLE_HEAD
 from rich.console import Console
 from rich.table import Table
 
+from anki_cli.backends.factory import DETECTION_PENDING
 from anki_cli.models.output import (
     ErrorCode,
     ErrorInfo,
@@ -51,6 +52,11 @@ class OutputFormatter:
     @property
     def backend(self) -> str:
         if self._live_from is not None:
+            if self._live_from.get("backend_reason") == DETECTION_PENDING:
+                # Not resolved yet (the command failed before opening a
+                # session): the stored value is the *preference* ("auto"),
+                # which is not a backend name.
+                return "none"
             return str(self._live_from.get("backend", self._backend))
         return self._backend
 

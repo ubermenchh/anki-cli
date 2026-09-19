@@ -344,6 +344,7 @@ def test_failed_detection_is_cached_as_no_backend(monkeypatch) -> None:
     assert "no AnkiConnect" in str(first.value)
     assert obj["backend"] == "none"
     assert "no AnkiConnect" in str(second.value)
+    assert second.value.exit_code == 3  # the cached failure keeps its meaning
 
 
 def test_ankiconnect_version_from_detection_skips_the_second_probe(monkeypatch) -> None:
@@ -544,11 +545,11 @@ def test_no_subcommand_runs_repl_when_available(monkeypatch, tmp_path: Path) -> 
     assert backend.collection_path == db.resolve()
 
 
-def test_no_subcommand_detection_failure_opens_repl_with_warning(
-    monkeypatch,
-) -> None:
-    """Bare `anki` on a host with no Anki still opens the REPL; the warning
-    explains why backend commands will fail."""
+@pytest.mark.parametrize("argv", [[], ["shell"]], ids=["bare", "shell"])
+def test_repl_launch_detects_eagerly_and_warns_on_failure(monkeypatch, argv: list[str]) -> None:
+    """Bare `anki` and `anki shell` both open the REPL on a host with no Anki;
+    the header needs the resolved backend and the warning explains why backend
+    commands will fail. Neither may take the lazy path (#32)."""
     calls: dict[str, Any] = {}
 
     module = types.ModuleType("anki_cli.tui.repl")
@@ -565,9 +566,10 @@ def test_no_subcommand_detection_failure_opens_repl_with_warning(
         lambda **kwargs: _runtime(backend="auto", output_format="json"),
     )
     monkeypatch.setattr(app_mod, "detect_backend", _raise_exit3)
+    monkeypatch.setattr(factory_mod, "detect_backend", _never_detect)
 
     runner = CliRunner()
-    result = runner.invoke(app_mod.main, [])
+    result = runner.invoke(app_mod.main, argv)
 
     assert result.exit_code == 0, result.output
     assert calls["obj"]["backend"] == "none"
@@ -575,6 +577,32 @@ def test_no_subcommand_detection_failure_opens_repl_with_warning(
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
     assert "warning:" in combined
     assert "backend commands unavailable" in combined
+
+
+def test_envelope_before_any_session_reports_no_backend_not_the_preference(monkeypatch) -> None:
+    """A command that fails input validation never opens a session, so the
+    backend is unresolved; ``meta.backend`` must say "none", never "auto"."""
+
+    @click.command("dummy")
+    @click.pass_context
+    def dummy_cmd(ctx: click.Context) -> None:
+        from anki_cli.cli.formatter import formatter_from_ctx
+
+        formatter_from_ctx(ctx).emit_error(command="dummy", code="INVALID_INPUT", message="bad")
+        raise click.exceptions.Exit(2)
+
+    monkeypatch.setattr(app_mod, "list_commands", lambda: ["dummy"])
+    monkeypatch.setattr(app_mod, "get_command", lambda name: dummy_cmd if name == "dummy" else None)
+    monkeypatch.setattr(
+        app_mod, "resolve_runtime_config", lambda **kwargs: _runtime(backend="auto")
+    )
+    monkeypatch.setattr(app_mod, "detect_backend", _never_detect)
+    monkeypatch.setattr(factory_mod, "detect_backend", _never_detect)
+
+    result = CliRunner().invoke(app_mod.main, ["--format", "json", "dummy"])
+
+    payload = _error_payload(result)
+    assert payload["meta"]["backend"] == "none"
 
 
 def test_no_subcommand_import_error_falls_back_to_help(monkeypatch) -> None:
