@@ -5,13 +5,22 @@ the subtree ``did IN (...)`` filter, and a deck's options preset.
 from __future__ import annotations
 
 import sqlite3
+from typing import NamedTuple
 
 import betterproto
 
 from anki_cli.db.connection import ConnectionMixin
-from anki_cli.db.search_sql import escape_like
 from anki_cli.models.output import JSONValue
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
+
+
+class DeckSubtree(NamedTuple):
+    """A deck and its descendants, as ``_deck_subtree`` found them."""
+
+    name: str
+    """The parent's name as stored (the caller may have passed another case)."""
+    rows: list[sqlite3.Row]
+    """``id, name, kind`` per deck, parents first (by name length, then name)."""
 
 
 class DeckLookupMixin(ConnectionMixin):
@@ -26,31 +35,55 @@ class DeckLookupMixin(ConnectionMixin):
             raise LookupError(f"Deck not found: {deck_name}")
         return int(row["id"])
 
+    def _deck_subtree(self, conn: sqlite3.Connection, name: str) -> DeckSubtree | None:
+        """The deck called ``name`` plus every descendant, or ``None`` if there is
+        no such deck. This is the one definition of "a deck and its children"
+        (Anki's deck list, ``deck:`` search, rename/delete scope).
+
+        The parent is matched the way Anki does: ``decks.name`` is ``COLLATE
+        unicase``, so plain ``=`` folds case (including non-ASCII); an explicit
+        ``COLLATE NOCASE`` would downgrade that to ASCII. Descendants use
+        rslib's ``child_decks`` trick: ``name > 'P::' AND name < 'P:;'`` (``;``
+        is the character after ``:``) selects exactly the names that start with
+        ``P::`` under the column's collation. No ``LIKE``, so ``_`` and ``%`` in
+        a deck name are literal and ``A_B`` never claims ``AXB::child``; and the
+        prefix is compared unicase, so a child written as ``lang::De`` still
+        belongs to ``Lang`` (#73).
+        """
+        wanted = name.strip()
+        if not wanted:
+            return None
+        parent = conn.execute("SELECT name FROM decks WHERE name = ?", (wanted,)).fetchone()
+        if parent is None:
+            return None
+        canonical = str(parent["name"])
+        rows = conn.execute(
+            """
+            SELECT id, name, kind
+            FROM decks
+            WHERE name = ? OR (name > ? AND name < ?)
+            ORDER BY LENGTH(name), name
+            """,
+            (canonical, f"{canonical}::", f"{canonical}:;"),
+        ).fetchall()
+        return DeckSubtree(name=canonical, rows=rows)
+
     def _deck_filter(
         self,
         conn: sqlite3.Connection,
         deck: str | None,
     ) -> tuple[str, tuple[int, ...]]:
+        """``AND did IN (...)`` for the deck and its children, like Anki's deck
+        list and ``deck:`` search: ``--deck Japanese`` covers ``Japanese::Core``."""
         if deck is None:
             return "", ()
 
-        # The deck and its children, like Anki's deck list and ``deck:`` search:
-        # ``--deck Japanese`` covers ``Japanese::Core`` too. Names are unique
-        # case-insensitively in Anki, hence NOCASE rather than ``=``.
-        name = deck.strip()
-        rows = conn.execute(
-            """
-            SELECT id FROM decks
-            WHERE name = ? COLLATE NOCASE
-               OR name LIKE ? ESCAPE '\\'
-            """,
-            (name, f"{escape_like(name)}::%"),
-        ).fetchall()
-        ids = [int(row["id"]) for row in rows]
-        if not ids:
+        found = self._deck_subtree(conn, deck)
+        if found is None:
             # impossible clause
             return " AND did IN (-1)", ()
 
+        ids = [int(row["id"]) for row in found.rows]
         placeholders = ", ".join(["?"] * len(ids))
         return f" AND did IN ({placeholders})", tuple(ids)
 

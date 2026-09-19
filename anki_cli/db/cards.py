@@ -295,13 +295,10 @@ class CardsMixin(DeckLookupMixin):
                 ).rowcount
                 return {"unburied": int(updated), "scope": "all"}
 
-            rows = conn.execute(
-                "SELECT id FROM decks WHERE name = ? OR name LIKE ?",
-                (deck.strip(), f"{deck.strip()}::%"),
-            ).fetchall()
-            dids = [int(r["id"]) for r in rows]
-            if not dids:
+            found = self._deck_subtree(conn, deck)
+            if found is None:
                 return {"unburied": 0, "deck": deck}
+            dids = [int(r["id"]) for r in found.rows]
 
             placeholders = ", ".join(["?"] * len(dids))
             updated = conn.execute(

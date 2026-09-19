@@ -140,29 +140,16 @@ class DecksMixin(CardsMixin):
             }
 
         with self._connect_write() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, name
-                FROM decks
-                WHERE name = ? OR name LIKE ?
-                ORDER BY LENGTH(name), name
-                """,
-                (source, f"{source}::%"),
-            ).fetchall()
-            if not rows:
+            found = self._deck_subtree(conn, source)
+            if found is None:
                 raise LookupError(f"Deck not found: {source}")
+            rows = found.rows
 
+            # The target may already exist only if it is the deck being renamed
+            # (a case-only rename such as ``école`` -> ``École``).
             scoped_ids = {int(row["id"]) for row in rows}
-            conflict = conn.execute(
-                """
-                SELECT id, name
-                FROM decks
-                WHERE (name = ? OR name LIKE ?)
-                LIMIT 1
-                """,
-                (target, f"{target}::%"),
-            ).fetchone()
-            if conflict is not None and int(conflict["id"]) not in scoped_ids:
+            taken = self._deck_subtree(conn, target)
+            if taken is not None and any(int(row["id"]) not in scoped_ids for row in taken.rows):
                 raise ValueError(f"Target deck path already exists: {target}")
 
             now_sec = int(time.time())
@@ -171,7 +158,8 @@ class DecksMixin(CardsMixin):
             for row in rows:
                 did = int(row["id"])
                 current_name = str(row["name"])
-                suffix = current_name[len(source) :]
+                # Slice on the stored name: ``source`` may differ in case.
+                suffix = current_name[len(found.name) :]
                 temp_name = f"{temp_prefix}{suffix}"
                 final_name = f"{target}{suffix}"
                 plan.append((did, current_name, temp_name, final_name))
@@ -304,15 +292,8 @@ class DecksMixin(CardsMixin):
             raise ValueError("Deck name cannot be empty.")
 
         with self._connect_write() as conn:
-            deck_rows = conn.execute(
-                """
-                SELECT id, name, kind
-                FROM decks
-                WHERE name = ? OR name LIKE ?
-                ORDER BY id
-                """,
-                (normalized, f"{normalized}::%"),
-            ).fetchall()
+            found = self._deck_subtree(conn, normalized)
+            deck_rows = found.rows if found is not None else []
             if not deck_rows:
                 return {
                     "deck": normalized,
