@@ -36,6 +36,8 @@ DECKS = {
     50: "Base",
     51: "Basement",
     52: "Base::Child",
+    60: "Lang",
+    61: "lang::De",  # parent segment in another case: still Lang's child (unicase)
 }
 
 
@@ -69,6 +71,8 @@ def _subtree_ids(store: AnkiDirectStore, name: str) -> list[int] | None:
         ("Base", [50, 52]),  # Basement is a sibling, not a child
         ("  base  ", [50, 52]),  # whitespace stripped, case folded
         ("a_b::CHILD", [11]),
+        ("Lang", [60, 61]),
+        ("LANG::de", [61]),
     ],
 )
 def test_deck_subtree_matches_literal_prefix_case_insensitively(
@@ -142,22 +146,26 @@ def test_rename_deck_scopes_by_literal_prefix_and_canonical_name(tmp_path: Path)
 
 
 def test_rename_deck_target_conflict_probe_is_literal_too(tmp_path: Path) -> None:
-    """Renaming onto ``A_B`` must be refused because ``A_B`` exists, but renaming
-    onto ``A_C`` must not be refused just because ``A_B``/``AXB`` LIKE-match it."""
-    store, _col = _make_store(tmp_path)
+    """Renaming onto ``a_b`` must be refused because ``A_B`` exists (unicase), but
+    renaming onto ``AX_`` must not be refused just because ``AX_::%`` would
+    LIKE-match ``AXB::child``."""
+    store, col = _make_store(tmp_path)
 
     with pytest.raises(ValueError, match="Target deck path already exists"):
         store.rename_deck(old_name="Base", new_name="a_b")
 
-    assert store.rename_deck(old_name="Base", new_name="A_C")["renamed_decks"] == 2
+    assert store.rename_deck(old_name="Base", new_name="AX_")["renamed_decks"] == 2
+    assert str(col.row("decks", 52)["name"]) == "AX_::Child"
 
 
 def test_rename_deck_case_only_rename_of_a_subtree(tmp_path: Path) -> None:
-    """``École`` -> ``ÉCOLE`` is a real rename (Anki shows the new spelling); the
-    target probe must recognise the deck it finds as the one being renamed."""
+    """``école`` -> ``ÉCOLE`` is a real rename (Anki shows the new spelling): the
+    source is found unicase, its children too (``LIKE`` is ASCII-only and used
+    to miss them), and the target probe must recognise the deck it finds as the
+    one being renamed."""
     store, col = _make_store(tmp_path)
 
-    result = store.rename_deck(old_name="École", new_name="ÉCOLE")
+    result = store.rename_deck(old_name="école", new_name="ÉCOLE")
 
     assert result["renamed_decks"] == 2
     assert str(col.row("decks", 40)["name"]) == "ÉCOLE"

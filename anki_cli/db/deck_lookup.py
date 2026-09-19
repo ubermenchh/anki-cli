@@ -42,10 +42,13 @@ class DeckLookupMixin(ConnectionMixin):
 
         The parent is matched the way Anki does: ``decks.name`` is ``COLLATE
         unicase``, so plain ``=`` folds case (including non-ASCII); an explicit
-        ``COLLATE NOCASE`` would downgrade that to ASCII. Descendants are then
-        matched on the *stored* parent name followed by ``::`` using ``substr``
-        rather than ``LIKE``: ``_`` and ``%`` in a deck name are literal, so
-        ``A_B`` never claims ``AXB::child`` (#73).
+        ``COLLATE NOCASE`` would downgrade that to ASCII. Descendants use
+        rslib's ``child_decks`` trick: ``name > 'P::' AND name < 'P:;'`` (``;``
+        is the character after ``:``) selects exactly the names that start with
+        ``P::`` under the column's collation. No ``LIKE``, so ``_`` and ``%`` in
+        a deck name are literal and ``A_B`` never claims ``AXB::child``; and the
+        prefix is compared unicase, so a child written as ``lang::De`` still
+        belongs to ``Lang`` (#73).
         """
         wanted = name.strip()
         if not wanted:
@@ -54,15 +57,14 @@ class DeckLookupMixin(ConnectionMixin):
         if parent is None:
             return None
         canonical = str(parent["name"])
-        prefix = f"{canonical}::"
         rows = conn.execute(
             """
             SELECT id, name, kind
             FROM decks
-            WHERE name = ? OR substr(name, 1, ?) = ?
+            WHERE name = ? OR (name > ? AND name < ?)
             ORDER BY LENGTH(name), name
             """,
-            (canonical, len(prefix), prefix),
+            (canonical, f"{canonical}::", f"{canonical}:;"),
         ).fetchall()
         return DeckSubtree(name=canonical, rows=rows)
 
