@@ -119,9 +119,34 @@ def test_format_browser_row_uses_canonical_keys_and_accepts_mapping_fields() -> 
     }
 
     row = browse_mod._format_browser_row(card)
-    assert row[0].plain == "Default"
-    assert row[1].plain == "Basic"
-    assert row[2].plain == "Hello world"
+    # Column order is _BROWSE_COLUMNS: Question, Deck, Due, Ivl, Type (#79).
+    assert row[0].plain == "Hello world"
+    assert row[1].plain == "Default"
+    assert row[3].plain == "8d"
+    assert row[4].plain == "Basic"
+
+
+def test_format_browser_row_shows_deck_leaf_and_fits_question_width() -> None:
+    card: dict[str, Any] = {
+        "deckName": "Languages::Japanese::Core 2k",
+        "notetype_name": "Cloze",
+        "fields": ["x" * 100, "back"],
+        "queue": 0,
+        "interval": 0,
+        "due_info": {"kind": "new_position"},
+    }
+    row = browse_mod._format_browser_row(card, question_width=20)
+    assert len(row[0].plain) == 20 and row[0].plain.endswith("\u2026")
+    assert row[1].plain == "Core 2k"
+    assert row[4].plain == "Cloze"
+
+
+def test_question_width_absorbs_remaining_table_width() -> None:
+    fixed = sum(browse_mod._FIXED_COLUMN_WIDTHS.values())
+    padding = browse_mod._CELL_PADDING * len(browse_mod._BROWSE_COLUMNS)
+    assert browse_mod._question_width(120) == 120 - fixed - padding - 1
+    # Never below the floor, even when the table is absurdly narrow.
+    assert browse_mod._question_width(10) == browse_mod._MIN_QUESTION_WIDTH
 
 
 def test_extract_field_values_mapping_without_order_uses_values() -> None:

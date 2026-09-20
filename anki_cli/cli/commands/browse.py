@@ -21,5 +21,5 @@ def browse_cmd(cmd: CommandContext, query: str) -> None:
             details=TUI_HINT,
         ) from exc
 
-    BrowseApp(backend=cmd.backend, query=query).run()
+    cmd.run_tui(BrowseApp(backend=cmd.backend, query=query))
     return None

@@ -139,11 +139,21 @@ class PreviewScreen(ModalScreen[None]):
         with Vertical(id="preview-panel"):
             yield Static(self._title, id="preview-title")
             with VerticalScroll(id="preview-body"):
-                yield Static(self._body, id="preview-content")
+                yield Static(Text(self._body), id="preview-content")
             yield Static("esc/q to close", id="preview-hint")
 
 
 class ReviewApp(App[None]):
+    # Textual's default AUTO_FOCUS="*" would focus #cmd (the only focusable
+    # widget) on mount, so Space / 1-4 / q typed into the command box instead
+    # of firing their bindings until the user found Esc (#81). ":" focuses it.
+    AUTO_FOCUS = None
+
+    # Under 30 rows the fixed chrome (labels, paddings, two min-height panels,
+    # a 4-row rate row and 3 bottom bars) did not fit in 80x24 and the rating
+    # buttons fell off the bottom. Screen.-short trims the decoration.
+    VERTICAL_BREAKPOINTS: ClassVar[list[tuple[int, str]]] = [(0, "-short"), (30, "-tall")]
+
     CSS = f"""
     Screen {{
         background: {TOOLBAR_BG};
@@ -167,23 +177,29 @@ class ReviewApp(App[None]):
         color: {DIM};
     }}
 
-    #hintbar {{
+    /* One docked container for the bottom: docking three widgets to the same
+       edge makes them overlap, which hid the hint bar and every error message
+       written to #status (#78). */
+    #bottom {{
         dock: bottom;
-        height: 1;
-        background: {MENU_BG};
-        border-top: solid {BORDER};
-        color: {DIM};
-        padding: 0 1;
+        height: auto;
     }}
     #status {{
-        dock: bottom;
         height: 1;
         background: {TOOLBAR_BG};
         color: {DIM};
         padding: 0 1;
     }}
+    #hintbar {{
+        /* No border: a 1-cell border on a height-1 widget leaves no content
+           row (#80). The background change is the separator. Auto height so
+           the bar wraps instead of truncating on narrow terminals. */
+        height: auto;
+        background: {MENU_BG};
+        color: {DIM};
+        padding: 0 1;
+    }}
     #cmd {{
-        dock: bottom;
         height: 1;
         border: none;
         background: {MENU_BG};
@@ -248,12 +264,14 @@ class ReviewApp(App[None]):
         color: {TEXT};
     }}
 
+    /* Two content rows inside a round border: "1 Again" and the scheduler's
+       interval preview. height: 3 left one row and clipped the hint (#80). */
     #rate-row {{
-        height: 3;
+        height: 4;
     }}
     .rate-btn {{
         width: 1fr;
-        height: 3;
+        height: 4;
         border: round {BORDER};
         content-align: center middle;
         text-align: center;
@@ -276,7 +294,8 @@ class ReviewApp(App[None]):
     }}
 
     .side-title {{
-        height: 1;
+        /* 1 row of text + 1 row of border-bottom (#80). */
+        height: 2;
         color: {DIM};
         text-style: bold;
         border-bottom: solid {BORDER};
@@ -285,6 +304,20 @@ class ReviewApp(App[None]):
         height: auto;
         color: {TEXT};
         padding-bottom: 1;
+    }}
+
+    Screen.-short #study-main {{
+        padding: 0 1;
+    }}
+    Screen.-short .panel-label {{
+        display: none;
+    }}
+    Screen.-short #question-panel, Screen.-short #answer-panel {{
+        padding: 0 1;
+        min-height: 4;
+    }}
+    Screen.-short .side-block {{
+        padding-bottom: 0;
     }}
     """
 
@@ -356,9 +389,10 @@ class ReviewApp(App[None]):
                 yield Static("SHORTCUTS", classes="side-title")
                 yield Static("", id="shortcuts-block", classes="side-block")
 
-        yield Static("", id="hintbar")
-        yield Static("", id="status")
-        yield Input(placeholder=":help", id="cmd")
+        with Vertical(id="bottom"):
+            yield Static("", id="status")
+            yield Static("", id="hintbar")
+            yield Input(placeholder=":help", id="cmd")
 
     def on_mount(self) -> None:
         self._render_hint_bar()
@@ -395,16 +429,17 @@ class ReviewApp(App[None]):
         # a failed answer cannot leave a stale undo entry.
         snapshot: dict[str, Any] | None = None
         collection = ""
-        if self._introspects:
-            col = getattr(self._backend, "collection_path", None)
-            collection = str(col) if col is not None else ""
-            snapshot = cast(
-                dict[str, Any], self._backend.snapshot_card_state(int(self._card_id))
-            )
-
         try:
+            if self._introspects:
+                col = getattr(self._backend, "collection_path", None)
+                collection = str(col) if col is not None else ""
+                snapshot = cast(
+                    dict[str, Any], self._backend.snapshot_card_state(int(self._card_id))
+                )
             result = self._backend.answer_card(card_id=int(self._card_id), ease=int(ease))
         except Exception as exc:
+            # A locked collection or a vanished card surfaces here, not as a
+            # Textual traceback that exits 0 (#83).
             self._set_status(f"answer failed: {escape(str(exc))}")
             return
 
@@ -436,7 +471,11 @@ class ReviewApp(App[None]):
 
         col = getattr(self._backend, "collection_path", None)
         collection = str(col) if col is not None else ""
-        item = self._undo.pop(collection=collection)
+        try:
+            item = self._undo.pop(collection=collection)
+        except Exception as exc:
+            self._set_status(f"undo failed: {escape(str(exc))}")
+            return
         if item is None:
             self._set_status("undo empty")
             return
@@ -504,6 +543,12 @@ class ReviewApp(App[None]):
         self._run_command(line)
 
     def _ui_update(self, selector: str, value: str | Text) -> None:
+        # Static.update(str) parses Textual markup, so card text containing
+        # "[x]", "[mg]", "[/]" lost words or raised MarkupError (#82). Plain
+        # strings are wrapped so they render verbatim; chrome that wants
+        # styling passes a Text.
+        if isinstance(value, str):
+            value = Text(value)
         with contextlib.suppress(Exception):
             self.query_one(selector, Static).update(value)
 
@@ -550,7 +595,13 @@ class ReviewApp(App[None]):
             ease = to_int(item.get("ease"), 0)
             if ease not in hints:
                 continue
-            hints[ease] = _format_due_info_short(item.get("due_info"))
+            label = _format_due_info_short(item.get("due_info"))
+            if label in ("?", "-"):
+                # No decodable due_info: fall back to the raw interval rather
+                # than showing "?" on the button now that the row is visible.
+                ivl = to_int(item.get("interval"), 0)
+                label = f"{ivl}d" if ivl > 0 else "-"
+            hints[ease] = label
 
         return hints
 

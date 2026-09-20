@@ -8,10 +8,11 @@ from collections.abc import Mapping
 from typing import Any, ClassVar
 
 from rich.text import Text
-from textual import work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Static
 
@@ -56,7 +57,27 @@ _QUEUE_COLORS: dict[str, str] = {
     "Buried": DIM,
 }
 
-_BROWSE_COLUMNS = ("Deck", "Type", "Question", "Due", "Ivl")
+# Question first: it is what the user scans, and it is the one column that
+# absorbs whatever width is left. The short columns are fixed so Due and Ivl
+# are always on screen (#79: they used to sit past the right edge at any width).
+_BROWSE_COLUMNS = ("Question", "Deck", "Due", "Ivl", "Type")
+_FIXED_COLUMN_WIDTHS: dict[str, int] = {"Deck": 18, "Due": 11, "Ivl": 5, "Type": 8}
+_MIN_QUESTION_WIDTH = 12
+_CELL_PADDING = 2  # DataTable pads each cell by one column on each side
+_SCROLLBAR_WIDTH = 1
+
+
+def _question_width(table_width: int) -> int:
+    """Width left for the Question column once the fixed columns, cell padding
+    and the vertical scrollbar are taken out of ``table_width``."""
+    fixed = sum(_FIXED_COLUMN_WIDTHS.values())
+    padding = _CELL_PADDING * len(_BROWSE_COLUMNS)
+    return max(_MIN_QUESTION_WIDTH, table_width - fixed - padding - _SCROLLBAR_WIDTH)
+
+
+def _deck_leaf(deck: str) -> str:
+    """``Languages::Japanese::Core 2k`` -> ``Core 2k``; the preview has the full path."""
+    return deck.rsplit("::", 1)[-1] if deck else ""
 
 
 def _queue_label(queue: Any) -> str:
@@ -192,12 +213,27 @@ def _extract_note_id_from_card(card: Mapping[str, Any]) -> int | None:
     return None
 
 
-def _format_browser_row(card: Mapping[str, Any]) -> tuple[Text | str, ...]:
-    deck = Text(_truncate(str(card.get("deckName", "")), 16), style=CYAN)
+def _format_browser_row(
+    card: Mapping[str, Any], *, question_width: int = 56
+) -> tuple[Text | str, ...]:
+    """One table row in ``_BROWSE_COLUMNS`` order: Question, Deck, Due, Ivl, Type."""
+    front, _ = _extract_front_back(card)
+    question_text = " ".join(front.split())
+    question = Text(_truncate(question_text, question_width), style=TEXT)
 
-    notetype = _truncate(str(card.get("notetype_name") or "-"), 10)
-    notetype_lower = notetype.lower()
-    if "cloze" in notetype_lower:
+    deck_name = str(card.get("deckName", ""))
+    deck = Text(_truncate(_deck_leaf(deck_name), _FIXED_COLUMN_WIDTHS["Deck"]), style=CYAN)
+
+    due_label = _format_due_short(card)
+    qcolor = _queue_color(card.get("queue"))
+    due = Text()
+    due.append("● ", style=qcolor)
+    due.append(_truncate(due_label, _FIXED_COLUMN_WIDTHS["Due"] - 2), style=qcolor)
+
+    ivl = Text(_format_interval_short(card), style=DIM)
+
+    notetype = _truncate(str(card.get("notetype_name") or "-"), _FIXED_COLUMN_WIDTHS["Type"])
+    if "cloze" in notetype.lower():
         type_style = PURPLE
     elif notetype == "-":
         type_style = DIM
@@ -205,19 +241,18 @@ def _format_browser_row(card: Mapping[str, Any]) -> tuple[Text | str, ...]:
         type_style = GREEN
     notetype_text = Text(notetype, style=type_style)
 
-    front, _ = _extract_front_back(card)
-    question_text = " ".join(front.split())
-    question = Text(_truncate(question_text, 56), style=TEXT)
+    return (question, deck, due, ivl, notetype_text)
 
-    due_label = _format_due_short(card)
-    qcolor = _queue_color(card.get("queue"))
-    due = Text()
-    due.append("● ", style=qcolor)
-    due.append(due_label, style=qcolor)
 
-    ivl = Text(_format_interval_short(card), style=DIM)
+class CardTable(DataTable[Text | str]):
+    """DataTable that tells the app when its width changed, so the Question
+    column can be re-fitted (#79). ``Resize`` itself does not bubble."""
 
-    return (deck, notetype_text, question, due, ivl)
+    class Resized(Message):
+        pass
+
+    def on_resize(self, event: events.Resize) -> None:
+        self.post_message(self.Resized())
 
 
 class DetailScreen(ModalScreen[None]):
@@ -276,14 +311,29 @@ class BrowseApp(App[None]):
 
     TITLE = "anki-cli browse"
 
+    # Focus is placed on the table explicitly in on_mount; Textual's default
+    # AUTO_FOCUS="*" landed on the search Input, so q/d/s/r/1-5 typed into the
+    # query instead of acting (#81).
+    AUTO_FOCUS = None
+
+    # Below 110 columns the fixed preview pane left the table too narrow for
+    # its own columns (#79). The pane hides and Enter -> Detail covers it;
+    # stacking it under the table is the redesign's job (#84).
+    HORIZONTAL_BREAKPOINTS: ClassVar[list[tuple[int, str]]] = [(0, "-narrow"), (110, "-wide")]
+
     CSS = f"""
     Screen {{
         background: {TOOLBAR_BG};
     }}
 
+    /* One docked container per edge: docking two widgets to the same edge
+       makes them overlap (#78), so the bars live inside #top in normal flow. */
+    #top {{
+        dock: top;
+        height: auto;
+    }}
     #titlebar {{
         height: 2;
-        dock: top;
         background: {MENU_BG};
         border-bottom: solid {BORDER};
         padding: 0 1;
@@ -301,7 +351,6 @@ class BrowseApp(App[None]):
 
     #toolbar {{
         height: 3;
-        dock: top;
         background: {TOOLBAR_BG};
         border-bottom: solid {BORDER};
         padding: 0 1;
@@ -364,7 +413,7 @@ class BrowseApp(App[None]):
     }}
 
     DataTable {{
-        width: 1fr;
+        width: 2fr;
         height: 1fr;
         background: {TOOLBAR_BG};
         scrollbar-size: 1 1;
@@ -388,11 +437,17 @@ class BrowseApp(App[None]):
         background: {MENU_BG};
     }}
 
+    /* 2fr:1fr split with the table, preview clamped 30..50 (#79). */
     #preview {{
-        width: 44;
+        width: 1fr;
+        min-width: 30;
+        max-width: 50;
         background: {MENU_BG};
         border-left: solid {BORDER};
         padding: 1;
+    }}
+    Screen.-narrow #preview {{
+        display: none;
     }}
     #preview-title {{
         height: auto;
@@ -458,7 +513,7 @@ class BrowseApp(App[None]):
         Binding("s", "suspend_selected", "Suspend", show=True),
         Binding("r", "refresh", "Refresh", show=True),
         Binding("q", "quit", "Quit", show=True),
-        Binding("escape", "quit", "Quit", show=False),
+        Binding("escape", "escape", "Back / Quit", show=False),
     ]
 
     _FILTER_ORDER: ClassVar[tuple[str, ...]] = ("all", "new", "review", "learn", "suspended")
@@ -479,26 +534,28 @@ class BrowseApp(App[None]):
         self._active_filter = "all"
         self._last_cursor_row = -999
         self._delete_arm_note_id: int | None = None
+        self._current_question_width = 56
 
     def compose(self) -> ComposeResult:
-        with Horizontal(id="titlebar"):
-            yield Static(f"anki-cli {__version__} — browse", id="titlebar-text")
-            yield Static("", id="titlebar-keys")
+        with Vertical(id="top"):
+            with Horizontal(id="titlebar"):
+                yield Static(f"anki-cli {__version__} — browse", id="titlebar-text")
+                yield Static("", id="titlebar-keys")
 
-        with Horizontal(id="toolbar"):
-            with Horizontal(id="search-wrap"):
-                yield Static("⌕ ", id="search-prefix")
-                yield Input(placeholder="search query...", id="search")
-            with Horizontal(id="filter-tabs"):
-                for idx, key in enumerate(self._FILTER_ORDER, start=1):
-                    label = self._FILTER_LABELS[key]
-                    yield Button(
-                        f"[{idx}] {label}", id=f"fchip-{key}", classes="filter-chip",
-                    )
-            yield Static("", id="toolbar-count")
+            with Horizontal(id="toolbar"):
+                with Horizontal(id="search-wrap"):
+                    yield Static("⌕ ", id="search-prefix")
+                    yield Input(placeholder="search query...", id="search")
+                with Horizontal(id="filter-tabs"):
+                    for idx, key in enumerate(self._FILTER_ORDER, start=1):
+                        label = self._FILTER_LABELS[key]
+                        yield Button(
+                            f"[{idx}] {label}", id=f"fchip-{key}", classes="filter-chip",
+                        )
+                yield Static("", id="toolbar-count")
 
         with Horizontal(id="main"):
-            yield DataTable(id="table", cursor_type="row", zebra_stripes=True)
+            yield CardTable(id="table", cursor_type="row", zebra_stripes=True)
 
             with Vertical(id="preview"):
                 yield Static("Preview", id="preview-title")
@@ -514,12 +571,7 @@ class BrowseApp(App[None]):
         yield Static("", id="hintbar")
 
     def on_mount(self) -> None:
-        table = self.query_one("#table", DataTable)
-        table.add_column(_BROWSE_COLUMNS[0], key=_BROWSE_COLUMNS[0], width=16)
-        table.add_column(_BROWSE_COLUMNS[1], key=_BROWSE_COLUMNS[1], width=10)
-        table.add_column(_BROWSE_COLUMNS[2], key=_BROWSE_COLUMNS[2], width=56)
-        table.add_column(_BROWSE_COLUMNS[3], key=_BROWSE_COLUMNS[3], width=10)
-        table.add_column(_BROWSE_COLUMNS[4], key=_BROWSE_COLUMNS[4], width=6)
+        self._add_columns()
 
         search = self.query_one("#search", Input)
         search.value = self._query
@@ -529,8 +581,43 @@ class BrowseApp(App[None]):
         self._render_hint_bar()
         self._render_preview_empty()
 
+        self.query_one("#table", DataTable).focus()
         self.set_interval(0.12, self._sync_preview_cursor)
         self._load_cards(self._query)
+
+    @on(CardTable.Resized)
+    def _refit_columns(self) -> None:
+        # Column widths are fixed at add time, so a resize re-fits Question
+        # to the table's new width by rebuilding the columns (#79).
+        with contextlib.suppress(Exception):
+            table = self.query_one("#table", DataTable)
+            if table.size.width and self._question_width() != self._current_question_width:
+                row = to_int(getattr(table, "cursor_row", -1), -1)
+                self._populate_table()
+                if 0 <= row < table.row_count:
+                    table.move_cursor(row=row, column=0)
+
+    def _question_width(self) -> int:
+        with contextlib.suppress(Exception):
+            width = self.query_one("#table", DataTable).size.width
+            if width > 0:
+                return _question_width(width)
+        return 56
+
+    def _add_columns(self) -> None:
+        table = self.query_one("#table", DataTable)
+        self._current_question_width = self._question_width()
+        for name in _BROWSE_COLUMNS:
+            width = _FIXED_COLUMN_WIDTHS.get(name, self._current_question_width)
+            table.add_column(name, key=name, width=width)
+
+    def action_escape(self) -> None:
+        # Esc from the search box goes back to the table; it used to quit the
+        # whole app (#81). Esc from anywhere else still quits.
+        if isinstance(self.focused, Input):
+            self.query_one("#table", DataTable).focus()
+            return
+        self.exit()
 
     def action_focus_search(self) -> None:
         self.query_one("#search", Input).focus()
@@ -826,10 +913,12 @@ class BrowseApp(App[None]):
                 self.call_from_thread(self._update_status_widget, left, right)
 
     def _update_status_widget(self, left: str, right: str) -> None:
+        # Text(): the left side is often the raw user query, which must not be
+        # parsed as markup (#82).
         with contextlib.suppress(Exception):
-            self.query_one("#statusbar-text", Static).update(left)
+            self.query_one("#statusbar-text", Static).update(Text(left))
         with contextlib.suppress(Exception):
-            self.query_one("#statusbar-count", Static).update(right)
+            self.query_one("#statusbar-count", Static).update(Text(right))
 
     def _on_cards_loaded(self, cards: list[dict[str, Any]], query: str) -> None:
         self._cards = cards
@@ -839,12 +928,16 @@ class BrowseApp(App[None]):
         self._render_toolbar_count()
         self._sync_preview_cursor(force=True)
         self._set_status(query or "*", self._count_label())
+        if self.focused is None:
+            with contextlib.suppress(Exception):
+                self.query_one("#table", DataTable).focus()
 
     def _populate_table(self, *, reset_cursor: bool = False) -> None:
         table = self.query_one("#table", DataTable)
-        table.clear()
+        table.clear(columns=True)
+        self._add_columns()
         for card in self._visible_cards:
-            table.add_row(*_format_browser_row(card))
+            table.add_row(*_format_browser_row(card, question_width=self._current_question_width))
 
         if self._visible_cards:
             current_row = to_int(getattr(table, "cursor_row", -1), -1)
