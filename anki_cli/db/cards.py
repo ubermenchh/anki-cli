@@ -13,6 +13,7 @@ import time
 
 from anki_cli.core.due import LEARN_DUE_EPOCH_THRESHOLD
 from anki_cli.db.deck_lookup import DeckLookupMixin
+from anki_cli.db.deck_names import deck_native_to_human
 from anki_cli.db.search_sql import compile_card_query
 from anki_cli.models.output import JSONValue
 
@@ -106,7 +107,7 @@ class CardsMixin(DeckLookupMixin):
             "cardId": int(row["id"]),
             "note": int(row["nid"]),
             "deckId": int(row["did"]),
-            "deckName": str(row["deck_name"] or ""),
+            "deckName": deck_native_to_human(str(row["deck_name"] or "")),
             "ord": int(row["ord"]),
             "type": int(row["type"]),
             "queue": int(row["queue"]),
@@ -431,10 +432,7 @@ class CardsMixin(DeckLookupMixin):
 
     def _get_next_due_for_deck(self, deck_name: str) -> dict[str, JSONValue] | None:
         with self._connect() as conn:
-            deck_row = conn.execute(
-                "SELECT id FROM decks WHERE name = ?",
-                (deck_name,),
-            ).fetchone()
+            deck_row = self._deck_row(conn, deck_name)
             if deck_row is None:
                 return None
             did = int(deck_row["id"])

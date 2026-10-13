@@ -8,6 +8,7 @@ extends it.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from collections.abc import Iterator
@@ -17,6 +18,7 @@ from typing import cast
 
 from anki_cli.db import lock
 from anki_cli.db.codec import CodecMixin
+from anki_cli.db.deck_names import DECK_SEP_HUMAN, deck_human_to_native
 from anki_cli.db.errors import (
     MIN_SUPPORTED_SCHEMA_VERSION,
     DirectWriteBlockedError,
@@ -31,6 +33,8 @@ from anki_cli.db.timing import (
 )
 from anki_cli.models.output import JSONValue
 
+logger = logging.getLogger(__name__)
+
 
 class ConnectionMixin(CodecMixin):
     """Helpers for Anki's collection(.anki21b/.anki2) schema."""
@@ -42,6 +46,9 @@ class ConnectionMixin(CodecMixin):
         if not resolved.exists():
             raise FileNotFoundError(f"Direct collection not found: {resolved}")
         self.db_path = resolved
+        self._deck_names_checked = False
+        self.deck_name_conflicts: list[str] = []
+        """Legacy ``::`` deck names the migration could not rewrite (#75)."""
         self._check_schema_version()
 
     def _check_schema_version(self) -> None:
@@ -87,6 +94,7 @@ class ConnectionMixin(CodecMixin):
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
+        self._ensure_deck_names_native()
         conn = sqlite3.connect(str(self.db_path), timeout=1.0)
         conn.row_factory = sqlite3.Row
         conn.create_collation("unicase", self._unicase_collation)
@@ -98,6 +106,7 @@ class ConnectionMixin(CodecMixin):
 
     @contextmanager
     def _connect_write(self) -> Iterator[sqlite3.Connection]:
+        self._ensure_deck_names_native()
         self._ensure_write_safe()
         conn = sqlite3.connect(str(self.db_path), timeout=5.0, isolation_level=None)
         conn.row_factory = sqlite3.Row
@@ -121,6 +130,90 @@ class ConnectionMixin(CodecMixin):
             raise
         finally:
             conn.close()
+
+    def _ensure_deck_names_native(self) -> None:
+        """Once per store, before its first connection: rewrite deck names an older
+        anki-cli stored with a literal ``::`` to Anki's ``\\x1f`` (#75). Lookups only
+        understand ``\\x1f``, so this has to happen before a read as well as a write.
+
+        Best effort: if Anki looks to be running (the write guard refuses) or the
+        rewrite fails, the collection is left as it was and a warning is logged;
+        the next command retries. Nothing is written when no legacy name exists.
+        """
+        if self._deck_names_checked:
+            return
+        self._deck_names_checked = True
+        try:
+            probe = sqlite3.connect(str(self.db_path), timeout=1.0)
+            try:
+                probe.execute("PRAGMA query_only = ON")
+                legacy = probe.execute(
+                    "SELECT 1 FROM decks WHERE name LIKE '%::%' LIMIT 1"
+                ).fetchone()
+            finally:
+                probe.close()
+        except sqlite3.Error:
+            return  # not an Anki collection (or no decks table): later queries say so
+        if legacy is None:
+            return
+        try:
+            self._ensure_write_safe()
+        except DirectWriteBlockedError:
+            logger.warning(
+                "Deck names with a literal '::' were found in %s but the collection "
+                "cannot be written right now (Anki running?); deck lookups by '::' name "
+                "will miss them until a command runs with Anki closed.",
+                self.db_path,
+            )
+            return
+        conn = sqlite3.connect(str(self.db_path), timeout=5.0, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.create_collation("unicase", self._unicase_collation)
+        conn.execute("PRAGMA busy_timeout = 5000")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            changes_before = conn.total_changes
+            skipped = self._normalize_legacy_deck_names(conn)
+            if conn.total_changes != changes_before:
+                self._touch_collection_modified(conn)
+            conn.execute("COMMIT")
+        except sqlite3.Error as exc:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            logger.warning("Could not normalise legacy '::' deck names: %s", exc)
+            return
+        finally:
+            conn.close()
+        self.deck_name_conflicts = skipped
+        for name in skipped:
+            logger.warning("Deck %r was left with a literal '::' in its stored name.", name)
+
+    @staticmethod
+    def _normalize_legacy_deck_names(conn: sqlite3.Connection) -> list[str]:
+        """Rewrite stored names containing ``::`` to ``\\x1f``, bumping mtime and
+        usn so the change syncs. Returns the names it had to leave alone: an empty
+        component (``A::::B``, ``A::``, ``::A``) is not a valid Anki name, and a
+        name whose native spelling is already another deck would break the unique
+        name index. Anki's Check Database repairs those; this does not guess."""
+        rows = conn.execute("SELECT id, name FROM decks WHERE name LIKE '%::%'").fetchall()
+        now_sec = int(time.time())
+        skipped: list[str] = []
+        for row in rows:
+            name = str(row["name"])
+            native = deck_human_to_native(name)
+            if (
+                "" in name.split(DECK_SEP_HUMAN)
+                or conn.execute(
+                    "SELECT 1 FROM decks WHERE name = ? AND id != ?", (native, row["id"])
+                ).fetchone()
+            ):
+                skipped.append(name)
+                continue
+            conn.execute(
+                "UPDATE decks SET name = ?, mtime_secs = ?, usn = -1 WHERE id = ?",
+                (native, now_sec, row["id"]),
+            )
+        return skipped
 
     @staticmethod
     def _now_ms() -> int:

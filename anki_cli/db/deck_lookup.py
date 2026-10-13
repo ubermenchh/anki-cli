@@ -10,6 +10,7 @@ from typing import NamedTuple
 import betterproto
 
 from anki_cli.db.connection import ConnectionMixin
+from anki_cli.db.deck_names import DECK_SEP_NATIVE, deck_human_to_native, deck_native_to_human
 from anki_cli.models.output import JSONValue
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
 
@@ -18,7 +19,8 @@ class DeckSubtree(NamedTuple):
     """A deck and its descendants, as ``_deck_subtree`` found them."""
 
     name: str
-    """The parent's name as stored (the caller may have passed another case)."""
+    """The parent's name as stored, i.e. native ``\\x1f`` separators (the caller
+    may have passed another case or ``::``)."""
     rows: list[sqlite3.Row]
     """``id, name, kind`` per deck, parents first (by name length, then name)."""
 
@@ -26,11 +28,36 @@ class DeckSubtree(NamedTuple):
 class DeckLookupMixin(ConnectionMixin):
     """Deck lookups shared by the card and note paths."""
 
-    def _resolve_deck_id(self, conn: sqlite3.Connection, deck_name: str) -> int:
-        row = conn.execute(
-            "SELECT id FROM decks WHERE name = ?",
-            (deck_name.strip(),),
+    @staticmethod
+    def _native_deck_name(conn: sqlite3.Connection, name: str) -> str:
+        """The stored spelling of a typed deck name (``::`` -> ``\\x1f``).
+
+        A component ending in ``:`` makes the human form ambiguous
+        (``Ch 1:\\x1fVerbs`` reads ``Ch 1:::Verbs``, which a blind replace maps to
+        ``Ch 1\\x1f:Verbs``), so a name with ``:::`` is matched against how each
+        stored name reads back, and the plain conversion is only the fallback.
+        """
+        native = deck_human_to_native(name)
+        if ":::" not in name:
+            return native
+        wanted = name.casefold()
+        for row in conn.execute("SELECT name FROM decks"):
+            stored = str(row[0])
+            if deck_native_to_human(stored).casefold() == wanted:
+                return stored
+        return native
+
+    def _deck_row(
+        self, conn: sqlite3.Connection, name: str, columns: str = "id"
+    ) -> sqlite3.Row | None:
+        """One ``decks`` row by its typed name (any spelling of the separator)."""
+        return conn.execute(
+            f"SELECT {columns} FROM decks WHERE name = ?",
+            (self._native_deck_name(conn, name.strip()),),
         ).fetchone()
+
+    def _resolve_deck_id(self, conn: sqlite3.Connection, deck_name: str) -> int:
+        row = self._deck_row(conn, deck_name)
         if row is None:
             raise LookupError(f"Deck not found: {deck_name}")
         return int(row["id"])
@@ -43,14 +70,15 @@ class DeckLookupMixin(ConnectionMixin):
         The parent is matched the way Anki does: ``decks.name`` is ``COLLATE
         unicase``, so plain ``=`` folds case (including non-ASCII); an explicit
         ``COLLATE NOCASE`` would downgrade that to ASCII. Descendants use
-        rslib's ``child_decks`` trick: ``name > 'P::' AND name < 'P:;'`` (``;``
-        is the character after ``:``) selects exactly the names that start with
-        ``P::`` under the column's collation. No ``LIKE``, so ``_`` and ``%`` in
-        a deck name are literal and ``A_B`` never claims ``AXB::child``; and the
+        rslib's ``child_decks`` trick: ``name > 'P\\x1f' AND name < 'P\\x20'`` (the
+        character after ``\\x1f``) selects exactly the names that start with
+        ``P\\x1f`` under the column's collation. No ``LIKE``, so ``_`` and ``%`` in
+        a deck name are literal and ``A_B`` never claims ``AXB\\x1fchild``; and the
         prefix is compared unicase, so a child written as ``lang::De`` still
-        belongs to ``Lang`` (#73).
+        belongs to ``Lang`` (#73). ``name`` may use the human ``::`` form; it is
+        converted to the stored ``\\x1f`` first (#75).
         """
-        wanted = name.strip()
+        wanted = self._native_deck_name(conn, name.strip())
         if not wanted:
             return None
         parent = conn.execute("SELECT name FROM decks WHERE name = ?", (wanted,)).fetchone()
@@ -64,7 +92,7 @@ class DeckLookupMixin(ConnectionMixin):
             WHERE name = ? OR (name > ? AND name < ?)
             ORDER BY LENGTH(name), name
             """,
-            (canonical, f"{canonical}::", f"{canonical}:;"),
+            (canonical, canonical + DECK_SEP_NATIVE, canonical + chr(ord(DECK_SEP_NATIVE) + 1)),
         ).fetchall()
         return DeckSubtree(name=canonical, rows=rows)
 

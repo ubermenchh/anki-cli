@@ -11,6 +11,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from anki_cli.db.deck_names import DECK_SEP_NATIVE, deck_human_to_native
+
 type SQLParam = str | int | float
 
 TokenKind = Literal["TERM", "LPAREN", "RPAREN", "OR", "AND", "NOT", "EOF"]
@@ -677,9 +679,9 @@ def _deck_clause(value: str, *, alias: str) -> tuple[str, list[SQLParam]]:
         return ("1=1", [])
     if value.casefold() == "filtered":
         return (f"{alias}.odid != 0", [])
-    pattern = _glob_to_like(value)
+    pattern = _glob_to_like(deck_human_to_native(value))
     ids_subquery = "SELECT id FROM decks WHERE name LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\'"
-    child_pattern = f"{pattern}::%"
+    child_pattern = f"{pattern}{DECK_SEP_NATIVE}%"
     # ``odid != 0`` is only an early-out (no deck has id 0); the IN handles it.
     return (
         f"({alias}.did IN ({ids_subquery}) "

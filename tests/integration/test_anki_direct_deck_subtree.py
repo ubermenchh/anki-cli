@@ -88,7 +88,7 @@ def test_deck_subtree_reports_canonical_name_and_parents_first(tmp_path: Path) -
         found = store._deck_subtree(conn, "a_b")
     assert found is not None
     assert found.name == "A_B"
-    assert [str(r["name"]) for r in found.rows] == ["A_B", "A_B::child"]
+    assert [str(r["name"]) for r in found.rows] == ["A_B", "A_B\x1fchild"]
 
 
 @pytest.mark.parametrize("name", ["", "   ", "Missing", "A_B::", "A_", "Bas"])
@@ -142,7 +142,7 @@ def test_rename_deck_scopes_by_literal_prefix_and_canonical_name(tmp_path: Path)
     names = {did: str(col.row("decks", did)["name"]) for did in (10, 11, 20, 21)}
     # Suffix is taken from the stored name, so a case-folded source still
     # yields the right child path.
-    assert names == {10: "Renamed", 11: "Renamed::child", 20: "AXB", 21: "AXB::child"}
+    assert names == {10: "Renamed", 11: "Renamed\x1fchild", 20: "AXB", 21: "AXB\x1fchild"}
 
 
 def test_rename_deck_target_conflict_probe_is_literal_too(tmp_path: Path) -> None:
@@ -155,7 +155,7 @@ def test_rename_deck_target_conflict_probe_is_literal_too(tmp_path: Path) -> Non
         store.rename_deck(old_name="Base", new_name="a_b")
 
     assert store.rename_deck(old_name="Base", new_name="AX_")["renamed_decks"] == 2
-    assert str(col.row("decks", 52)["name"]) == "AX_::Child"
+    assert str(col.row("decks", 52)["name"]) == "AX_\x1fChild"
 
 
 def test_rename_deck_case_only_rename_of_a_subtree(tmp_path: Path) -> None:
@@ -169,7 +169,7 @@ def test_rename_deck_case_only_rename_of_a_subtree(tmp_path: Path) -> None:
 
     assert result["renamed_decks"] == 2
     assert str(col.row("decks", 40)["name"]) == "ÉCOLE"
-    assert str(col.row("decks", 41)["name"]) == "ÉCOLE::Verbs"
+    assert str(col.row("decks", 41)["name"]) == "ÉCOLE\x1fVerbs"
 
 
 def test_unbury_deck_scope_is_literal_and_case_insensitive(tmp_path: Path) -> None:
