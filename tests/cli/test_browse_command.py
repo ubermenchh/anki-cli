@@ -93,3 +93,59 @@ def test_browse_cmd_backend_unavailable(monkeypatch: pytest.MonkeyPatch) -> None
     payload = json.loads(result.output)
     assert payload["ok"] is False
     assert payload["error"]["code"] == "BACKEND_UNAVAILABLE"
+
+
+def test_browse_cmd_tui_crash_emits_internal_error_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#83: Textual swallows handler exceptions, prints a traceback and sets
+    ``return_code = 1`` — ``run()`` returns normally. The CLI must still emit a
+    failure envelope and a non-zero exit instead of exiting 0."""
+
+    class CrashingApp:
+        return_code = 1
+        _exception = RuntimeError("collection is locked")
+
+        def __init__(self, *, backend: Any, query: str = "") -> None:
+            pass
+
+        def run(self) -> None:
+            return None
+
+    class Backend:
+        pass
+
+    _patch_session(monkeypatch, Backend())
+    _patch_browse_module(monkeypatch, CrashingApp)
+
+    runner = CliRunner()
+    result = runner.invoke(browse_cmd, ["--query", ""], obj=_base_obj())
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "INTERNAL_ERROR"
+    assert payload["error"]["details"]["return_code"] == 1
+    assert "collection is locked" in payload["error"]["details"]["exception"]
+
+
+def test_browse_cmd_clean_exit_has_no_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``q`` -> ``App.exit()`` -> ``return_code == 0``; nothing to report."""
+
+    class CleanApp:
+        return_code = 0
+
+        def __init__(self, *, backend: Any, query: str = "") -> None:
+            pass
+
+        def run(self) -> None:
+            return None
+
+    class Backend:
+        pass
+
+    _patch_session(monkeypatch, Backend())
+    _patch_browse_module(monkeypatch, CleanApp)
+
+    result = CliRunner().invoke(browse_cmd, ["--query", ""], obj=_base_obj())
+    assert result.exit_code == 0
+    assert result.output == ""

@@ -115,6 +115,29 @@ class CommandContext:
     ) -> CommandExit:
         return self.fail("INVALID_INPUT", message, exit_code=2, details=details)
 
+    def run_tui(self, app: Any) -> None:
+        """``app.run()`` for a Textual app, then honour its exit status.
+
+        Textual catches exceptions raised inside handlers, prints the traceback
+        to stderr, sets ``return_code = 1`` and returns normally from ``run()``
+        — so without this the process exited 0 with no envelope (#83). The
+        app object is duck-typed so this module never imports textual.
+        """
+        app.run()
+        code = getattr(app, "return_code", None)
+        if not code:
+            return
+        exc = getattr(app, "_exception", None)
+        details: dict[str, JSONValue] = {"return_code": int(code)}
+        if exc is not None:
+            details["exception"] = f"{type(exc).__name__}: {exc}"
+        raise self.fail(
+            "INTERNAL_ERROR",
+            "TUI exited with an unhandled error.",
+            exit_code=int(code),
+            details=details,
+        )
+
     def invalid_query(self, query: str | None, exc: BaseException) -> CommandExit:
         """``INVALID_INPUT`` for a search the backend rejected, with the
         parser position when there is one."""
