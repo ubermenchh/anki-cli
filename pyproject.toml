@@ -30,12 +30,11 @@ dependencies = [
   "markdownify>=1.2.2",
 ]
 [project.optional-dependencies]
-tui = ["textual", "prompt-toolkit"]
+tui = ["textual>=7,<8", "prompt-toolkit>=3,<4"]
 clipboard = ["pyperclip"]
 
 [dependency-groups]
 dev = [
-  "black>=26.1.0",
   "grpcio-tools>=1.78.0",
   "jinja2>=3.1.6",
   "pytest",
@@ -76,7 +75,6 @@ exclude = ["anki_cli/proto/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-m 'not tui'"
 markers = [
   "integration: drives the direct backend against a real schema-18 SQLite file",
   "tui: tests requiring optional TUI dependencies",
