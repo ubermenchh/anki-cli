@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import cast
 
 from anki_cli.db import lock
-from anki_cli.db.codec import CodecMixin
+from anki_cli.db.codec import CodecMixin, deck_human_to_native
 from anki_cli.db.errors import (
     MIN_SUPPORTED_SCHEMA_VERSION,
     DirectWriteBlockedError,
@@ -108,6 +108,7 @@ class ConnectionMixin(CodecMixin):
         try:
             conn.execute("BEGIN IMMEDIATE")
             changes_before = conn.total_changes
+            self._normalize_legacy_deck_names(conn)
             yield conn
             if conn.total_changes != changes_before:
                 # Anki's sync handshake compares col.mod with the server; rows
@@ -121,6 +122,26 @@ class ConnectionMixin(CodecMixin):
             raise
         finally:
             conn.close()
+
+    @staticmethod
+    def _normalize_legacy_deck_names(conn: sqlite3.Connection) -> None:
+        """Rewrite deck names an older anki-cli stored with a literal ``::`` to
+        Anki's ``\\x1f`` (#75), the fix Check Database would otherwise apply.
+        Anki's tree splits on ``\\x1f``, so such a row is a top-level deck whose
+        name contains ``::``. A row whose native name is already taken is left
+        alone rather than failing the write on the unique name index."""
+        rows = conn.execute("SELECT id, name FROM decks WHERE name LIKE '%::%'").fetchall()
+        now_sec = int(time.time())
+        for row in rows:
+            native = deck_human_to_native(str(row["name"]))
+            if conn.execute(
+                "SELECT 1 FROM decks WHERE name = ? AND id != ?", (native, row["id"])
+            ).fetchone():
+                continue
+            conn.execute(
+                "UPDATE decks SET name = ?, mtime_secs = ?, usn = -1 WHERE id = ?",
+                (native, now_sec, row["id"]),
+            )
 
     @staticmethod
     def _now_ms() -> int:
