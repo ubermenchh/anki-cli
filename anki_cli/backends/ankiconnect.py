@@ -39,6 +39,60 @@ class AnkiConnectAPIError(AnkiConnectError):
         self.api_message = message
 
 
+# Actions whose replay cannot change the outcome: pure reads, and writes that
+# set state rather than add to it. A request that fails with a dropped
+# connection may or may not have been executed by Anki, so only these are
+# retried (#32). Deliberately absent: addNote(s) (duplicates), guiAnswerCard
+# (would rate the *next* card), model*Add (second add errors), deleteDecks.
+_RETRY_SAFE_ACTIONS: frozenset[str] = frozenset(
+    {
+        # reads
+        "version",
+        "deckNames",
+        "deckNamesAndIds",
+        "getDecks",
+        "getDeckConfig",
+        "modelNames",
+        "modelNamesAndIds",
+        "modelFieldNames",
+        "modelTemplates",
+        "modelStyling",
+        "findNotes",
+        "notesInfo",
+        "findCards",
+        "cardsInfo",
+        "getTags",
+        "guiCurrentCard",
+        "getReviewsOfCards",
+        # idempotent writes
+        "createDeck",
+        "changeDeck",
+        "suspend",
+        "unsuspend",
+        "setSpecificValueOfCard",
+        "updateNoteFields",
+        "updateModelTemplates",
+        "updateModelStyling",
+        "saveDeckConfig",
+        "addTags",
+        "removeTags",
+        "forgetCards",
+        "setDueDate",
+    }
+)
+
+
+def _retry_safe(payload: Mapping[str, Any]) -> bool:
+    action = payload.get("action")
+    if action == "multi":
+        params = payload.get("params") or {}
+        actions = params.get("actions") if isinstance(params, Mapping) else None
+        return isinstance(actions, list) and all(
+            isinstance(sub, Mapping) and sub.get("action") in _RETRY_SAFE_ACTIONS for sub in actions
+        )
+    return action in _RETRY_SAFE_ACTIONS
+
+
 class AnkiConnectBackend(AnkiBackend):
     supports_scheduler_introspection = False
 
@@ -52,6 +106,7 @@ class AnkiConnectBackend(AnkiBackend):
         *,
         url: str = "http://localhost:8765",
         timeout_seconds: float = 2.0,
+        read_timeout_seconds: float = 30.0,
         api_version: int = API_VERSION,
         verify_version: bool = True,
         allow_non_localhost: bool = False,
@@ -61,9 +116,20 @@ class AnkiConnectBackend(AnkiBackend):
         self.collection_path = collection_path
         self._url = url
         self._api_version = api_version
-        self._timeout_seconds = timeout_seconds
         self._owns_client = client is None
-        self._client = client or httpx.Client(timeout=timeout_seconds)
+        # Connect fast, read patiently: a ``findCards`` over a large collection
+        # or an ``addNotes`` batch legitimately takes seconds inside Anki, and
+        # one 2 s budget for both used to surface as "Timeout contacting
+        # AnkiConnect" (#32). The client is reused across requests, so a
+        # command that makes many calls pays for one TCP handshake.
+        self._client = client or httpx.Client(
+            timeout=httpx.Timeout(
+                connect=timeout_seconds,
+                read=read_timeout_seconds,
+                write=read_timeout_seconds,
+                pool=timeout_seconds,
+            )
+        )
 
         self._validate_url(url=url, allow_non_localhost=allow_non_localhost)
 
@@ -102,13 +168,35 @@ class AnkiConnectBackend(AnkiBackend):
             "version": self._api_version,
             "params": params,
         }
+        response = self._post(payload)
+        return self._unwrap(action, self._parse_body(response))
 
+    def _post(self, payload: dict[str, Any]) -> httpx.Response:
         try:
-            response = self._client.post(
-                self._url,
-                json=payload,
-                headers={"Connection": "close"},
-            )
+            return self._post_once(payload)
+        except httpx.RemoteProtocolError as exc:
+            # AnkiConnect's server closes idle keep-alive sockets; a request
+            # written onto one that just died fails with "server disconnected
+            # without sending a response" before Anki ever saw it. One retry on
+            # a fresh connection is the fix that ``Connection: close`` used to
+            # paper over at the cost of a handshake per request (#32). But the
+            # same error also covers "Anki executed it, then died before
+            # answering", so only replay what is safe to run twice.
+            if not _retry_safe(payload):
+                raise AnkiConnectUnavailableError(
+                    f"AnkiConnect at {self._url} disconnected unexpectedly: {exc}. "
+                    f"Not retrying {payload.get('action')!r}: check in Anki whether it applied."
+                ) from exc
+            try:
+                return self._post_once(payload)
+            except httpx.RemoteProtocolError as exc2:
+                raise AnkiConnectUnavailableError(
+                    f"AnkiConnect at {self._url} disconnected unexpectedly: {exc2}"
+                ) from exc2
+
+    def _post_once(self, payload: dict[str, Any]) -> httpx.Response:
+        try:
+            response = self._client.post(self._url, json=payload)
             response.raise_for_status()
         except httpx.TimeoutException as exc:
             raise AnkiConnectUnavailableError(
@@ -118,15 +206,16 @@ class AnkiConnectBackend(AnkiBackend):
             raise AnkiConnectUnavailableError(
                 f"Cannot connect to AnkiConnect at {self._url}. Is Anki running with the add-on?"
             ) from exc
-        except httpx.RemoteProtocolError as exc:
-            raise AnkiConnectUnavailableError(
-                f"AnkiConnect at {self._url} disconnected unexpectedly: {exc}"
-            ) from exc
+        except httpx.RemoteProtocolError:
+            raise  # _post retries once
         except httpx.HTTPError as exc:
             raise AnkiConnectUnavailableError(
                 f"HTTP error contacting AnkiConnect at {self._url}: {exc}"
             ) from exc
+        return response
 
+    @staticmethod
+    def _parse_body(response: httpx.Response) -> dict[str, Any]:
         try:
             body = response.json()
         except ValueError as exc:
@@ -140,12 +229,64 @@ class AnkiConnectBackend(AnkiBackend):
             raise AnkiConnectProtocolError(
                 "AnkiConnect response missing required keys: 'error' and 'result'."
             )
+        return body
 
+    @staticmethod
+    def _unwrap(action: str, body: Mapping[str, Any]) -> JSONValue:
         error = body["error"]
         if error is not None:
             raise AnkiConnectAPIError(action, str(error))
-
         return body["result"]
+
+    def _multi(self, actions: list[tuple[str, dict[str, JSONValue]]]) -> list[JSONValue]:
+        """Run several actions in one HTTP round trip (AnkiConnect ``multi``).
+
+        A failed sub-action raises ``AnkiConnectAPIError`` naming *that*
+        action, exactly as a direct ``_invoke`` would. Callers that need every
+        outcome (the server runs the whole batch regardless) use
+        ``_multi_outcomes``.
+        """
+        return [
+            self._unwrap(action, {"result": result, "error": error})
+            for (action, _params), (result, error) in zip(
+                actions, self._multi_outcomes(actions), strict=True
+            )
+        ]
+
+    def _multi_outcomes(
+        self, actions: list[tuple[str, dict[str, JSONValue]]]
+    ) -> list[tuple[JSONValue, str | None]]:
+        """``(result, error)`` per sub-action, in order.
+
+        Each sub-action is labelled with the API version so the server wraps
+        its answer in a ``{"result", "error"}`` envelope instead of a bare
+        value.
+        """
+        if not actions:
+            return []
+        raw = self._invoke(
+            "multi",
+            actions=[
+                {"action": action, "version": self._api_version, "params": params}
+                for action, params in actions
+            ],
+        )
+        if not isinstance(raw, list) or len(raw) != len(actions):
+            raise AnkiConnectProtocolError(
+                f"multi must return one item per action ({len(actions)}), "
+                f"got {type(raw).__name__}"
+                + (f" of length {len(raw)}" if isinstance(raw, list) else "")
+                + "."
+            )
+        outcomes: list[tuple[JSONValue, str | None]] = []
+        for (action, _params), item in zip(actions, raw, strict=True):
+            if not isinstance(item, dict) or "error" not in item or "result" not in item:
+                raise AnkiConnectProtocolError(
+                    f"multi item for {action} must be a result/error object."
+                )
+            error = item["error"]
+            outcomes.append((item["result"], None if error is None else str(error)))
+        return outcomes
 
     # Decks
     def get_decks(self) -> list[dict[str, JSONValue]]:
@@ -182,47 +323,92 @@ class AnkiConnectBackend(AnkiBackend):
         target = new_name.strip()
         if not source or not target:
             raise ValueError("Deck names cannot be empty.")
+        if source == target:
+            return {
+                "from": source,
+                "to": target,
+                "renamed_decks": 0,
+                "unchanged": True,
+                "items": [],
+            }
 
-        for params in (
-            {"old": source, "new": target},
-            {"deck": source, "newName": target},
-            {"deck": source, "name": target},
-        ):
-            try:
-                self._invoke("renameDeck", **params)
-                return {"from": source, "to": target, "renamed_decks": 1}
-            except AnkiConnectAPIError:
-                continue
+        # AnkiConnect has no rename action (v6 API: deckNames, createDeck,
+        # changeDeck, deleteDecks, ...), so this emulates one: create the new
+        # paths, move each deck's own cards, verify the old subtree is empty,
+        # delete it. It is not atomic; the refusals up front are what keep a
+        # partial run from merging into an unrelated deck. Anki resolves deck
+        # names case-insensitively, so every comparison here folds case.
+        key = str.casefold
+        if key(source) == key(target):
+            raise ValueError(
+                f"Changing only the case of a deck name ({source!r} -> {target!r}) is not "
+                "supported via AnkiConnect: createDeck would resolve to the existing deck "
+                "and deleteDecks would then remove it. Use --backend direct."
+            )
+        if key(target).startswith(key(source) + "::"):
+            # The final deleteDecks(source) would take the freshly created
+            # target subtree down with it; Anki's own rename handles this
+            # with a temporary name, which cannot be expressed over the API.
+            raise ValueError(
+                f"Cannot rename {source!r} into its own subtree ({target!r}) via AnkiConnect; "
+                "use --backend direct or rename it in Anki."
+            )
 
         decks = [str(item["name"]) for item in self.get_decks()]
         targets = sorted(
-            [name for name in decks if name == source or name.startswith(f"{source}::")],
+            [n for n in decks if key(n) == key(source) or key(n).startswith(key(source) + "::")],
             key=lambda value: value.count("::"),
         )
         if not targets:
             raise LookupError(f"Deck not found: {source}")
+        # The stored spelling of the parent: suffixes are sliced from it, not
+        # from whatever case the caller typed.
+        canonical = next(n for n in targets if key(n) == key(source))
+        scoped = set(targets)
+        taken = [
+            n
+            for n in decks
+            if (key(n) == key(target) or key(n).startswith(key(target) + "::")) and n not in scoped
+        ]
+        if taken:
+            raise ValueError(f"Target deck path already exists: {target}")
 
         rename_map: dict[str, str] = {}
         for deck_name in targets:
-            suffix = deck_name[len(source) :]
+            suffix = deck_name[len(canonical) :]
             rename_map[deck_name] = f"{target}{suffix}"
 
         for next_name in rename_map.values():
             self._invoke("createDeck", deck=next_name)
 
+        # ``deck:"X"`` matches X *and* its subdecks; exclude the children so
+        # each deck's cards land in its own renamed counterpart.
         moved_cards = 0
         for from_name, to_name in rename_map.items():
-            card_ids = self.find_cards(f'deck:"{from_name}"')
+            children = self._deck_query_prefix(f"{from_name}::*").rstrip()
+            card_ids = self.find_cards(f"{self._deck_query_prefix(from_name)}-{children}")
             if card_ids:
                 self._invoke("changeDeck", cards=card_ids, deck=to_name)
                 moved_cards += len(card_ids)
+
+        # deleteDecks requires cardsToo=true (Anki >= 2.1.28 cannot delete a
+        # deck and keep its cards), so prove the old subtree is empty first:
+        # a card added to it since the moves above would otherwise be lost.
+        remaining = self.find_cards(self._deck_query_prefix(canonical).rstrip())
+        if remaining:
+            raise AnkiConnectAPIError(
+                "changeDeck",
+                f"{len(remaining)} card(s) still in {canonical!r} after moving; the old "
+                f"decks were left in place alongside {target!r}. Move them with card:move "
+                "and delete the old decks, or finish the rename in Anki.",
+            )
 
         for old_deck in sorted(
             rename_map.keys(),
             key=lambda value: value.count("::"),
             reverse=True,
         ):
-            self._invoke("deleteDecks", decks=[old_deck], cardsToo=False)
+            self._invoke("deleteDecks", decks=[old_deck], cardsToo=True)
 
         return {
             "from": source,
@@ -265,19 +451,21 @@ class AnkiConnectBackend(AnkiBackend):
         return {str(name): self._as_int(mid, "model id") for name, mid in model_map.items()}
 
     def get_notetypes(self) -> list[dict[str, JSONValue]]:
-        try:
-            ids: dict[str, int | None] = dict(self._model_ids())
-        except AnkiConnectAPIError:
-            # Older AnkiConnect without modelNamesAndIds: names only, id None.
-            names = self._invoke("modelNames")
-            if not isinstance(names, list):
-                raise AnkiConnectProtocolError("modelNames must return a list.") from None
-            ids = {str(n): None for n in names}
+        ids = self._model_ids()
+        names = sorted(ids, key=str.lower)
+        # Two round trips regardless of model count (was 1 + 2 per model).
+        per_model = self._multi(
+            [
+                (action, {"modelName": name})
+                for name in names
+                for action in ("modelFieldNames", "modelTemplates")
+            ]
+        )
         output: list[dict[str, JSONValue]] = []
 
-        for name in sorted(ids, key=str.lower):
-            fields_raw = self._invoke("modelFieldNames", modelName=name)
-            templates_raw = self._invoke("modelTemplates", modelName=name)
+        for index, name in enumerate(names):
+            fields_raw = per_model[2 * index]
+            templates_raw = per_model[2 * index + 1]
 
             fields = self._as_str_list(fields_raw, "modelFieldNames")
             template_names = (
@@ -300,20 +488,23 @@ class AnkiConnectBackend(AnkiBackend):
         return output
 
     def get_notetype(self, name: str) -> dict[str, JSONValue]:
-        fields_raw = self._invoke("modelFieldNames", modelName=name)
-        templates_raw = self._invoke("modelTemplates", modelName=name)
+        fields_raw, templates_raw, styling, model_map_raw = self._multi(
+            [
+                ("modelFieldNames", {"modelName": name}),
+                ("modelTemplates", {"modelName": name}),
+                ("modelStyling", {"modelName": name}),
+                ("modelNamesAndIds", {}),
+            ]
+        )
+        model_map = self._as_json_object(model_map_raw, "modelNamesAndIds")
+        model_id = model_map.get(name)
 
         result: dict[str, JSONValue] = {
             "name": name,
             "fields": self._as_str_list(fields_raw, "modelFieldNames"),
             "templates": templates_raw if isinstance(templates_raw, dict) else {},
+            "id": self._as_int(model_id, "model id") if model_id is not None else None,
         }
-        try:
-            result["id"] = self._model_ids().get(name)
-        except AnkiConnectAPIError:
-            # Older AnkiConnect without modelNamesAndIds; a dropped connection
-            # (AnkiConnectUnavailableError) still propagates.
-            result["id"] = None
 
         kind = "normal"
         if isinstance(templates_raw, Mapping):
@@ -328,14 +519,7 @@ class AnkiConnectBackend(AnkiBackend):
                         break
 
         result["kind"] = kind
-
-        try:
-            styling = self._invoke("modelStyling", modelName=name)
-            if isinstance(styling, dict):
-                result["styling"] = styling
-        except AnkiConnectAPIError:
-            # Not all AnkiConnect versions expose modelStyling.
-            result["styling"] = {}
+        result["styling"] = styling if isinstance(styling, dict) else {}
 
         return normalize_notetype(result)
 
@@ -448,24 +632,12 @@ class AnkiConnectBackend(AnkiBackend):
                 "Back": back if back is not None else current_back,
             }
         }
-        try:
-            self._invoke("updateModelTemplates", model=model_name, templates=updates)
-        except AnkiConnectAPIError:
-            self._invoke(
-                "updateModelTemplates",
-                model={"name": model_name, "templates": updates},
-            )
+        self._invoke("updateModelTemplates", model={"name": model_name, "templates": updates})
         return {"name": model_name, "template": normalized, "updated": True}
 
     def set_notetype_css(self, name: str, css: str) -> dict[str, JSONValue]:
         model_name = name.strip()
-        try:
-            self._invoke("updateModelStyling", model=model_name, css=css)
-        except AnkiConnectAPIError:
-            self._invoke(
-                "updateModelStyling",
-                model={"name": model_name, "css": css},
-            )
+        self._invoke("updateModelStyling", model={"name": model_name, "css": css})
         return {"name": model_name, "updated": True, "css": css}
 
     # Notes
@@ -648,12 +820,7 @@ class AnkiConnectBackend(AnkiBackend):
                 f"Requested card {card_id} is not active in GUI (current: {current_id}).",
             )
 
-        try:
-            self._invoke("guiAnswerCard", ease=ease)
-        except AnkiConnectAPIError:
-            # Some AnkiConnect versions use answerEase.
-            self._invoke("guiAnswerCard", answerEase=ease)
-
+        self._invoke("guiAnswerCard", ease=ease)
         return {"card_id": card_id, "ease": ease, "answered": True}
 
     def suspend_cards(self, card_ids: list[int]) -> dict[str, JSONValue]:
@@ -686,60 +853,51 @@ class AnkiConnectBackend(AnkiBackend):
         ids = self._normalize_ids(card_ids)
         if not ids:
             return {"updated": 0, "card_ids": []}
-        # AnkiConnect does not reliably expose a "setFlag" action across versions.
-        # The documented/supported way is to set the card "flags" field.
+        # AnkiConnect has no flag action; the supported way is to set the card
+        # "flags" column, one card per setSpecificValueOfCard, batched into one
+        # request.
+        outcomes = self._multi_outcomes(
+            [
+                (
+                    "setSpecificValueOfCard",
+                    {"card": cid, "keys": ["flags"], "newValues": [flag], "warning_check": True},
+                )
+                for cid in ids
+            ]
+        )
+        # The server runs the whole batch, so every card has an outcome;
+        # report all failures rather than the first (the rest *were* flagged).
         failures: list[dict[str, JSONValue]] = []
-        for cid in ids:
-            result = self._invoke(
-                "setSpecificValueOfCard",
-                card=cid,
-                keys=["flags"],
-                newValues=[flag],
-                warning_check=True,
-            )
+        for cid, (result, error) in zip(ids, outcomes, strict=True):
+            if error is not None:
+                failures.append({"card_id": int(cid), "error": error})
+                continue
             if not isinstance(result, list) or not result:
                 raise AnkiConnectProtocolError(
                     "setSpecificValueOfCard must return a non-empty list."
                 )
-
             first = result[0]
             if first is True:
                 continue
-
             failures.append({"card_id": int(cid), "result": cast(JSONValue, first)})
 
         if failures:
+            failed_ids = ", ".join(str(f["card_id"]) for f in failures)
             raise AnkiConnectAPIError(
                 "setSpecificValueOfCard",
-                f"Failed to set flags for {len(failures)} card(s).",
+                f"Failed to set flags for {len(failures)} of {len(ids)} card(s): {failed_ids}.",
             )
 
         return {"updated": len(ids), "card_ids": ids, "flag": flag}
 
     def bury_cards(self, card_ids: list[int]) -> dict[str, JSONValue]:
-        ids = self._normalize_ids(card_ids)
-        if not ids:
-            return {"buried": 0, "card_ids": []}
-        self._invoke("bury", cards=ids)
-        return {"buried": len(ids), "card_ids": ids}
+        # AnkiConnect exposes suspend/unsuspend but no bury action (v6 API);
+        # the ``bury`` / ``unbury`` / ``unburyCards`` calls this used to make
+        # were always "unsupported action".
+        raise self._unsupported("bury_cards")
 
     def unbury_cards(self, deck: str | None = None) -> dict[str, JSONValue]:
-        if deck is None:
-            try:
-                self._invoke("unbury")
-                return {"unburied": True, "scope": "all"}
-            except AnkiConnectAPIError:
-                self._invoke("unburyCards", cards=[])
-                return {"unburied": True, "scope": "all"}
-
-        ids = self.find_cards(f'deck:"{deck}" is:buried')
-        if not ids:
-            return {"unburied": 0, "deck": deck, "card_ids": []}
-        try:
-            self._invoke("unburyCards", cards=ids)
-        except AnkiConnectAPIError:
-            self._invoke("unbury")
-        return {"unburied": len(ids), "deck": deck, "card_ids": ids}
+        raise self._unsupported("unbury_cards")
 
     def reschedule_cards(self, card_ids: list[int], days: int) -> dict[str, JSONValue]:
         if days < 0:
@@ -783,12 +941,13 @@ class AnkiConnectBackend(AnkiBackend):
         return {"updated": len(ids), "note_ids": ids, "tags": normalized_tags}
 
     def get_tag_counts(self) -> list[dict[str, JSONValue]]:
-        tags = self.get_tags()
-        items: list[dict[str, JSONValue]] = []
-        for tag in sorted(tags, key=str.lower):
-            note_ids = self.find_notes(f'tag:"{tag}"')
-            items.append({"tag": tag, "count": len(note_ids)})
-        return items
+        tags = sorted(self.get_tags(), key=str.lower)
+        # One findNotes per tag, in a single request (was one request per tag).
+        counts = self._multi([("findNotes", {"query": f'tag:"{tag}"'}) for tag in tags])
+        return [
+            {"tag": tag, "count": len(self._as_int_list(found, "findNotes"))}
+            for tag, found in zip(tags, counts, strict=True)
+        ]
 
     def rename_tag(self, old_tag: str, new_tag: str) -> dict[str, JSONValue]:
         source = old_tag.strip()
@@ -807,9 +966,16 @@ class AnkiConnectBackend(AnkiBackend):
         prefix = self._deck_query_prefix(deck)
         # Anki's is:due never includes new cards, so "is:due is:new" is always
         # empty; new cards are simply is:new (queue 0 is not gated by time).
-        new_count = len(self.find_cards(f"{prefix}is:new"))
-        learn_count = len(self.find_cards(f"{prefix}is:due is:learn"))
-        review_count = len(self.find_cards(f"{prefix}is:due is:review"))
+        new_raw, learn_raw, review_raw = self._multi(
+            [
+                ("findCards", {"query": f"{prefix}is:new"}),
+                ("findCards", {"query": f"{prefix}is:due is:learn"}),
+                ("findCards", {"query": f"{prefix}is:due is:review"}),
+            ]
+        )
+        new_count = len(self._as_int_list(new_raw, "findCards"))
+        learn_count = len(self._as_int_list(learn_raw, "findCards"))
+        review_count = len(self._as_int_list(review_raw, "findCards"))
 
         return {
             "new": new_count,
