@@ -33,10 +33,16 @@ def _insert_deck_config(
     relearn_steps: list[float] | None = None,
 ) -> None:
     Collection(db_path).insert_deck_config(
-        id=config_id, name=name, mtime_secs=mtime_secs, usn=usn,
-        new_per_day=new_per_day, reviews_per_day=reviews_per_day,
-        desired_retention=desired_retention, maximum_review_interval=maximum_review_interval,
-        learn_steps=learn_steps, relearn_steps=relearn_steps,
+        id=config_id,
+        name=name,
+        mtime_secs=mtime_secs,
+        usn=usn,
+        new_per_day=new_per_day,
+        reviews_per_day=reviews_per_day,
+        desired_retention=desired_retention,
+        maximum_review_interval=maximum_review_interval,
+        learn_steps=learn_steps,
+        relearn_steps=relearn_steps,
     )
 
 
@@ -51,7 +57,10 @@ def _insert_deck_normal(
     usn: int = 0,
 ) -> None:
     Collection(db_path).insert_deck(
-        id=did, name=name, mtime_secs=mtime_secs, usn=usn,
+        id=did,
+        name=name,
+        mtime_secs=mtime_secs,
+        usn=usn,
         kind=normal_deck_kind(config_id=config_id, description=description),
     )
 
@@ -66,7 +75,10 @@ def _insert_deck_filtered(
 ) -> None:
     # Bare filtered deck (no search terms), as the tests always had.
     Collection(db_path).insert_deck(
-        id=did, name=name, mtime_secs=mtime_secs, usn=usn,
+        id=did,
+        name=name,
+        mtime_secs=mtime_secs,
+        usn=usn,
         kind=bytes(DeckKindContainer(filtered=DeckFiltered())),
     )
 

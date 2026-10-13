@@ -152,7 +152,9 @@ def test_check_version_rejects_too_old() -> None:
 
 def test_validate_url_rejects_non_http_scheme() -> None:
     with pytest.raises(AnkiConnectProtocolError, match="must use http:// or https://"):
-        _backend_with_handler(_json_handler({"error": None, "result": 6}), url="ftp://localhost:8765")
+        _backend_with_handler(
+            _json_handler({"error": None, "result": 6}), url="ftp://localhost:8765"
+        )
 
 
 def test_validate_url_rejects_non_localhost_by_default() -> None:

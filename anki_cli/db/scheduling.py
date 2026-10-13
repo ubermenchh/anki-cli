@@ -54,8 +54,27 @@ class _FsrsReviewSetup(NamedTuple):
 FSRS6_PARAM_COUNT = 21
 FSRS5_DEFAULT_DECAY = 0.5
 FSRS6_DEFAULT_PARAMETERS: tuple[float, ...] = (
-    0.212, 1.2931, 2.3065, 8.2956, 6.4133, 0.8334, 3.0194, 0.001, 1.8722, 0.1666, 0.796,
-    1.4835, 0.0614, 0.2629, 1.6483, 0.6014, 1.8729, 0.5425, 0.0912, 0.0658, 0.1542,
+    0.212,
+    1.2931,
+    2.3065,
+    8.2956,
+    6.4133,
+    0.8334,
+    3.0194,
+    0.001,
+    1.8722,
+    0.1666,
+    0.796,
+    1.4835,
+    0.0614,
+    0.2629,
+    1.6483,
+    0.6014,
+    1.8729,
+    0.5425,
+    0.0912,
+    0.0658,
+    0.1542,
 )
 
 # Anki's revlog.type (RevlogReviewKind).
@@ -429,9 +448,7 @@ class SchedulingMixin(CardsMixin):
             if old_type == 3:
                 review_type = REVLOG_KIND_RELEARNING
             elif old_type == 2:
-                review_type = (
-                    REVLOG_KIND_FILTERED if old_due > today_days else REVLOG_KIND_REVIEW
-                )
+                review_type = REVLOG_KIND_FILTERED if old_due > today_days else REVLOG_KIND_REVIEW
             else:
                 review_type = REVLOG_KIND_LEARNING
 
@@ -586,9 +603,7 @@ class SchedulingMixin(CardsMixin):
         cfg, deck_retention, has_config_row = self._deck_config_for_deck(conn, deck_id)
         params, _params_source = self._pick_fsrs_parameters(cfg)
         desired_retention = (
-            deck_retention
-            if deck_retention is not None
-            else float(cfg.desired_retention or 0.9)
+            deck_retention if deck_retention is not None else float(cfg.desired_retention or 0.9)
         )
         max_interval = int(cfg.maximum_review_interval or 36500)
 
@@ -598,12 +613,8 @@ class SchedulingMixin(CardsMixin):
         # the row itself is missing do py-fsrs's built-in defaults apply.
         step_kwargs: _SchedulerStepKwargs = (
             {
-                "learning_steps": self._to_timedeltas(
-                    cfg.learn_steps, assume_minutes=True
-                ),
-                "relearning_steps": self._to_timedeltas(
-                    cfg.relearn_steps, assume_minutes=True
-                ),
+                "learning_steps": self._to_timedeltas(cfg.learn_steps, assume_minutes=True),
+                "relearning_steps": self._to_timedeltas(cfg.relearn_steps, assume_minutes=True),
             }
             if has_config_row
             else {}

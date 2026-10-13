@@ -116,8 +116,7 @@ def test_completer_command_help_first_line_and_truncation(monkeypatch: pytest.Mo
 
 
 def test_invoke_command_unknown_command_prints_error(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys
+    monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     monkeypatch.setattr(repl_mod, "get_command", lambda name: None)
 

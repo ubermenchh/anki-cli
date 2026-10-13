@@ -55,16 +55,16 @@ def _seed_store(tmp_path: Path) -> AnkiDirectStore:
             (104, " suspended ", "hold\x1fcard", 400),
         ],
         cards=[
-            (1001, 101, 2, 0, 0),         # new (always due)
-            (1002, 101, 2, 1, 999_999),   # learn due
-            (1003, 101, 2, 1, 1_000_100), # learn not due
-            (1004, 102, 3, 3, 11),        # day-learn due (day index; now=1_000_000 is day 11)
-            (1005, 102, 3, 2, 11),        # review due (with now=1_000_000, crt=0)
-            (1006, 103, 1, 2, 12),        # review not due
-            (1010, 103, 1, 3, 40),        # day-learn not due (day 40); #19
-            (1007, 104, 4, -1, 0),        # suspended
-            (1008, 104, 4, -2, 0),        # buried (manual)
-            (1009, 103, 1, -3, 0),        # buried (scheduler)
+            (1001, 101, 2, 0, 0),  # new (always due)
+            (1002, 101, 2, 1, 999_999),  # learn due
+            (1003, 101, 2, 1, 1_000_100),  # learn not due
+            (1004, 102, 3, 3, 11),  # day-learn due (day index; now=1_000_000 is day 11)
+            (1005, 102, 3, 2, 11),  # review due (with now=1_000_000, crt=0)
+            (1006, 103, 1, 2, 12),  # review not due
+            (1010, 103, 1, 3, 40),  # day-learn not due (day 40); #19
+            (1007, 104, 4, -1, 0),  # suspended
+            (1008, 104, 4, -2, 0),  # buried (manual)
+            (1009, 103, 1, -3, 0),  # buried (scheduler)
         ],
         col_crt=0,
     )
@@ -182,11 +182,11 @@ def test_is_new_and_is_review_follow_card_type_not_queue(
         decks=[(1, "Default")],
         notes=[(n, " t ", "a\x1fb", 0) for n in (1, 2, 3, 4, 5)],
         cards=[
-            (1, 1, 1, -1, 0),          # suspended, type new
-            (2, 2, 1, 1, 999_000),     # relearning: type 3, queue 1, step due
-            (3, 3, 1, 2, 11),          # plain review due
-            (4, 4, 1, 4, 999_000),     # preview repeat (queue 4), due
-            (5, 5, 1, 0, 0),           # new
+            (1, 1, 1, -1, 0),  # suspended, type new
+            (2, 2, 1, 1, 999_000),  # relearning: type 3, queue 1, step due
+            (3, 3, 1, 2, 11),  # plain review due
+            (4, 4, 1, 4, 999_000),  # preview repeat (queue 4), due
+            (5, 5, 1, 0, 0),  # new
         ],
     )
     conn = sqlite3.connect(str(store.db_path))
@@ -212,6 +212,7 @@ def test_find_card_ids_combines_due_and_deck_filters(
 
     assert store.find_cards("is:due deck:Lang::French") == [1004, 1005]
     assert store.find_cards("is:due deck:Default") == []
+
 
 def test_find_note_ids_supports_or_and_parentheses(tmp_path: Path) -> None:
     store = _seed_store(tmp_path)

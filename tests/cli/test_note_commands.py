@@ -114,7 +114,7 @@ def test_note_add_invalid_dynamic_fields_exit_2(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_note_add_success_calls_backend_and_returns_payload(
-    monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
 
@@ -439,10 +439,7 @@ def test_note_fields_success_parses_selected_fields(monkeypatch: pytest.MonkeyPa
 
     class Backend:
         def get_note_fields(
-            self,
-            *,
-            note_id: int,
-            fields: list[str] | None = None
+            self, *, note_id: int, fields: list[str] | None = None
         ) -> dict[str, str]:
             captured["note_id"] = note_id
             captured["fields"] = fields
@@ -466,10 +463,7 @@ def test_note_fields_success_parses_selected_fields(monkeypatch: pytest.MonkeyPa
 def test_note_fields_backend_failure_exit_1(monkeypatch: pytest.MonkeyPatch) -> None:
     class Backend:
         def get_note_fields(
-            self,
-            *,
-            note_id: int,
-            fields: list[str] | None = None
+            self, *, note_id: int, fields: list[str] | None = None
         ) -> dict[str, str]:
             raise LookupError("missing")
 

@@ -221,11 +221,11 @@ def test_get_deck_includes_due_counts_and_next_due(
     _insert_deck_normal(db_path, did=1, name="Default", config_id=1)
 
     # In-scope cards for Default (did=1)
-    _insert_card(db_path, cid=1, did=1, queue=0, due=999)        # new
-    _insert_card(db_path, cid=2, did=1, queue=1, due=100)        # learn due
+    _insert_card(db_path, cid=1, did=1, queue=0, due=999)  # new
+    _insert_card(db_path, cid=2, did=1, queue=1, due=100)  # learn due
     _insert_card(db_path, cid=3, did=1, queue=3, due=1_000_100)  # relearn not due
-    _insert_card(db_path, cid=4, did=1, queue=2, due=11)         # review due (today=11)
-    _insert_card(db_path, cid=5, did=1, queue=2, due=12)         # review not due
+    _insert_card(db_path, cid=4, did=1, queue=2, due=11)  # review due (today=11)
+    _insert_card(db_path, cid=5, did=1, queue=2, due=12)  # review not due
 
     # Out-of-scope deck/card
     _insert_deck_normal(db_path, did=2, name="Other", config_id=1)
@@ -290,7 +290,7 @@ def test_get_notetypes_returns_sorted_counts_and_names(tmp_path: Path) -> None:
         ord_=0,
         name="Cloze",
         qfmt="{{cloze:Text}}",
-        afmt="{{cloze:Text}}<br>{{Extra}}"
+        afmt="{{cloze:Text}}<br>{{Extra}}",
     )
 
     _insert_notetype(
@@ -351,15 +351,13 @@ def test_get_notetype_returns_detailed_payload(tmp_path: Path) -> None:
     assert out["kind"] == "normal"
     assert out["sort_field_idx"] == 1
     assert out["fields"] == ["Front", "Back"]
-    assert out["templates"] == {
-        "Card 1": {"Front": "{{Front}}", "Back": "{{Back}}", "ord": 0}
-    }
+    assert out["templates"] == {"Card 1": {"Front": "{{Front}}", "Back": "{{Back}}", "ord": 0}}
     assert out["styling"] == {"css": ".card { color: red; }"}
     assert out["requirements"] == [
         {
             "card_ord": 0,
             "kind": int(NotetypeConfigCardRequirementKind.KIND_ALL),
-            "field_ords": [0, 1]
+            "field_ords": [0, 1],
         }
     ]
 

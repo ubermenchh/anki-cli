@@ -28,8 +28,7 @@ def test_create_backend_direct_missing_file_maps_to_factory_error(tmp_path: Path
     missing = tmp_path / "missing.db"
 
     with pytest.raises(
-        BackendFactoryError,
-        match=r"Direct collection not found|Direct DB not found"
+        BackendFactoryError, match=r"Direct collection not found|Direct DB not found"
     ):
         create_backend_from_context({"backend": "direct", "collection_path": missing})
 

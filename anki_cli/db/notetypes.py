@@ -241,9 +241,7 @@ class NotetypesMixin(ConnectionMixin):
             ).fetchone()
             next_ord = int(max_ord_row["max_ord"]) + 1
             field_count_before = int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM fields WHERE ntid = ?", (ntid,)
-                ).fetchone()[0]
+                conn.execute("SELECT COUNT(*) FROM fields WHERE ntid = ?", (ntid,)).fetchone()[0]
             )
             now_sec = int(time.time())
             conn.execute(
@@ -609,9 +607,7 @@ class NotetypesMixin(ConnectionMixin):
         is_cloze = int(config.kind) == 1
         return mid, fields, int(config.sort_field_idx or sort_idx), is_cloze
 
-    def _field_schema_for_mid(
-        self, conn: sqlite3.Connection, mid: int
-    ) -> tuple[list[str], int]:
+    def _field_schema_for_mid(self, conn: sqlite3.Connection, mid: int) -> tuple[list[str], int]:
         field_rows = conn.execute(
             """
             SELECT ord, name

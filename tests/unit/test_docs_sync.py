@@ -40,8 +40,17 @@ def test_readme_exit_code_list_matches_enum() -> None:
 # --- #28: every documented invocation must be a real command with real options ---------
 
 _INVOCATION = re.compile(r"^\s*(?:\$ )?anki\s+(.*)$", re.MULTILINE)
-_GLOBAL = {"--format", "--backend", "--col", "--yes", "--copy", "--no-color", "--version", "-h",
-           "--help"}
+_GLOBAL = {
+    "--format",
+    "--backend",
+    "--col",
+    "--yes",
+    "--copy",
+    "--no-color",
+    "--version",
+    "-h",
+    "--help",
+}
 
 
 def _documented_invocations(doc: str) -> list[tuple[str, list[str]]]:
@@ -71,7 +80,7 @@ def _documented_invocations(doc: str) -> list[tuple[str, list[str]]]:
         if i >= len(tokens) or tokens[i] == "...":
             continue  # bare `anki`, `anki --version`, or a `anki --format json ...` placeholder
         command = tokens[i]
-        opts = [t.split("=", 1)[0] for t in tokens[i + 1:] if t.startswith("--")]
+        opts = [t.split("=", 1)[0] for t in tokens[i + 1 :] if t.startswith("--")]
         out.append((command, opts))
     return out
 

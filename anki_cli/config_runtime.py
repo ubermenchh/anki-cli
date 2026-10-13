@@ -173,9 +173,7 @@ def set_config_value(
     return refreshed, old_value, final_value
 
 
-def _normalize_legacy_values(
-    parsed: dict[str, Any], path: Path, warnings: list[str]
-) -> None:
+def _normalize_legacy_values(parsed: dict[str, Any], path: Path, warnings: list[str]) -> None:
     """Strip values ``main`` persisted that this version must ignore.
 
     Every ``config:set`` on ``main`` re-serialized all defaults, so existing
@@ -185,10 +183,7 @@ def _normalize_legacy_values(
     file and as a hard profile filter, reproducing the exit-3 lockout.
     """
     collection = parsed.get("collection")
-    if (
-        isinstance(collection, dict)
-        and collection.get("path") == _LEGACY_STANDALONE_PATH
-    ):
+    if isinstance(collection, dict) and collection.get("path") == _LEGACY_STANDALONE_PATH:
         collection.pop("path", None)
         if collection.get("anki_profile") == _LEGACY_DEFAULT_PROFILE:
             # main defaulted anki_profile to "User 1" and persisted it
@@ -202,10 +197,7 @@ def _normalize_legacy_values(
         )
 
     backend = parsed.get("backend")
-    if (
-        isinstance(backend, dict)
-        and str(backend.get("prefer", "")).strip().lower() == "standalone"
-    ):
+    if isinstance(backend, dict) and str(backend.get("prefer", "")).strip().lower() == "standalone":
         backend["prefer"] = "auto"
         warnings.append(
             "backend.prefer 'standalone' is stale — the standalone backend "

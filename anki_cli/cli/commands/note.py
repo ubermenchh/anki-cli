@@ -57,7 +57,6 @@ def _parse_dynamic_fields(extra_args: list[str]) -> dict[str, str]:
     return fields
 
 
-
 _DYNAMIC_FIELDS = {"ignore_unknown_options": True, "allow_extra_args": True}
 
 
@@ -196,8 +195,8 @@ def _bulk_items(cmd: CommandContext, parsed: Any, deck: str, notetype: str) -> l
             fields = {k: v for k, v in item.items() if k != "tags"}
             if not fields:
                 raise cmd.invalid(
-                    f"Item {idx} has no fields. Use {{\"Front\": ..., \"Back\": ...}} "
-                    "or {\"fields\": {...}, \"tags\": [...]}."
+                    f'Item {idx} has no fields. Use {{"Front": ..., "Back": ...}} '
+                    'or {"fields": {...}, "tags": [...]}.'
                 )
 
         notes_payload.append(

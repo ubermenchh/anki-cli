@@ -44,8 +44,17 @@ def _insert_note(
     data: str,
 ) -> None:
     Collection(db_path).insert_note(
-        id=note_id, guid=guid, mid=mid, mod=mod, usn=usn, tags=tags,
-        fields=flds.split("\x1f"), sfld=sfld, csum=csum, flags=flags, data=data,
+        id=note_id,
+        guid=guid,
+        mid=mid,
+        mod=mod,
+        usn=usn,
+        tags=tags,
+        fields=flds.split("\x1f"),
+        sfld=sfld,
+        csum=csum,
+        flags=flags,
+        data=data,
     )
 
 
@@ -72,9 +81,24 @@ def _insert_card(
     data: str,
 ) -> None:
     Collection(db_path).insert_card(
-        id=card_id, nid=nid, did=did, ord=ord_, mod=mod, usn=usn, type=card_type, queue=queue,
-        due=due, ivl=ivl, factor=factor, reps=reps, lapses=lapses, left=left, odue=odue,
-        odid=odid, flags=flags, data=data,
+        id=card_id,
+        nid=nid,
+        did=did,
+        ord=ord_,
+        mod=mod,
+        usn=usn,
+        type=card_type,
+        queue=queue,
+        due=due,
+        ivl=ivl,
+        factor=factor,
+        reps=reps,
+        lapses=lapses,
+        left=left,
+        odue=odue,
+        odid=odid,
+        flags=flags,
+        data=data,
     )
 
 
@@ -92,8 +116,15 @@ def _insert_revlog(
     review_type: int,
 ) -> None:
     Collection(db_path).insert_revlog(
-        id=rid, cid=cid, usn=usn, ease=ease, ivl=ivl, lastIvl=last_ivl, factor=factor,
-        time=duration_ms, type=review_type,
+        id=rid,
+        cid=cid,
+        usn=usn,
+        ease=ease,
+        ivl=ivl,
+        lastIvl=last_ivl,
+        factor=factor,
+        time=duration_ms,
+        type=review_type,
     )
 
 

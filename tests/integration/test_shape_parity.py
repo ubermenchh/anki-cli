@@ -24,8 +24,18 @@ def _direct(collection: Collection) -> AnkiDirectStore:
     mirroring the AnkiConnect fake below."""
     collection.insert_note(id=100, fields=["front", "back"], tags=["t"], mod=1, usn=-1)
     collection.insert_card(
-        id=200, nid=100, did=1, type=2, queue=2, due=40, ivl=16, factor=2500, reps=14,
-        lapses=1, mod=1, usn=-1,
+        id=200,
+        nid=100,
+        did=1,
+        type=2,
+        queue=2,
+        due=40,
+        ivl=16,
+        factor=2500,
+        reps=14,
+        lapses=1,
+        mod=1,
+        usn=-1,
     )
     return collection.store(writable=False)
 
@@ -40,16 +50,44 @@ def _ankiconnect(monkeypatch: pytest.MonkeyPatch) -> AnkiConnectBackend:
                 for sub in params["actions"]
             ]
         return {
-            "cardsInfo": [{"cardId": 200, "note": 100, "deckName": "Default",
-                           "modelName": "Basic", "ord": 0, "type": 2, "queue": 2, "due": 40,
-                           "interval": 16, "factor": 2500, "reps": 14, "lapses": 1, "left": 0,
-                           "fields": {"Front": {"value": "front", "order": 0},
-                                      "Back": {"value": "back", "order": 1}},
-                           "question": "front", "answer": "back", "css": "", "mod": 1}],
-            "notesInfo": [{"noteId": 100, "modelName": "Basic", "tags": ["t"], "mod": 1,
-                           "fields": {"Front": {"value": "front", "order": 0},
-                                      "Back": {"value": "back", "order": 1}},
-                           "cards": [200]}],
+            "cardsInfo": [
+                {
+                    "cardId": 200,
+                    "note": 100,
+                    "deckName": "Default",
+                    "modelName": "Basic",
+                    "ord": 0,
+                    "type": 2,
+                    "queue": 2,
+                    "due": 40,
+                    "interval": 16,
+                    "factor": 2500,
+                    "reps": 14,
+                    "lapses": 1,
+                    "left": 0,
+                    "fields": {
+                        "Front": {"value": "front", "order": 0},
+                        "Back": {"value": "back", "order": 1},
+                    },
+                    "question": "front",
+                    "answer": "back",
+                    "css": "",
+                    "mod": 1,
+                }
+            ],
+            "notesInfo": [
+                {
+                    "noteId": 100,
+                    "modelName": "Basic",
+                    "tags": ["t"],
+                    "mod": 1,
+                    "fields": {
+                        "Front": {"value": "front", "order": 0},
+                        "Back": {"value": "back", "order": 1},
+                    },
+                    "cards": [200],
+                }
+            ],
             "deckNamesAndIds": {"Default": 1},
             "modelNamesAndIds": {"Basic": 10},
             "modelFieldNames": ["Front", "Back"],
@@ -60,8 +98,9 @@ def _ankiconnect(monkeypatch: pytest.MonkeyPatch) -> AnkiConnectBackend:
 
     backend._api_version = AnkiConnectBackend.API_VERSION  # __new__ skipped __init__
     monkeypatch.setattr(backend, "_invoke", fake_invoke)
-    monkeypatch.setattr(backend, "get_due_counts", lambda deck=None: {"new": 0, "learn": 0,
-                                                                        "review": 0, "total": 0})
+    monkeypatch.setattr(
+        backend, "get_due_counts", lambda deck=None: {"new": 0, "learn": 0, "review": 0, "total": 0}
+    )
     return backend
 
 
@@ -74,8 +113,22 @@ def test_both_backends_emit_the_canonical_card(collection, monkeypatch) -> None:
         assert set(card) >= CANONICAL_CARD_KEYS, CANONICAL_CARD_KEYS - set(card)
 
     # The values agree where AnkiConnect has the data.
-    for key in ("cardId", "note", "deckName", "notetype_name", "ord", "type", "queue", "due",
-                "interval", "factor", "reps", "lapses", "left", "fields"):
+    for key in (
+        "cardId",
+        "note",
+        "deckName",
+        "notetype_name",
+        "ord",
+        "type",
+        "queue",
+        "due",
+        "interval",
+        "factor",
+        "reps",
+        "lapses",
+        "left",
+        "fields",
+    ):
         assert direct[key] == ac[key], key
     assert direct["due_info"]["kind"] == ac["due_info"]["kind"] == "review_day_index"
     assert direct["due_info"]["day_index"] == ac["due_info"]["day_index"] == 40
@@ -114,8 +167,12 @@ def test_both_backends_emit_canonical_decks(collection, monkeypatch) -> None:
     store = _direct(collection)
     ac = _ankiconnect(monkeypatch)
 
-    for deck in (*store.get_decks(), *ac.get_decks(), store.get_deck("Default"),
-                 ac.get_deck("Default")):
+    for deck in (
+        *store.get_decks(),
+        *ac.get_decks(),
+        store.get_deck("Default"),
+        ac.get_deck("Default"),
+    ):
         Deck.model_validate(deck)
     assert store.get_deck("Default")["kind"] == "normal"
     assert ac.get_deck("Default")["kind"] == "unknown"  # honest, not guessed
@@ -128,7 +185,8 @@ def test_unknown_id_is_not_found_on_both_backends(collection, monkeypatch) -> No
     store = _direct(collection)
     ac = _ankiconnect(monkeypatch)
     monkeypatch.setattr(
-        ac, "_invoke",
+        ac,
+        "_invoke",
         lambda action, **p: [{}] if action in {"cardsInfo", "notesInfo"} else None,
     )
 

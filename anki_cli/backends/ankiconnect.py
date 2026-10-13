@@ -18,6 +18,7 @@ from anki_cli.backends.protocol import AnkiBackend, BackendUnsupportedError, JSO
 
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
+
 class AnkiConnectError(RuntimeError):
     """Base error for AnkiConnect backend."""
 

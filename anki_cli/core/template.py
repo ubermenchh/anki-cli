@@ -103,9 +103,7 @@ _ALT_HANDLEBAR_DIRECTIVE = "{{=<% %>=}}"
 
 # rslib template::field_is_empty: only whitespace and/or empty BR/DIV tags.
 # [[:space:]] in the regex crate is ASCII-only, hence re.ASCII.
-_FIELD_EMPTY_RE = re.compile(
-    r"^(?:\s|</?(?:br|div) ?/?>)*$", re.IGNORECASE | re.DOTALL | re.ASCII
-)
+_FIELD_EMPTY_RE = re.compile(r"^(?:\s|</?(?:br|div) ?/?>)*$", re.IGNORECASE | re.DOTALL | re.ASCII)
 
 
 def field_is_empty(text: str) -> bool:
@@ -207,8 +205,9 @@ def parse_template(text: str) -> list[TemplateNode]:
             open_key = stack[-1][0]
             if open_key is None or open_key != body:
                 raise TemplateParseError(
-                    f"Closing tag {{{{/{body}}}}} does not match open tag "
-                    f"{{{{#{open_key}}}}}" if open_key else f"{{{{/{body}}}}} has no open tag"
+                    f"Closing tag {{{{/{body}}}}} does not match open tag {{{{#{open_key}}}}}"
+                    if open_key
+                    else f"{{{{/{body}}}}} has no open tag"
                 )
             stack.pop()
     if len(stack) > 1:

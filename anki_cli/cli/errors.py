@@ -75,9 +75,7 @@ def classify(exc: BaseException) -> ClassifiedError:
 
     if isinstance(exc, (DetectionError, BackendFactoryError)):
         # Carries its own exit code (3 = nothing found, 7 = forced backend down).
-        return ClassifiedError(
-            ErrorCode.BACKEND_UNAVAILABLE, int(exc.exit_code), str(exc), details
-        )
+        return ClassifiedError(ErrorCode.BACKEND_UNAVAILABLE, int(exc.exit_code), str(exc), details)
 
     if isinstance(exc, sqlite3.OperationalError):
         text = str(exc)
@@ -127,4 +125,3 @@ def classify(exc: BaseException) -> ClassifiedError:
 
 def debug_tracebacks_enabled() -> bool:
     return os.environ.get("ANKI_CLI_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
-

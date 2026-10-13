@@ -317,6 +317,7 @@ def test_cards_command_registration() -> None:
     assert get_command("card:reschedule") is not None
     assert get_command("card:reset") is not None
 
+
 def test_cards_ids_cmd_invalid_query_parse_error_exit_2(monkeypatch: pytest.MonkeyPatch) -> None:
     class Backend:
         def find_cards(self, query: str) -> list[int]:

@@ -26,6 +26,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         if here in item.path.parents:
             item.add_marker(pytest.mark.integration)
 
+
 # Anki schema-18 ``col`` table, verbatim. Every write in the direct backend bumps
 # ``mod`` and schema changes bump ``scm``, so every fixture that exercises a
 # mutator needs the real column set.

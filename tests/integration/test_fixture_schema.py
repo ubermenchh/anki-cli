@@ -18,10 +18,41 @@ from tests.conftest import (
 # schema-18 collection. The store may read any of these; a fixture that lacks
 # one hides regressions in whatever the store does with it.
 EXPECTED_COLUMNS = {
-    "cards": ["id", "nid", "did", "ord", "mod", "usn", "type", "queue", "due", "ivl", "factor",
-              "reps", "lapses", "left", "odue", "odid", "flags", "data"],
-    "col": ["id", "crt", "mod", "scm", "ver", "dty", "usn", "ls", "conf", "models", "decks",
-            "dconf", "tags"],
+    "cards": [
+        "id",
+        "nid",
+        "did",
+        "ord",
+        "mod",
+        "usn",
+        "type",
+        "queue",
+        "due",
+        "ivl",
+        "factor",
+        "reps",
+        "lapses",
+        "left",
+        "odue",
+        "odid",
+        "flags",
+        "data",
+    ],
+    "col": [
+        "id",
+        "crt",
+        "mod",
+        "scm",
+        "ver",
+        "dty",
+        "usn",
+        "ls",
+        "conf",
+        "models",
+        "decks",
+        "dconf",
+        "tags",
+    ],
     "config": ["KEY", "usn", "mtime_secs", "val"],
     "deck_config": ["id", "name", "mtime_secs", "usn", "config"],
     "decks": ["id", "name", "mtime_secs", "usn", "common", "kind"],
@@ -38,11 +69,21 @@ EXPECTED_COLUMNS = {
 # Every index Anki creates, and whether it is UNIQUE. ``idx_decks_name`` being
 # unique on a ``COLLATE unicase`` column is what makes "Default"/"default" collide.
 EXPECTED_INDEXES = {
-    "idx_cards_odid": False, "idx_decks_name": True, "idx_fields_name_ntid": True,
-    "idx_graves_pending": False, "idx_notes_mid": False, "idx_notetypes_name": True,
-    "idx_notetypes_usn": False, "idx_templates_name_ntid": True, "idx_templates_usn": False,
-    "ix_cards_nid": False, "ix_cards_sched": False, "ix_cards_usn": False,
-    "ix_notes_csum": False, "ix_notes_usn": False, "ix_revlog_cid": False,
+    "idx_cards_odid": False,
+    "idx_decks_name": True,
+    "idx_fields_name_ntid": True,
+    "idx_graves_pending": False,
+    "idx_notes_mid": False,
+    "idx_notetypes_name": True,
+    "idx_notetypes_usn": False,
+    "idx_templates_name_ntid": True,
+    "idx_templates_usn": False,
+    "ix_cards_nid": False,
+    "ix_cards_sched": False,
+    "ix_cards_usn": False,
+    "ix_notes_csum": False,
+    "ix_notes_usn": False,
+    "ix_revlog_cid": False,
     "ix_revlog_usn": False,
 }
 
@@ -50,9 +91,9 @@ EXPECTED_INDEXES = {
 def test_fixture_has_every_anki_table_and_column(bare_collection: Collection) -> None:
     conn = bare_collection.connect()
     try:
-        tables = {r["name"] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        )} - {"sqlite_sequence"}
+        tables = {
+            r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        } - {"sqlite_sequence"}
         # Exactly Anki's tables: nothing missing, nothing extra.
         assert tables == set(TABLES) == set(EXPECTED_COLUMNS)
         for table, columns in EXPECTED_COLUMNS.items():
@@ -99,8 +140,13 @@ def test_seeded_defaults_decode_like_anki(collection: Collection) -> None:
     assert nt["templates"]["Card 1"]["Front"] == "{{Front}}"
 
     # add_note generates exactly one card from the seeded template.
-    nid = store.add_note(deck="Default", notetype="Basic", fields={"Front": "Q", "Back": "A"},
-                         tags=None, allow_duplicate=False)
+    nid = store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Front": "Q", "Back": "A"},
+        tags=None,
+        allow_duplicate=False,
+    )
     assert len(collection.rows("cards", "nid = ?", (nid,))) == 1
 
 
@@ -114,8 +160,13 @@ def test_assert_synced_catches_each_missing_bookkeeping_step(collection: Collect
     """Mutation check on the helper itself: a row the store wrote passes; a row
     that skipped any one of the three sync marks fails."""
     store = collection.store()
-    nid = store.add_note(deck="Default", notetype="Basic", fields={"Front": "Q", "Back": "A"},
-                         tags=None, allow_duplicate=False)
+    nid = store.add_note(
+        deck="Default",
+        notetype="Basic",
+        fields={"Front": "Q", "Back": "A"},
+        tags=None,
+        allow_duplicate=False,
+    )
     collection.assert_synced("notes", nid)
 
     # Forge each defect in turn.

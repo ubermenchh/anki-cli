@@ -189,9 +189,7 @@ class CodecMixin:
         # Anki hashes the *text* of the first field, not its markup (rslib
         # ``field_checksum`` over ``strip_html_preserving_media_filenames``), so
         # CLI-written notes checksum identically to Anki-written ones.
-        return CodecMixin._checksum_of_stripped(
-            strip_html_preserving_media_filenames(first_field)
-        )
+        return CodecMixin._checksum_of_stripped(strip_html_preserving_media_filenames(first_field))
 
     @staticmethod
     def _checksum_of_stripped(stripped_first_field: str) -> int:

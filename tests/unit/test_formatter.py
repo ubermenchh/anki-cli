@@ -100,7 +100,7 @@ def test_emit_error_plain_with_details(capsys) -> None:
 
     captured = capsys.readouterr()
     assert "INVALID_INPUT: Bad note" in captured.err
-    assert "- fields: [\"Front\", \"Back\"]" in captured.err
+    assert '- fields: ["Front", "Back"]' in captured.err
 
 
 def test_emit_success_md_items_table(capsys) -> None:

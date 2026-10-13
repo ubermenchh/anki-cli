@@ -58,9 +58,7 @@ def test_card_cmd_success_renders_with_notetype_name_and_bounded_revlog_limit(mo
             assert name == "Basic"
             return {
                 "kind": "normal",
-                "templates": {
-                    "Card 1": {"Front": "{{Front}}", "Back": "{{FrontSide}}/{{Back}}"}
-                },
+                "templates": {"Card 1": {"Front": "{{Front}}", "Back": "{{FrontSide}}/{{Back}}"}},
                 "styling": {"css": "body{}"},
             }
 
@@ -212,7 +210,7 @@ def test_card_revlog_cmd_success_with_limit_bounds(monkeypatch) -> None:
         "id": 5,
         "limit": 1,
         "count": 2,
-        "items": [{"id": 10}, {"id": 11}]
+        "items": [{"id": 10}, {"id": 11}],
     }
 
     result_high = runner.invoke(card_revlog_cmd, ["--id", "5", "--limit", "5000"], obj=_base_obj())

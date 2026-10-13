@@ -224,14 +224,10 @@ class DecksMixin(CardsMixin):
                 raise RuntimeError("No deck template row available to create a deck.")
 
             common_blob = (
-                bytes(target_row["common"])
-                if target_row is not None
-                else bytes(template["common"])
+                bytes(target_row["common"]) if target_row is not None else bytes(template["common"])
             )
             kind_blob = (
-                bytes(target_row["kind"])
-                if target_row is not None
-                else bytes(template["kind"])
+                bytes(target_row["kind"]) if target_row is not None else bytes(template["kind"])
             )
             decode_did = int(target_row["id"]) if target_row else -1
             deck_common = self._decode_deck_common(common_blob, did=decode_did)
@@ -338,9 +334,7 @@ class DecksMixin(CardsMixin):
             deleted_cards = 0
             deleted_notes = 0
             if normal_ids:
-                deleted_cards, deleted_notes = self._delete_cards_owned_by_decks(
-                    conn, normal_ids
-                )
+                deleted_cards, deleted_notes = self._delete_cards_owned_by_decks(conn, normal_ids)
 
             deck_placeholders = ", ".join(["?"] * len(deck_ids))
             deleted_decks = int(

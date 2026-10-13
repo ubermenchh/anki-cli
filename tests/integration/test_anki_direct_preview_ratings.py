@@ -38,8 +38,18 @@ def _insert_card(
     odid: int = 0,
 ) -> None:
     Collection(db_path).insert_card(
-        id=card_id, nid=1000, did=did, mod=mod, type=card_type, queue=queue, due=due, ivl=ivl,
-        factor=factor, reps=1, odue=odue, odid=odid,
+        id=card_id,
+        nid=1000,
+        did=did,
+        mod=mod,
+        type=card_type,
+        queue=queue,
+        due=due,
+        ivl=ivl,
+        factor=factor,
+        reps=1,
+        odue=odue,
+        odid=odid,
     )
 
 
@@ -253,7 +263,8 @@ def test_preview_ratings_refuses_a_card_in_a_preview_filtered_deck(tmp_path: Pat
 
     store, db_path = _make_store(tmp_path)
     Collection(db_path).insert_deck(
-        id=555, name="Preview",
+        id=555,
+        name="Preview",
         kind=bytes(DeckKindContainer(filtered=DeckFiltered(reschedule=False))),
     )
     _insert_card(db_path, card_id=100, did=555, odid=1, odue=5, due=-7)

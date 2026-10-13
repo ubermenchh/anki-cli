@@ -71,8 +71,17 @@ def _insert_card(
     left: int = 0,
 ) -> None:
     Collection(db_path).insert_card(
-        id=card_id, nid=1000, did=1, mod=mod, type=card_type, queue=queue, due=due, ivl=ivl,
-        factor=factor, reps=1, left=left,
+        id=card_id,
+        nid=1000,
+        did=1,
+        mod=mod,
+        type=card_type,
+        queue=queue,
+        due=due,
+        ivl=ivl,
+        factor=factor,
+        reps=1,
+        left=left,
     )
 
 
@@ -87,9 +96,7 @@ def _card_row(db_path: Path, card_id: int) -> dict[str, Any]:
 def _pin_clock(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectStore) -> None:
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
     ids = iter(range(9001, 9100))
-    monkeypatch.setattr(
-        store, "_allocate_row_id", lambda conn, table: next(ids)
-    )
+    monkeypatch.setattr(store, "_allocate_row_id", lambda conn, table: next(ids))
     monkeypatch.setattr(time, "time", lambda: NOW_SEC)
 
     class _Now(datetime):
@@ -134,9 +141,7 @@ def test_empty_relearn_steps_keep_review_card_in_review_on_again(
     store, db_path = _make_store(tmp_path)
     _insert_deck(db_path)
     _insert_deck_config(db_path, learn_steps=[1.0, 10.0], relearn_steps=[])
-    _insert_card(
-        db_path, card_id=100, card_type=2, queue=2, due=TODAY, ivl=10, factor=2500
-    )
+    _insert_card(db_path, card_id=100, card_type=2, queue=2, due=TODAY, ivl=10, factor=2500)
     _pin_clock(monkeypatch, store)
 
     result = store.answer_card(100, ease=1)
@@ -185,9 +190,7 @@ def test_populated_steps_still_drive_learning_and_relearning(
     store, db_path = _make_store(tmp_path)
     _insert_deck(db_path)
     _insert_deck_config(db_path, learn_steps=[1.0, 10.0], relearn_steps=[10.0])
-    _insert_card(
-        db_path, card_id=100, card_type=2, queue=2, due=TODAY, ivl=10, factor=2500
-    )
+    _insert_card(db_path, card_id=100, card_type=2, queue=2, due=TODAY, ivl=10, factor=2500)
     _insert_card(db_path, card_id=200, card_type=0, queue=0, due=7)
     _pin_clock(monkeypatch, store)
 

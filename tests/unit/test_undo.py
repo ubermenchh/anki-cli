@@ -155,9 +155,7 @@ def test_save_write_failure_removes_tmp_file(monkeypatch, tmp_path) -> None:
         def __exit__(self, *args: Any) -> bool:
             return False
 
-    monkeypatch.setattr(
-        undo_mod.tempfile, "NamedTemporaryFile", lambda **kwargs: FakeTmp()
-    )
+    monkeypatch.setattr(undo_mod.tempfile, "NamedTemporaryFile", lambda **kwargs: FakeTmp())
 
     with pytest.raises(OSError, match="no space left on device"):
         store.push(_item("col-A", 2))

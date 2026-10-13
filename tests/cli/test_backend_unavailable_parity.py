@@ -65,8 +65,14 @@ _STDIN = {"note:bulk": '[{"Front": "Q"}]'}
 
 
 def _obj() -> dict[str, Any]:
-    return {"format": "json", "backend": "direct", "collection_path": None,
-            "no_color": True, "copy": False, "yes": True}
+    return {
+        "format": "json",
+        "backend": "direct",
+        "collection_path": None,
+        "no_color": True,
+        "copy": False,
+        "yes": True,
+    }
 
 
 def test_argv_table_covers_every_command_with_a_required_option() -> None:

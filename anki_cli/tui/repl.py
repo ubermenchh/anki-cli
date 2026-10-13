@@ -93,6 +93,7 @@ _ALIASES: dict[str, str] = {
     "v": "version",
 }
 
+
 def _strip_html(value: str) -> str:
     return markdownify(value).strip()
 
@@ -104,13 +105,18 @@ def _history_path() -> Path:
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir / "repl_history"
 
-class _AnkiCompleter(Completer):
 
+class _AnkiCompleter(Completer):
     def __init__(self) -> None:
         self._commands: list[str] = []
         self._options_cache: dict[str, list[str]] = {}
         self._builtins = [
-            "help", "quit", "exit", "clear", "set", "use",
+            "help",
+            "quit",
+            "exit",
+            "clear",
+            "set",
+            "use",
         ]
 
     def _ensure_commands(self) -> None:
@@ -146,9 +152,7 @@ class _AnkiCompleter(Completer):
         self._ensure_commands()
 
         if not words or (len(words) == 1 and not text.endswith(" ")):
-            candidates = (
-                self._commands + list(_ALIASES.keys()) + self._builtins
-            )
+            candidates = self._commands + list(_ALIASES.keys()) + self._builtins
             seen: set[str] = set()
             for c in candidates:
                 if c in seen:
@@ -174,15 +178,17 @@ class _AnkiCompleter(Completer):
                     )
 
 
-_STYLE = Style.from_dict({
-    "prompt.arrow": f"{CYAN} bold",
-    "completion-menu.completion": f"bg:default {DIM}",
-    "completion-menu.completion.current": f"noinherit bg:default {CYAN} bold",
-    "completion-menu.meta.completion": f"bg:default {DIM}",
-    "completion-menu.meta.completion.current": f"noinherit bg:default {TEXT}",
-    "scrollbar.background": "bg:default",
-    "scrollbar.button": "bg:default",
-})
+_STYLE = Style.from_dict(
+    {
+        "prompt.arrow": f"{CYAN} bold",
+        "completion-menu.completion": f"bg:default {DIM}",
+        "completion-menu.completion.current": f"noinherit bg:default {CYAN} bold",
+        "completion-menu.meta.completion": f"bg:default {DIM}",
+        "completion-menu.meta.completion.current": f"noinherit bg:default {TEXT}",
+        "scrollbar.background": "bg:default",
+        "scrollbar.button": "bg:default",
+    }
+)
 
 
 # Global CLI options a REPL line may carry after the command, mirroring the
@@ -335,17 +341,13 @@ def _invoke_command(ctx_obj: dict[str, Any], raw_args: list[str]) -> None:
 
     cmd = get_command(cmd_name)
     if cmd is None:
-        click.echo(
-            f"Unknown command: {args[0]}  (try 'help')", err=True
-        )
+        click.echo(f"Unknown command: {args[0]}  (try 'help')", err=True)
         return
 
     parent = click.Context(click.Group("anki"), obj=line_obj)
     try:
         with parent:
-            ctx = cmd.make_context(
-                cmd_name, list(cmd_args), parent=parent
-            )
+            ctx = cmd.make_context(cmd_name, list(cmd_args), parent=parent)
             with ctx:
                 cmd.invoke(ctx)
     except click.exceptions.Exit:
@@ -384,10 +386,7 @@ def _grouped_help() -> None:
 
     console.print()
     for group_name in sorted(groups.keys()):
-        label = (
-            "General" if group_name == "_general"
-            else group_name.capitalize()
-        )
+        label = "General" if group_name == "_general" else group_name.capitalize()
         console.print(f"  [bold {BLUE}]{label}[/]")
 
         table = Table(show_header=False, box=None, padding=(0, 2))
@@ -427,14 +426,14 @@ def _grouped_help() -> None:
 
 
 def _fetch_due_counts(
-    ctx_obj: dict[str, Any], deck: str | None,
+    ctx_obj: dict[str, Any],
+    deck: str | None,
 ) -> dict[str, int]:
     try:
         from anki_cli.backends.factory import backend_session_from_context
+
         with backend_session_from_context(ctx_obj) as backend:
-            counts = backend.get_due_counts(
-                deck=deck.strip() if deck else None
-            )
+            counts = backend.get_due_counts(deck=deck.strip() if deck else None)
             return {
                 "new": counts.get("new", 0),
                 "learn": counts.get("learn", 0),
@@ -446,8 +445,10 @@ def _fetch_due_counts(
 
 def _render_review_progress(reviewed: int, total: int, deck: str | None) -> Table:
     bar = ProgressBar(
-        total=total, completed=reviewed,
-        complete_style=BLUE, finished_style=GREEN,
+        total=total,
+        completed=reviewed,
+        complete_style=BLUE,
+        finished_style=GREEN,
     )
 
     layout = Table.grid(padding=(0, 1), expand=True)
@@ -481,11 +482,7 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
 
     try:
         counts = backend.get_due_counts(deck=deck.strip() if deck else None)
-        total_due = (
-            counts.get("new", 0)
-            + counts.get("learn", 0)
-            + counts.get("review", 0)
-        )
+        total_due = counts.get("new", 0) + counts.get("learn", 0) + counts.get("review", 0)
     except Exception:
         total_due = 0
 
@@ -498,16 +495,12 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
                 picked = backend.get_next_due_card(deck)
                 cid = picked.get("card_id") if isinstance(picked, dict) else None
                 card_id = int(cid) if isinstance(cid, int) else None
-                kind = (
-                    str(picked.get("kind", "none"))
-                    if isinstance(picked, dict) else "none"
-                )
+                kind = str(picked.get("kind", "none")) if isinstance(picked, dict) else "none"
 
             if card_id is None:
                 from anki_cli.core.scheduler import pick_next_due_card_id
-                card_id, kind = pick_next_due_card_id(
-                    backend, deck=deck
-                )
+
+                card_id, kind = pick_next_due_card_id(backend, deck=deck)
 
             if card_id is None:
                 summary = Text()
@@ -516,11 +509,14 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
                 if deck:
                     summary.append(f"  ({deck})", style=DIM)
                 console.print()
-                console.print(Panel(
-                    summary, border_style=GREEN,
-                    title=f"[bold {GREEN}]Done[/]",
-                    padding=(1, 2),
-                ))
+                console.print(
+                    Panel(
+                        summary,
+                        border_style=GREEN,
+                        title=f"[bold {GREEN}]Done[/]",
+                        padding=(1, 2),
+                    )
+                )
                 break
 
             rendered = _render_card_inline(backend, card_id)
@@ -533,12 +529,14 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
             console.print()
             if total_due > 0:
                 console.print(_render_review_progress(reviewed, total_due, deck))
-            console.print(Panel(
-                Markdown(question),
-                title=f"[bold {CYAN}]Question[/] [{DIM}]({kind} card={card_id})[/]",
-                border_style=CYAN,
-                padding=(1, 2)
-            ))
+            console.print(
+                Panel(
+                    Markdown(question),
+                    title=f"[bold {CYAN}]Question[/] [{DIM}]({kind} card={card_id})[/]",
+                    border_style=CYAN,
+                    padding=(1, 2),
+                )
+            )
 
             try:
                 # Use standard input styled nicely
@@ -547,12 +545,14 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
                 console.print()
                 break
 
-            console.print(Panel(
-                Markdown(answer),
-                title=f"[bold {GREEN}]Answer[/]",
-                border_style=GREEN,
-                padding=(1, 2)
-            ))
+            console.print(
+                Panel(
+                    Markdown(answer),
+                    title=f"[bold {GREEN}]Answer[/]",
+                    border_style=GREEN,
+                    padding=(1, 2),
+                )
+            )
 
             console.print(f"  [{DIM}]1=again  2=hard  3=good  4=easy  u=undo  q=stop[/]")
 
@@ -564,15 +564,11 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
                     choice = "q"
 
                 if choice == "q":
-                    console.print(
-                        f"\n  [{DIM}]Stopped. reviewed={reviewed}[/]\n"
-                    )
+                    console.print(f"\n  [{DIM}]Stopped. reviewed={reviewed}[/]\n")
                     return
                 if choice == "u":
                     if introspects:
-                        col = getattr(
-                            backend, "collection_path", None
-                        )
+                        col = getattr(backend, "collection_path", None)
                         collection = str(col) if col is not None else ""
                         item = undo.pop(collection=collection)
                         if item is None:
@@ -583,18 +579,20 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
                             reviewed = max(0, reviewed - 1)
                             console.print(f"  [{DIM}](undone)[/]")
                         except Exception as exc:
-                            console.print(
-                                f"  [{RED}]undo failed:[/] {escape(str(exc))}"
-                            )
+                            console.print(f"  [{RED}]undo failed:[/] {escape(str(exc))}")
                     else:
-                        console.print(
-                            f"  [{DIM}](undo only available for direct backend)[/]"
-                        )
+                        console.print(f"  [{DIM}](undo only available for direct backend)[/]")
                     continue
 
                 ease_map = {
-                    "1": 1, "2": 2, "3": 3, "4": 4,
-                    "again": 1, "hard": 2, "good": 3, "easy": 4,
+                    "1": 1,
+                    "2": 2,
+                    "3": 3,
+                    "4": 4,
+                    "again": 1,
+                    "hard": 2,
+                    "good": 3,
+                    "easy": 4,
                 }
                 ease = ease_map.get(choice)
                 if ease is None:
@@ -606,14 +604,10 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
                 if introspects:
                     col = getattr(backend, "collection_path", None)
                     collection = str(col) if col is not None else ""
-                    snapshot = cast(
-                        dict[str, Any], backend.snapshot_card_state(int(card_id))
-                    )
+                    snapshot = cast(dict[str, Any], backend.snapshot_card_state(int(card_id)))
 
                 try:
-                    result = backend.answer_card(
-                        card_id=int(card_id), ease=ease
-                    )
+                    result = backend.answer_card(card_id=int(card_id), ease=ease)
                 except Exception as exc:
                     msg = str(exc) or type(exc).__name__
                     console.print(f"  [{RED}]answer failed:[/] {escape(msg)}")
@@ -623,11 +617,7 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
                     # the id of the revlog row this answer wrote so undo can
                     # delete exactly that row instead of a time window.
                     if snapshot is not None:
-                        revlog_id = (
-                            result.get("revlog_id")
-                            if isinstance(result, Mapping)
-                            else None
-                        )
+                        revlog_id = result.get("revlog_id") if isinstance(result, Mapping) else None
                         undo_item = UndoItem(
                             collection=collection,
                             card_id=int(card_id),
@@ -640,13 +630,10 @@ def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
                             undo.push(undo_item)
                         except OSError as exc:
                             console.print(
-                                f"  [{DIM}]answered; undo not saved: "
-                                f"{escape(str(exc))}[/]"
+                                f"  [{DIM}]answered; undo not saved: {escape(str(exc))}[/]"
                             )
                     reviewed += 1
-                    console.print(
-                        f"  [{DIM}]rated {ease}  (reviewed={reviewed})[/]"
-                    )
+                    console.print(f"  [{DIM}]rated {ease}  (reviewed={reviewed})[/]")
                 break
 
     finally:
@@ -692,7 +679,10 @@ def _render_header(
     right_parts.append(due_header)
 
     due_table = Table(
-        show_header=False, box=None, padding=(0, 2), expand=False,
+        show_header=False,
+        box=None,
+        padding=(0, 2),
+        expand=False,
     )
     due_table.add_column("Label", style=DIM)
     due_table.add_column("Count", style=TEXT, justify="right")
@@ -711,7 +701,10 @@ def _render_header(
     right_parts.append(hints_header)
 
     hints_table = Table(
-        show_header=False, box=None, padding=(0, 2), expand=False,
+        show_header=False,
+        box=None,
+        padding=(0, 2),
+        expand=False,
     )
     hints_table.add_column("Key", style=CYAN)
     hints_table.add_column("Action", style=DIM)
@@ -779,9 +772,11 @@ def run_repl(ctx_obj: dict[str, Any]) -> None:
 
         while True:
             try:
-                line = session.prompt([
-                    ("class:prompt.arrow", "> "),
-                ])
+                line = session.prompt(
+                    [
+                        ("class:prompt.arrow", "> "),
+                    ]
+                )
             except (EOFError, KeyboardInterrupt):
                 console.print()
                 break
@@ -819,9 +814,7 @@ def run_repl(ctx_obj: dict[str, Any]) -> None:
                 shell_cmd = stripped[1:].strip()
                 if shell_cmd:
                     try:
-                        subprocess.run(
-                            shell_cmd, shell=True, check=False
-                        )
+                        subprocess.run(shell_cmd, shell=True, check=False)
                     except Exception as exc:
                         console.print(f"  [{RED}]shell error:[/] {exc}")
                 continue
@@ -838,18 +831,13 @@ def run_repl(ctx_obj: dict[str, Any]) -> None:
                 _refresh_due()
                 continue
 
-            if (
-                stripped.startswith("set format ")
-                or stripped.startswith(":set format ")
-            ):
+            if stripped.startswith("set format ") or stripped.startswith(":set format "):
                 fmt = stripped.split("format", 1)[1].strip().lower()
                 if fmt in _OUTPUT_FORMATS:
                     ctx_obj["format"] = fmt
                     console.print(f"  [{DIM}]format -> {fmt}[/]")
                 else:
-                    console.print(
-                        f"  [{RED}]usage: set format table|json|md|csv|plain[/]"
-                    )
+                    console.print(f"  [{RED}]usage: set format table|json|md|csv|plain[/]")
                 continue
 
             if stripped.startswith("review ") or stripped == "review":
@@ -862,10 +850,7 @@ def run_repl(ctx_obj: dict[str, Any]) -> None:
                     continue
                 if tail.startswith("start ") or tail.startswith("inline "):
                     deck_arg = tail.split(None, 1)
-                    deck = (
-                        deck_arg[1].strip() if len(deck_arg) > 1
-                        else deck_context
-                    )
+                    deck = deck_arg[1].strip() if len(deck_arg) > 1 else deck_context
                     _inline_review(ctx_obj, deck=deck)
                     _refresh_due()
                     last_command = stripped
@@ -884,13 +869,13 @@ def run_repl(ctx_obj: dict[str, Any]) -> None:
                 try:
                     from anki_cli.backends.factory import backend_session_from_context as _bsc
                     from anki_cli.tui.browse_app import BrowseApp
+
                     with _bsc(ctx_obj) as browse_backend:
                         app = BrowseApp(backend=browse_backend, query=query)
                         app.run()
                 except ImportError:
                     console.print(
-                        f"[{RED}]Textual is not installed.[/] "
-                        f"[{DIM}]Run: uv sync --extra tui[/]"
+                        f"[{RED}]Textual is not installed.[/] [{DIM}]Run: uv sync --extra tui[/]"
                     )
                 except Exception as exc:
                     console.print(f"[{RED}]Error:[/] {exc}")
