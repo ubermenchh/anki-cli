@@ -25,21 +25,6 @@ from anki_cli.proto.anki.notetypes import (
     NotetypeTemplateConfig,
 )
 
-DECK_SEP_NATIVE = "\x1f"
-DECK_SEP_HUMAN = "::"
-
-
-def deck_human_to_native(name: str) -> str:
-    """``A::B`` -> ``A\x1fB``: Anki >= 2.1.28 stores hierarchical deck names with
-    ``\x1f`` between components (rslib ``NativeDeckName``); ``::`` is the form
-    people type and see."""
-    return name.replace(DECK_SEP_HUMAN, DECK_SEP_NATIVE)
-
-
-def deck_native_to_human(name: str) -> str:
-    return name.replace(DECK_SEP_NATIVE, DECK_SEP_HUMAN)
-
-
 # rslib ``HTML_MEDIA_TAGS``: ``<img src="x.png">`` and friends contribute their
 # filename to the checksum text; every other tag is dropped afterwards.
 # Output is byte-identical to the rslib regex on its test vectors; the one

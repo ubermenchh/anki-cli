@@ -35,7 +35,7 @@ from typing import Any
 
 import pytest
 
-from anki_cli.db.codec import deck_human_to_native
+from anki_cli.db.deck_names import deck_human_to_native
 from anki_cli.db.store import AnkiDirectStore
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
 from anki_cli.proto.anki.decks import (

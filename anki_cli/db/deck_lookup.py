@@ -9,8 +9,8 @@ from typing import NamedTuple
 
 import betterproto
 
-from anki_cli.db.codec import deck_human_to_native
 from anki_cli.db.connection import ConnectionMixin
+from anki_cli.db.deck_names import DECK_SEP_NATIVE, deck_human_to_native, deck_native_to_human
 from anki_cli.models.output import JSONValue
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
 
@@ -28,11 +28,36 @@ class DeckSubtree(NamedTuple):
 class DeckLookupMixin(ConnectionMixin):
     """Deck lookups shared by the card and note paths."""
 
-    def _resolve_deck_id(self, conn: sqlite3.Connection, deck_name: str) -> int:
-        row = conn.execute(
-            "SELECT id FROM decks WHERE name = ?",
-            (deck_human_to_native(deck_name.strip()),),
+    @staticmethod
+    def _native_deck_name(conn: sqlite3.Connection, name: str) -> str:
+        """The stored spelling of a typed deck name (``::`` -> ``\\x1f``).
+
+        A component ending in ``:`` makes the human form ambiguous
+        (``Ch 1:\\x1fVerbs`` reads ``Ch 1:::Verbs``, which a blind replace maps to
+        ``Ch 1\\x1f:Verbs``), so a name with ``:::`` is matched against how each
+        stored name reads back, and the plain conversion is only the fallback.
+        """
+        native = deck_human_to_native(name)
+        if ":::" not in name:
+            return native
+        wanted = name.casefold()
+        for row in conn.execute("SELECT name FROM decks"):
+            stored = str(row[0])
+            if deck_native_to_human(stored).casefold() == wanted:
+                return stored
+        return native
+
+    def _deck_row(
+        self, conn: sqlite3.Connection, name: str, columns: str = "id"
+    ) -> sqlite3.Row | None:
+        """One ``decks`` row by its typed name (any spelling of the separator)."""
+        return conn.execute(
+            f"SELECT {columns} FROM decks WHERE name = ?",
+            (self._native_deck_name(conn, name.strip()),),
         ).fetchone()
+
+    def _resolve_deck_id(self, conn: sqlite3.Connection, deck_name: str) -> int:
+        row = self._deck_row(conn, deck_name)
         if row is None:
             raise LookupError(f"Deck not found: {deck_name}")
         return int(row["id"])
@@ -53,7 +78,7 @@ class DeckLookupMixin(ConnectionMixin):
         belongs to ``Lang`` (#73). ``name`` may use the human ``::`` form; it is
         converted to the stored ``\\x1f`` first (#75).
         """
-        wanted = deck_human_to_native(name.strip())
+        wanted = self._native_deck_name(conn, name.strip())
         if not wanted:
             return None
         parent = conn.execute("SELECT name FROM decks WHERE name = ?", (wanted,)).fetchone()
@@ -67,7 +92,7 @@ class DeckLookupMixin(ConnectionMixin):
             WHERE name = ? OR (name > ? AND name < ?)
             ORDER BY LENGTH(name), name
             """,
-            (canonical, f"{canonical}\x1f", f"{canonical}\x20"),
+            (canonical, canonical + DECK_SEP_NATIVE, canonical + chr(ord(DECK_SEP_NATIVE) + 1)),
         ).fetchall()
         return DeckSubtree(name=canonical, rows=rows)
 

@@ -12,7 +12,7 @@ import time
 import betterproto
 
 from anki_cli.db.cards import RESTORED_DUE_SQL, CardsMixin, queue_from_type_sql
-from anki_cli.db.codec import deck_human_to_native, deck_native_to_human
+from anki_cli.db.deck_names import deck_human_to_native, deck_native_to_human
 from anki_cli.models.output import JSONValue
 
 
@@ -94,10 +94,7 @@ class DecksMixin(CardsMixin):
             raise ValueError("Deck name cannot be empty.")
 
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT id, kind FROM decks WHERE name = ?",
-                (deck_human_to_native(normalized),),
-            ).fetchone()
+            row = self._deck_row(conn, normalized, "id, kind")
             if row is None:
                 raise LookupError(f"Deck not found: {normalized}")
 
@@ -205,8 +202,8 @@ class DecksMixin(CardsMixin):
         if not normalized:
             raise ValueError("Deck name cannot be empty.")
 
-        native = deck_human_to_native(normalized)
         with self._connect_write() as conn:
+            native = self._native_deck_name(conn, normalized)
             target_row: sqlite3.Row | None = None
             if deck_id is not None:
                 target_row = conn.execute(
@@ -216,10 +213,7 @@ class DecksMixin(CardsMixin):
                 if target_row is None:
                     raise LookupError(f"Deck not found: {deck_id}")
             else:
-                target_row = conn.execute(
-                    "SELECT id, common, kind FROM decks WHERE name = ?",
-                    (native,),
-                ).fetchone()
+                target_row = self._deck_row(conn, normalized, "id, common, kind")
 
             template = conn.execute(
                 "SELECT common, kind FROM decks WHERE name = ? LIMIT 1",
@@ -329,8 +323,9 @@ class DecksMixin(CardsMixin):
                     normal_ids.append(did)
                 else:
                     # A destructive dispatch must fail closed on a malformed blob.
+                    name = deck_native_to_human(str(row["name"]))
                     raise ValueError(
-                        f"Deck {did} ({row['name']}) has an unknown kind; refusing to delete."
+                        f"Deck {did} ({name}) has an unknown kind; refusing to delete."
                     )
 
             now_sec = int(time.time())
@@ -482,10 +477,7 @@ class DecksMixin(CardsMixin):
             return {"deck": normalized, "updated": False, "config": {}}
 
         with self._connect_write() as conn:
-            row = conn.execute(
-                "SELECT id, kind FROM decks WHERE name = ?",
-                (deck_human_to_native(normalized),),
-            ).fetchone()
+            row = self._deck_row(conn, normalized, "id, kind")
             if row is None:
                 raise LookupError(f"Deck not found: {normalized}")
 
