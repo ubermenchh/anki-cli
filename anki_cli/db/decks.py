@@ -12,6 +12,7 @@ import time
 import betterproto
 
 from anki_cli.db.cards import RESTORED_DUE_SQL, CardsMixin, queue_from_type_sql
+from anki_cli.db.codec import deck_human_to_native, deck_native_to_human
 from anki_cli.models.output import JSONValue
 
 
@@ -32,7 +33,7 @@ class DecksMixin(CardsMixin):
         output: list[dict[str, JSONValue]] = []
         for row in rows:
             did = int(row["id"])
-            name = str(row["name"])
+            name = deck_native_to_human(str(row["name"]))
             common = self._decode_deck_common(bytes(row["common"] or b""), did=did)
             kind = self._decode_deck_kind(bytes(row["kind"] or b""), did=did)
 
@@ -95,7 +96,7 @@ class DecksMixin(CardsMixin):
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT id, kind FROM decks WHERE name = ?",
-                (normalized,),
+                (deck_human_to_native(normalized),),
             ).fetchone()
             if row is None:
                 raise LookupError(f"Deck not found: {normalized}")
@@ -152,6 +153,7 @@ class DecksMixin(CardsMixin):
             if taken is not None and any(int(row["id"]) not in scoped_ids for row in taken.rows):
                 raise ValueError(f"Target deck path already exists: {target}")
 
+            native_target = deck_human_to_native(target)
             now_sec = int(time.time())
             temp_prefix = f"__anki_cli_tmp_{int(time.time() * 1000)}__"
             plan: list[tuple[int, str, str, str]] = []
@@ -161,7 +163,7 @@ class DecksMixin(CardsMixin):
                 # Slice on the stored name: ``source`` may differ in case.
                 suffix = current_name[len(found.name) :]
                 temp_name = f"{temp_prefix}{suffix}"
-                final_name = f"{target}{suffix}"
+                final_name = f"{native_target}{suffix}"
                 plan.append((did, current_name, temp_name, final_name))
 
             for did, _from_name, temp_name, _to_name in plan:
@@ -176,7 +178,13 @@ class DecksMixin(CardsMixin):
                     "UPDATE decks SET name = ?, mtime_secs = ?, usn = -1 WHERE id = ?",
                     (to_name, now_sec, did),
                 )
-                items.append({"id": did, "from": from_name, "to": to_name})
+                items.append(
+                    {
+                        "id": did,
+                        "from": deck_native_to_human(from_name),
+                        "to": deck_native_to_human(to_name),
+                    }
+                )
 
         return {
             "from": source,
@@ -197,6 +205,7 @@ class DecksMixin(CardsMixin):
         if not normalized:
             raise ValueError("Deck name cannot be empty.")
 
+        native = deck_human_to_native(normalized)
         with self._connect_write() as conn:
             target_row: sqlite3.Row | None = None
             if deck_id is not None:
@@ -209,7 +218,7 @@ class DecksMixin(CardsMixin):
             else:
                 target_row = conn.execute(
                     "SELECT id, common, kind FROM decks WHERE name = ?",
-                    (normalized,),
+                    (native,),
                 ).fetchone()
 
             template = conn.execute(
@@ -257,7 +266,7 @@ class DecksMixin(CardsMixin):
                     """,
                     (
                         assigned_id,
-                        normalized,
+                        native,
                         now_sec,
                         bytes(deck_common),
                         bytes(deck_kind),
@@ -273,7 +282,7 @@ class DecksMixin(CardsMixin):
                 WHERE id = ?
                 """,
                 (
-                    normalized,
+                    native,
                     now_sec,
                     bytes(deck_common),
                     bytes(deck_kind),
@@ -475,7 +484,7 @@ class DecksMixin(CardsMixin):
         with self._connect_write() as conn:
             row = conn.execute(
                 "SELECT id, kind FROM decks WHERE name = ?",
-                (normalized,),
+                (deck_human_to_native(normalized),),
             ).fetchone()
             if row is None:
                 raise LookupError(f"Deck not found: {normalized}")

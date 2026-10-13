@@ -35,6 +35,7 @@ from typing import Any
 
 import pytest
 
+from anki_cli.db.codec import deck_human_to_native
 from anki_cli.db.store import AnkiDirectStore
 from anki_cli.proto.anki.deck_config import DeckConfigConfig
 from anki_cli.proto.anki.decks import (
@@ -171,7 +172,7 @@ class Collection:
             "decks",
             {
                 "id": id,
-                "name": name,
+                "name": deck_human_to_native(name),
                 "mtime_secs": mtime_secs,
                 "usn": usn,
                 "common": bytes(DeckCommon()) if common is None else common,

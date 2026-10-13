@@ -45,7 +45,7 @@ def decks_cmd(cmd: CommandContext) -> JSONValue:
     # indents ``name`` by ``level`` itself; data never changes with format.
     items: list[dict[str, JSONValue]] = []
     for deck in backend.get_decks():
-        deck_name = str(deck.get("name", "")).replace("\x1f", "::")
+        deck_name = str(deck.get("name", ""))
         due = backend.get_due_counts(deck=deck_name)
         parts = [part for part in deck_name.split("::") if part]
         items.append(

@@ -29,7 +29,7 @@ def test_decks_cmd_json_mode_success(monkeypatch: pytest.MonkeyPatch) -> None:
         def get_decks(self) -> list[dict[str, Any]]:
             return [
                 {"id": 1, "name": "Root"},
-                {"id": 2, "name": "A\x1fB"},
+                {"id": 2, "name": "A::B"},
             ]
 
         def get_due_counts(self, deck: str | None = None) -> dict[str, int]:

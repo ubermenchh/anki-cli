@@ -263,8 +263,8 @@ def test_rename_deck_subtree_success(
     assert _deck_names(db_path) == [
         "Default",
         "Renamed",
-        "Renamed::Child",
-        "Renamed::Child::Leaf",
+        "Renamed\x1fChild",
+        "Renamed\x1fChild\x1fLeaf",
         "Other",
     ]
     col = Collection(db_path)
@@ -389,7 +389,7 @@ def test_delete_deck_refuses_default_deck(
         store.delete_deck("Default")
 
     # Nothing was touched, including the child deck.
-    assert _deck_names(db_path) == ["Default", "Default::Sub"]
+    assert _deck_names(db_path) == ["Default", "Default\x1fSub"]
 
 
 def test_delete_deck_refuses_unknown_kind_and_leaves_collection_untouched(
@@ -428,7 +428,7 @@ def test_delete_deck_with_malformed_child_rolls_back_the_whole_subtree(
     with pytest.raises(ValueError, match="unknown kind"):
         store.delete_deck("Parent")
 
-    assert _deck_names(db_path) == ["Default", "Parent", "Parent::Broken"]
+    assert _deck_names(db_path) == ["Default", "Parent", "Parent\x1fBroken"]
     assert _card_ids(db_path) == [1000]
     assert _note_ids(db_path) == [100]
     assert _grave_rows(db_path) == []
