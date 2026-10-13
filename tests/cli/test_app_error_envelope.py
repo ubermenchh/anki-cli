@@ -41,6 +41,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, *commands: click.Command, fmt: str
     by_name = {cmd.name: cmd for cmd in commands}
     monkeypatch.setattr(app_mod, "list_commands", lambda: sorted(by_name))
     monkeypatch.setattr(app_mod, "get_command", by_name.get)
+
     def _resolve(**kw: Any):
         # Like the real resolver: an explicit CLI --format wins over the default.
         chosen = kw["cli_output_format"] if kw.get("cli_output_set") else fmt

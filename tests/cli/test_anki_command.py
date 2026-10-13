@@ -21,8 +21,14 @@ from anki_cli.db.search_sql import SearchParseError
 
 
 def _obj(**over: Any) -> dict[str, Any]:
-    base = {"format": "json", "backend": "direct", "collection_path": None,
-            "no_color": True, "copy": False, "yes": False}
+    base = {
+        "format": "json",
+        "backend": "direct",
+        "collection_path": None,
+        "no_color": True,
+        "copy": False,
+        "yes": False,
+    }
     base.update(over)
     return base
 
@@ -220,10 +226,12 @@ def test_require_ids(backend: _Backend) -> None:
     payload = _err(CliRunner().invoke(cmd, [], obj=_obj()))
     assert payload["error"]["message"] == "Provide --id or --query."
     assert _ok(CliRunner().invoke(cmd, ["--id", "3"], obj=_obj()))["data"] == {
-        "id": 3, "query": None
+        "id": 3,
+        "query": None,
     }
     assert _ok(CliRunner().invoke(cmd, ["--query", "is:due"], obj=_obj()))["data"] == {
-        "id": None, "query": "is:due"
+        "id": None,
+        "query": "is:due",
     }
 
 

@@ -10,7 +10,7 @@ _NOW = 1_700_000_000
 @pytest.mark.parametrize(
     ("delta_secs", "expected"),
     [
-        (-60, "<1m"),      # past timestamps clamp to zero
+        (-60, "<1m"),  # past timestamps clamp to zero
         (0, "<1m"),
         (59, "<1m"),
         (60, "1m"),
@@ -21,9 +21,7 @@ _NOW = 1_700_000_000
         (36 * 3600, "2d"),  # pins the ceiling: 1.5d rounds up, not down
     ],
 )
-def test_relative_eta(
-    monkeypatch: pytest.MonkeyPatch, delta_secs: int, expected: str
-) -> None:
+def test_relative_eta(monkeypatch: pytest.MonkeyPatch, delta_secs: int, expected: str) -> None:
     monkeypatch.setattr(utils_mod.time, "time", lambda: _NOW)
     assert utils_mod.relative_eta(_NOW + delta_secs) == expected
 
@@ -45,7 +43,7 @@ def test_to_int(value: object, default: int, expected: int) -> None:
 @pytest.mark.parametrize(
     ("delta_secs", "expected"),
     [
-        (-86400, "today"),   # past epochs clamp to zero days
+        (-86400, "today"),  # past epochs clamp to zero days
         (0, "today"),
         (86399, "tomorrow"),  # epoch_secs is the *start* of the due day: ceil
         (86400, "tomorrow"),

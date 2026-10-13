@@ -119,8 +119,11 @@ class NamespaceGroup(click.Group):
         exit_code = 0
         try:
             rv = super().main(
-                args=argv, prog_name=prog_name, complete_var=complete_var,
-                standalone_mode=False, **extra,
+                args=argv,
+                prog_name=prog_name,
+                complete_var=complete_var,
+                standalone_mode=False,
+                **extra,
             )
             if isinstance(rv, int):
                 exit_code = rv
@@ -173,7 +176,6 @@ class NamespaceGroup(click.Group):
         if debug_tracebacks_enabled() and not isinstance(exc, (click.ClickException, click.Abort)):
             traceback.print_exception(exc, file=sys.stderr)
         return int(classified.exit_code)
-
 
     def list_commands(self, ctx: click.Context) -> list[str]:
         return list_commands()
@@ -329,6 +331,7 @@ def main(
     if ctx.invoked_subcommand is None:
         try:
             from anki_cli.tui.repl import run_repl
+
             run_repl(ctx.obj)
         except ImportError:
             click.echo(ctx.get_help())

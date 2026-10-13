@@ -61,6 +61,7 @@ def test_search_cmd_backend_unavailable_exit_7(monkeypatch) -> None:
 def test_search_command_registered() -> None:
     assert get_command("search") is not None
 
+
 def test_search_cmd_invalid_query_parse_error_exit_2(monkeypatch) -> None:
     class Backend:
         def find_cards(self, query: str) -> list[int]:

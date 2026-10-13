@@ -56,9 +56,7 @@ def test_version_cmd_emits_expected_json_payload() -> None:
     assert data["collection"] == str(col)
 
 
-def test_status_cmd_reports_detection(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_status_cmd_reports_detection(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     db = tmp_path / "Work" / "collection.anki2"
     db.parent.mkdir(parents=True)
     db.touch()

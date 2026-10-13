@@ -649,9 +649,10 @@ def test_add_notetype_template_adds_next_ord_and_duplicate_noop(
     assert_col_modified(db_path, schema=True)
 
     templates = _templates_for_ntid(db_path, ntid)
-    assert [
-        (int(row["ord"]), str(row["name"])) for row in templates
-    ] == [(0, "Card 1"), (1, "Card 2")]
+    assert [(int(row["ord"]), str(row["name"])) for row in templates] == [
+        (0, "Card 1"),
+        (1, "Card 2"),
+    ]
 
     tcfg = NotetypeTemplateConfig().parse(bytes(templates[1]["config"]))
     assert tcfg.q_format == "{{Back}}"

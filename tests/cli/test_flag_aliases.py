@@ -17,8 +17,14 @@ import anki_cli.cli.commands.tag as tag_mod
 
 
 def _obj() -> dict[str, Any]:
-    return {"format": "json", "backend": "direct", "collection_path": None,
-            "no_color": True, "copy": False, "yes": True}
+    return {
+        "format": "json",
+        "backend": "direct",
+        "collection_path": None,
+        "no_color": True,
+        "copy": False,
+        "yes": True,
+    }
 
 
 def _patch(monkeypatch: pytest.MonkeyPatch, module: Any, backend: Any) -> None:

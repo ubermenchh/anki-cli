@@ -57,9 +57,7 @@ def status_cmd(ctx: click.Context) -> None:
             "ok": True,
             "backend": detection.backend,
             "collection": (
-                str(detection.collection_path)
-                if detection.collection_path is not None
-                else None
+                str(detection.collection_path) if detection.collection_path is not None else None
             ),
             "reason": detection.reason,
             "profile": detection.profile,

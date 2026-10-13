@@ -17,18 +17,35 @@ from anki_cli.backends.normalize import (
 from anki_cli.models.entities import Card, Deck, Note, Notetype
 
 RAW_CARD: dict[str, Any] = {
-    "cardId": 1498938915662, "note": 1502298033753, "deckName": "Default",
-    "modelName": "Basic", "fieldOrder": 0, "ord": 0,
+    "cardId": 1498938915662,
+    "note": 1502298033753,
+    "deckName": "Default",
+    "modelName": "Basic",
+    "fieldOrder": 0,
+    "ord": 0,
     "fields": {"Back": {"value": "back", "order": 1}, "Front": {"value": "front", "order": 0}},
-    "question": "front", "answer": "front<hr id=answer>back", "css": ".card {}",
-    "type": 2, "queue": 2, "due": 1234, "interval": 16, "factor": 2500,
-    "reps": 14, "lapses": 1, "left": 0, "mod": 1629454092,
+    "question": "front",
+    "answer": "front<hr id=answer>back",
+    "css": ".card {}",
+    "type": 2,
+    "queue": 2,
+    "due": 1234,
+    "interval": 16,
+    "factor": 2500,
+    "reps": 14,
+    "lapses": 1,
+    "left": 0,
+    "mod": 1629454092,
     "nextReviews": ["<1m", "<10m", "4d", "9.3mo"],
 }
 RAW_NOTE: dict[str, Any] = {
-    "noteId": 1502298033753, "modelName": "Basic", "tags": ["tag", "another_tag"],
+    "noteId": 1502298033753,
+    "modelName": "Basic",
+    "tags": ["tag", "another_tag"],
     "fields": {"Back": {"value": "back", "order": 1}, "Front": {"value": "front", "order": 0}},
-    "cards": [1498938915662], "mod": 1718377864, "profile": "User 1",
+    "cards": [1498938915662],
+    "mod": 1718377864,
+    "profile": "User 1",
 }
 
 
@@ -56,11 +73,19 @@ def test_normalize_card_adds_canonical_keys_and_keeps_ankiconnect_ones() -> None
     ("type_", "queue", "due", "expected"),
     [
         (0, 0, 7, {"kind": "new_position", "raw": 7, "position": 7}),
-        (1, 1, 1_700_000_600, {"kind": "learn_epoch_secs", "raw": 1_700_000_600,
-                                "epoch_secs": 1_700_000_600}),
+        (
+            1,
+            1,
+            1_700_000_600,
+            {"kind": "learn_epoch_secs", "raw": 1_700_000_600, "epoch_secs": 1_700_000_600},
+        ),
         (1, 3, 130, {"kind": "learn_day_index", "raw": 130, "day_index": 130}),
-        (3, 1, 1_700_000_600, {"kind": "learn_epoch_secs", "raw": 1_700_000_600,
-                                "epoch_secs": 1_700_000_600}),
+        (
+            3,
+            1,
+            1_700_000_600,
+            {"kind": "learn_epoch_secs", "raw": 1_700_000_600, "epoch_secs": 1_700_000_600},
+        ),
         (2, 2, 40, {"kind": "review_day_index", "raw": 40, "day_index": 40}),
         (9, 4, 5, {"kind": "raw", "raw": 5, "queue": 4, "type": 9}),
     ],
@@ -100,12 +125,19 @@ def test_normalize_deck_and_notetype() -> None:
     Deck.model_validate(deck)
     Deck.model_validate(normalize_deck({"id": 1, "name": "D", "due_counts": {"new": 1}}))
 
-    nt = normalize_notetype({
-        "id": 5, "name": "Basic", "kind": "normal", "fields": ["Front", "Back"],
-        "templates": {"Card 1": {"Front": "{{Front}}", "Back": "{{Back}}"},
-                      "Card 2": {"Front": "{{Back}}", "Back": "{{Front}}", "ord": 7}},
-        "styling": {"css": ".card {}"},
-    })
+    nt = normalize_notetype(
+        {
+            "id": 5,
+            "name": "Basic",
+            "kind": "normal",
+            "fields": ["Front", "Back"],
+            "templates": {
+                "Card 1": {"Front": "{{Front}}", "Back": "{{Back}}"},
+                "Card 2": {"Front": "{{Back}}", "Back": "{{Front}}", "ord": 7},
+            },
+            "styling": {"css": ".card {}"},
+        }
+    )
     # ord added in insertion order; an explicit ord is respected.
     assert nt["templates"]["Card 1"]["ord"] == 0
     assert nt["templates"]["Card 2"]["ord"] == 7

@@ -84,8 +84,15 @@ def _insert_card(
     odue: int = 0,
 ) -> None:
     Collection(db_path).insert_card(
-        id=card_id, nid=note_id, did=deck_id, type=type_, queue=queue, due=due, odid=odid,
-        odue=odue, mod=0,
+        id=card_id,
+        nid=note_id,
+        did=deck_id,
+        type=type_,
+        queue=queue,
+        due=due,
+        odid=odid,
+        odue=odue,
+        mod=0,
     )
 
 

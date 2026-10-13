@@ -37,21 +37,33 @@ from anki_cli.models.output import ErrorCode, ExitCode
         (sqlite3.OperationalError("database is locked"), ErrorCode.COLLECTION_LOCKED, 7),
         (sqlite3.OperationalError("database table is locked"), ErrorCode.COLLECTION_LOCKED, 7),
         (sqlite3.OperationalError("Database Is Locked"), ErrorCode.COLLECTION_LOCKED, 7),
-        (sqlite3.OperationalError("unable to open database file"),
-         ErrorCode.BACKEND_OPERATION_FAILED, 1),
+        (
+            sqlite3.OperationalError("unable to open database file"),
+            ErrorCode.BACKEND_OPERATION_FAILED,
+            1,
+        ),
         # "busy" alone must not read as a lock: SQLite never says it, tables might.
-        (sqlite3.OperationalError("no such table: busy_queue"),
-         ErrorCode.BACKEND_OPERATION_FAILED, 1),
+        (
+            sqlite3.OperationalError("no such table: busy_queue"),
+            ErrorCode.BACKEND_OPERATION_FAILED,
+            1,
+        ),
         (sqlite3.DatabaseError("file is not a database"), ErrorCode.BACKEND_OPERATION_FAILED, 1),
         # Bare LookupError is how the backends say "not found" ...
         (LookupError("Card not found: 7"), ErrorCode.ENTITY_NOT_FOUND, 4),
         # ... but its stdlib subclasses are bugs, not misses.
         (KeyError("k"), ErrorCode.INTERNAL_ERROR, 1),
         (IndexError("list index out of range"), ErrorCode.INTERNAL_ERROR, 1),
-        (DuplicateNoteError(notetype="Basic", duplicate_ids=[1]),
-         ErrorCode.BACKEND_OPERATION_FAILED, 1),
-        (EmptyNoteError(notetype="Basic", field_name="Front"),
-         ErrorCode.BACKEND_OPERATION_FAILED, 1),
+        (
+            DuplicateNoteError(notetype="Basic", duplicate_ids=[1]),
+            ErrorCode.BACKEND_OPERATION_FAILED,
+            1,
+        ),
+        (
+            EmptyNoteError(notetype="Basic", field_name="Front"),
+            ErrorCode.BACKEND_OPERATION_FAILED,
+            1,
+        ),
         (click.Abort(), ErrorCode.INTERRUPTED, 130),
         (KeyboardInterrupt(), ErrorCode.INTERRUPTED, 130),
         (OSError("disk"), ErrorCode.INTERNAL_ERROR, 1),

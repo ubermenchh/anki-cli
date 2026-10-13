@@ -141,9 +141,7 @@ def test_ankiconnect_reachable_skips_non_localhost_probe(
     assert client.captured_url is None
 
     assert (
-        detect_mod._ankiconnect_reachable(
-            "http://192.168.1.100:8765", allow_non_localhost=True
-        )
+        detect_mod._ankiconnect_reachable("http://192.168.1.100:8765", allow_non_localhost=True)
         is True
     )
     assert client.captured_url == "http://192.168.1.100:8765"
@@ -206,9 +204,7 @@ def test_pick_collection_prefers_configured_profile(
 
     candidates = detect_mod._discover_collections(None)
 
-    assert detect_mod._pick_collection(candidates, None) == (
-        root / "Custom" / "collection.anki2"
-    )
+    assert detect_mod._pick_collection(candidates, None) == (root / "Custom" / "collection.anki2")
     assert detect_mod._pick_collection(candidates, "User 1") == (
         root / "User 1" / "collection.anki2"
     )
@@ -237,9 +233,7 @@ def test_require_direct_collection_unmatched_profile_raises(
     # Near-miss profile names pin the exact `==` comparison: a mutated
     # `in`/`.startswith`/`.lower()` match would return a path here instead
     # of raising.
-    root = _make_anki_root(
-        tmp_path, ["Personal", "User 1", "User", "ser 1", "User 1 (copy)"]
-    )
+    root = _make_anki_root(tmp_path, ["Personal", "User 1", "User", "ser 1", "User 1 (copy)"])
     monkeypatch.setattr(detect_mod, "_anki_data_roots", lambda: [root])
 
     with pytest.raises(detect_mod.DetectionError) as exc_info:
@@ -274,9 +268,7 @@ def test_require_direct_collection_col_override_wins_over_profile(
     override.parent.mkdir()
     override.touch()
 
-    resolved = detect_mod._require_direct_collection(
-        override, "nonexistent-profile"
-    )
+    resolved = detect_mod._require_direct_collection(override, "nonexistent-profile")
 
     assert resolved == override.resolve()
 
@@ -286,9 +278,7 @@ def test_anki_data_roots_darwin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     _patch_path_home(monkeypatch, home)
     monkeypatch.setattr(sys, "platform", "darwin", raising=False)
 
-    assert detect_mod._anki_data_roots() == [
-        home / "Library" / "Application Support" / "Anki2"
-    ]
+    assert detect_mod._anki_data_roots() == [home / "Library" / "Application Support" / "Anki2"]
 
 
 def test_anki_data_roots_win32_with_appdata(

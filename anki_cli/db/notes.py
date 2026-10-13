@@ -234,9 +234,14 @@ class NotesMixin(NotetypesMixin, DeckLookupMixin):
         ).fetchone()
         is_cloze = False
         if nt_row is not None:
-            is_cloze = int(
-                self._decode_notetype_config(bytes(nt_row["config"] or b""), ntid=notetype_id).kind
-            ) == 1
+            is_cloze = (
+                int(
+                    self._decode_notetype_config(
+                        bytes(nt_row["config"] or b""), ntid=notetype_id
+                    ).kind
+                )
+                == 1
+            )
         wanted = self._template_ords_for_note(
             conn,
             notetype_id,

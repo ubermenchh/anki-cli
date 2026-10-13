@@ -89,8 +89,15 @@ def _insert_card(
     card_type: int = 0,
 ) -> None:
     Collection(db_path).insert_card(
-        id=card_id, nid=note_id, did=deck_id, ord=ord_, mod=1, usn=0, type=card_type,
-        queue=queue, due=due,
+        id=card_id,
+        nid=note_id,
+        did=deck_id,
+        ord=ord_,
+        mod=1,
+        usn=0,
+        type=card_type,
+        queue=queue,
+        due=due,
     )
 
 
@@ -997,8 +1004,9 @@ def test_add_note_csum_collision_is_not_a_duplicate(
     store, db_path = _make_store(tmp_path)
     monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
     # Seed a note whose stored csum equals hash("hola") but whose text differs.
-    _insert_note(db_path, note_id=500, front="something else", back="x",
-                 csum=store._field_checksum("hola"))
+    _insert_note(
+        db_path, note_id=500, front="something else", back="x", csum=store._field_checksum("hola")
+    )
 
     nid = _add_basic(store, "hola", allow_duplicate=False)
 
@@ -1069,18 +1077,39 @@ def test_update_note_writes_stripped_sfld(
 @pytest.mark.parametrize(
     ("mutate", "table", "row_id"),
     [
-        (lambda s: s.add_note(deck="Default", notetype="Basic", fields={"Front": "N", "Back": "A"},
-                              tags=None, allow_duplicate=False), "notes", None),
+        (
+            lambda s: s.add_note(
+                deck="Default",
+                notetype="Basic",
+                fields={"Front": "N", "Back": "A"},
+                tags=None,
+                allow_duplicate=False,
+            ),
+            "notes",
+            None,
+        ),
         (lambda s: s.update_note(note_id=500, fields={"Back": "B2"}, tags=None), "notes", 500),
         (lambda s: s.update_note(note_id=500, fields=None, tags=["x"]), "notes", 500),
         (lambda s: s.add_tags([500], ["t"]), "notes", 500),
         (lambda s: s.remove_tags([500], ["old"]), "notes", 500),
         (lambda s: s.rename_tag(old_tag="old", new_tag="new"), "notes", 500),
-        (lambda s: s.add_notes([{"deck": "Default", "notetype": "Basic",
-                                 "fields": {"Front": "B1", "Back": "A"}}]), "notes", None),
+        (
+            lambda s: s.add_notes(
+                [{"deck": "Default", "notetype": "Basic", "fields": {"Front": "B1", "Back": "A"}}]
+            ),
+            "notes",
+            None,
+        ),
     ],
-    ids=["add_note", "update_fields", "update_tags", "add_tags", "remove_tags", "rename_tag",
-         "add_notes"],
+    ids=[
+        "add_note",
+        "update_fields",
+        "update_tags",
+        "add_tags",
+        "remove_tags",
+        "rename_tag",
+        "add_notes",
+    ],
 )
 def test_every_note_mutator_flags_the_row_and_bumps_col_mod(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mutate, table, row_id

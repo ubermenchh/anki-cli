@@ -365,9 +365,7 @@ class CardsMixin(DeckLookupMixin):
             if row is None:
                 return {"card_id": card_id, "deleted": False}
 
-            deleted = int(
-                conn.execute("DELETE FROM cards WHERE id = ?", (card_id,)).rowcount
-            )
+            deleted = int(conn.execute("DELETE FROM cards WHERE id = ?", (card_id,)).rowcount)
             self._insert_graves(conn, [card_id], grave_type=0)
 
         return {"card_id": card_id, "deleted": deleted > 0}

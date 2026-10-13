@@ -191,10 +191,22 @@ def test_preprocess_argv_respects_option_arity(argv: list[str], expected: list[s
 
 # --- hoist_group_options (#26) ---------------------------------------------------
 
-_HOIST_GROUP = {"--format": 1, "--col": 1, "--backend": 1, "--yes": 0, "--copy": 0, "--no-color": 0,
-          "-h": 0, "--help": 0, "--version": 0}
-_HOIST_COMMANDS = {"note:delete": {"--id": 1}, "cards:ids": {"--query": 1, "-q": 1},
-             "odd": {"--copy": 1}}
+_HOIST_GROUP = {
+    "--format": 1,
+    "--col": 1,
+    "--backend": 1,
+    "--yes": 0,
+    "--copy": 0,
+    "--no-color": 0,
+    "-h": 0,
+    "--help": 0,
+    "--version": 0,
+}
+_HOIST_COMMANDS = {
+    "note:delete": {"--id": 1},
+    "cards:ids": {"--query": 1, "-q": 1},
+    "odd": {"--copy": 1},
+}
 
 
 def _hoist(argv: list[str]) -> list[str]:
@@ -214,13 +226,19 @@ def _hoist(argv: list[str]) -> list[str]:
         # flags and valued options, any position after the command
         (["note:delete", "--id", "1", "--yes"], ["--yes", "note:delete", "--id", "1"]),
         (["note:delete", "--yes", "--id", "1"], ["--yes", "note:delete", "--id", "1"]),
-        (["cards:ids", "--query", "x", "--format", "json"],
-         ["--format", "json", "cards:ids", "--query", "x"]),
-        (["cards:ids", "--format=json", "--query", "x"],
-         ["--format=json", "cards:ids", "--query", "x"]),
+        (
+            ["cards:ids", "--query", "x", "--format", "json"],
+            ["--format", "json", "cards:ids", "--query", "x"],
+        ),
+        (
+            ["cards:ids", "--format=json", "--query", "x"],
+            ["--format=json", "cards:ids", "--query", "x"],
+        ),
         # group options already in front stay; later ones join them
-        (["--format", "json", "note:delete", "--id", "1", "--yes"],
-         ["--format", "json", "--yes", "note:delete", "--id", "1"]),
+        (
+            ["--format", "json", "note:delete", "--id", "1", "--yes"],
+            ["--format", "json", "--yes", "note:delete", "--id", "1"],
+        ),
         # a subcommand option's value that looks like a group option is not hoisted
         (["cards:ids", "--query", "--yes"], ["cards:ids", "--query", "--yes"]),
         (["cards:ids", "-q", "--format"], ["cards:ids", "-q", "--format"]),
@@ -232,16 +250,20 @@ def _hoist(argv: list[str]) -> list[str]:
         (["note:delete", "--version"], ["note:delete", "--version"]),
         # nothing after '--' moves
         (["note:delete", "--", "--yes"], ["note:delete", "--", "--yes"]),
-        (["note:delete", "--yes", "--", "--format", "json"],
-         ["--yes", "note:delete", "--", "--format", "json"]),
+        (
+            ["note:delete", "--yes", "--", "--format", "json"],
+            ["--yes", "note:delete", "--", "--format", "json"],
+        ),
         # no command / unknown command: untouched
         (["--yes"], ["--yes"]),
         (["nope", "--yes"], ["nope", "--yes"]),
         (["--format", "json", "nope", "--yes"], ["--format", "json", "nope", "--yes"]),
         # an option the subcommand does not define is a typo Click will reject;
         # it must not swallow a group option that follows it
-        (["cards:ids", "--bogus", "--format", "json"],
-         ["--format", "json", "cards:ids", "--bogus"]),
+        (
+            ["cards:ids", "--bogus", "--format", "json"],
+            ["--format", "json", "cards:ids", "--bogus"],
+        ),
         (["cards:ids", "--bogus", "value", "--yes"], ["--yes", "cards:ids", "--bogus", "value"]),
         # ... but it still swallows an ordinary value, as Click would
         (["cards:ids", "--bogus", "x"], ["cards:ids", "--bogus", "x"]),

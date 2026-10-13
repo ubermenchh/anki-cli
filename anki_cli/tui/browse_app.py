@@ -100,7 +100,7 @@ def _strip_html_basic(value: str) -> str:
 def _truncate(text: str, length: int = 80) -> str:
     if len(text) <= length:
         return text
-    return text[:length - 1] + "\u2026"
+    return text[: length - 1] + "\u2026"
 
 
 def _format_card_detail(card: Mapping[str, Any]) -> Text:
@@ -152,6 +152,7 @@ def _format_card_detail(card: Mapping[str, Any]) -> Text:
 
     return t
 
+
 def _format_due_short(card: Mapping[str, Any]) -> str:
     queue = to_int(card.get("queue"), 0)
     due_info = card.get("due_info")
@@ -184,6 +185,7 @@ def _format_interval_short(card: Mapping[str, Any]) -> str:
     if ivl <= 0:
         return "-"
     return f"{ivl}d"
+
 
 def _extract_field_values(card: Mapping[str, Any]) -> list[str]:
     """Field values in notetype order. Both backends emit ``fields`` as a list
@@ -550,7 +552,9 @@ class BrowseApp(App[None]):
                     for idx, key in enumerate(self._FILTER_ORDER, start=1):
                         label = self._FILTER_LABELS[key]
                         yield Button(
-                            f"[{idx}] {label}", id=f"fchip-{key}", classes="filter-chip",
+                            f"[{idx}] {label}",
+                            id=f"fchip-{key}",
+                            classes="filter-chip",
                         )
                 yield Static("", id="toolbar-count")
 

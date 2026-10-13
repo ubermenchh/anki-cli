@@ -170,4 +170,3 @@ def card_reset_cmd(cmd: CommandContext, card_id: int | None, query: str | None) 
     """Reset cards to new (forget progress)."""
     ids = _target_ids(cmd, card_id, query)
     return cmd.backend.reset_cards(ids)
-

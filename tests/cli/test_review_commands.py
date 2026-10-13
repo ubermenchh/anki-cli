@@ -190,9 +190,7 @@ def test_review_show_no_card(monkeypatch) -> None:
 
     _patch_session(monkeypatch, Backend())
     monkeypatch.setattr(
-        review_cmd_mod,
-        "pick_next_due_card_id",
-        lambda backend, deck=None: (None, "none")
+        review_cmd_mod, "pick_next_due_card_id", lambda backend, deck=None: (None, "none")
     )
 
     runner = CliRunner()
@@ -209,9 +207,7 @@ def test_review_show_success(monkeypatch) -> None:
 
     _patch_session(monkeypatch, Backend())
     monkeypatch.setattr(
-        review_cmd_mod,
-        "pick_next_due_card_id",
-        lambda backend, deck=None: (9, "new")
+        review_cmd_mod, "pick_next_due_card_id", lambda backend, deck=None: (9, "new")
     )
     monkeypatch.setattr(
         review_cmd_mod,

@@ -18,7 +18,16 @@ TokenKind = Literal["TERM", "LPAREN", "RPAREN", "OR", "AND", "NOT", "EOF"]
 # Anki spells the notetype filter ``note:``; ``notetype:`` is kept as this CLI's
 # original spelling. Both compile to the same node.
 _FILTER_PREFIXES = {
-    "deck", "notetype", "note", "tag", "is", "flag", "prop", "nid", "cid", "added",
+    "deck",
+    "notetype",
+    "note",
+    "tag",
+    "is",
+    "flag",
+    "prop",
+    "nid",
+    "cid",
+    "added",
 }
 _PREFIX_ALIASES = {"note": "notetype"}
 _IS_VALUES = {"new", "learn", "review", "due", "suspended", "buried"}
@@ -669,10 +678,7 @@ def _deck_clause(value: str, *, alias: str) -> tuple[str, list[SQLParam]]:
     if value.casefold() == "filtered":
         return (f"{alias}.odid != 0", [])
     pattern = _glob_to_like(value)
-    ids_subquery = (
-        "SELECT id FROM decks "
-        "WHERE name LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\'"
-    )
+    ids_subquery = "SELECT id FROM decks WHERE name LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\'"
     child_pattern = f"{pattern}::%"
     # ``odid != 0`` is only an early-out (no deck has id 0); the IN handles it.
     return (

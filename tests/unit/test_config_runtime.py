@@ -122,10 +122,7 @@ def test_collection_override_from_file_only_when_key_explicit(
         file_data={},
     )
     monkeypatch.setattr(
-        config_runtime,
-        "load_app_config",
-        lambda config_path=None:
-        loaded_without_key
+        config_runtime, "load_app_config", lambda config_path=None: loaded_without_key
     )
 
     runtime_without_key = resolve_runtime_config(
@@ -182,9 +179,7 @@ def test_resolve_runtime_config_maps_legacy_standalone_to_auto(
     )
 
     assert runtime.backend == "auto"
-    assert any(
-        "standalone" in w and "ANKI_CLI_BACKEND" in w for w in runtime.warnings
-    )
+    assert any("standalone" in w and "ANKI_CLI_BACKEND" in w for w in runtime.warnings)
 
 
 def test_resolve_runtime_config_propagates_load_warnings(
@@ -227,9 +222,7 @@ def test_load_app_config_maps_legacy_standalone_prefer(
     loaded = load_app_config(config_path=config_path)
 
     assert loaded.app.backend.prefer == "auto"
-    assert any(
-        "standalone" in w and "config:set" in w for w in loaded.warnings
-    )
+    assert any("standalone" in w and "config:set" in w for w in loaded.warnings)
 
 
 def test_load_app_config_drops_legacy_standalone_collection_defaults(
@@ -239,9 +232,7 @@ def test_load_app_config_drops_legacy_standalone_collection_defaults(
     absent — the exact file shape that locked existing users out."""
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        '[collection]\n'
-        'path = "~/.local/share/anki-cli/collection.db"\n'
-        'anki_profile = "User 1"\n',
+        '[collection]\npath = "~/.local/share/anki-cli/collection.db"\nanki_profile = "User 1"\n',
         encoding="utf-8",
     )
 
@@ -270,9 +261,7 @@ def test_load_app_config_keeps_profile_when_no_stale_path_marker(
     """anki_profile="User 1" without the stale path could be deliberate —
     only a main-written file (stale path marker) has it dropped."""
     config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        '[collection]\nanki_profile = "User 1"\n', encoding="utf-8"
-    )
+    config_path.write_text('[collection]\nanki_profile = "User 1"\n', encoding="utf-8")
 
     loaded = load_app_config(config_path=config_path)
 
@@ -284,9 +273,7 @@ def test_load_app_config_keeps_custom_profile_with_stale_path(
 ) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        '[collection]\n'
-        'path = "~/.local/share/anki-cli/collection.db"\n'
-        'anki_profile = "Work"\n',
+        '[collection]\npath = "~/.local/share/anki-cli/collection.db"\nanki_profile = "Work"\n',
         encoding="utf-8",
     )
 
@@ -421,12 +408,7 @@ def test_set_anki_profile_does_not_persist_collection_path(
     db.touch()
     monkeypatch.setattr(detect_mod, "_anki_data_roots", lambda: [root])
 
-    assert (
-        detect_mod._require_direct_collection(
-            None, reloaded.app.collection.anki_profile
-        )
-        == db
-    )
+    assert detect_mod._require_direct_collection(None, reloaded.app.collection.anki_profile) == db
 
 
 def test_set_config_value_unknown_key_raises(tmp_path: Path) -> None:
@@ -469,9 +451,7 @@ def test_set_config_value_rejects_invalid_enum_value(tmp_path: Path) -> None:
 
 def test_set_config_value_empty_string_clears_optional_field(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
-    set_config_value(
-        key="collection.anki_profile", raw_value="Work", config_path=config_path
-    )
+    set_config_value(key="collection.anki_profile", raw_value="Work", config_path=config_path)
     assert 'anki_profile = "Work"' in config_path.read_text(encoding="utf-8")
 
     _loaded, old_value, new_value = set_config_value(
@@ -506,8 +486,8 @@ def test_set_config_value_escapes_control_chars(tmp_path: Path) -> None:
     )
 
     text = config_path.read_text(encoding="utf-8")
-    assert "\\n" in text       # named escape for the newline
-    assert "\\u0001" in text   # non-named C0 chars become \uXXXX
+    assert "\\n" in text  # named escape for the newline
+    assert "\\u0001" in text  # non-named C0 chars become \uXXXX
 
     loaded = load_app_config(config_path=config_path)
     assert loaded.app.collection.anki_profile == "Work\nHome\x01"

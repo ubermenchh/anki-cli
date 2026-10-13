@@ -155,8 +155,18 @@ CREATE INDEX ix_revlog_usn ON revlog (usn);
 # fmt: on
 
 TABLES = (
-    "cards", "col", "config", "deck_config", "decks", "fields", "graves",
-    "notes", "notetypes", "revlog", "tags", "templates",
+    "cards",
+    "col",
+    "config",
+    "deck_config",
+    "decks",
+    "fields",
+    "graves",
+    "notes",
+    "notetypes",
+    "revlog",
+    "tags",
+    "templates",
 )
 
 

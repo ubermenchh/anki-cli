@@ -73,6 +73,7 @@ def test_decks_cmd_emits_one_canonical_shape_regardless_of_format(
     """#28: ``data`` used to differ between --format table and everything else
     (``total`` vs ``total_due``, pre-indented ``name``). Indentation is now the
     table renderer's job; the data is the same for every format."""
+
     class Backend:
         def get_decks(self) -> list[dict[str, Any]]:
             return [
@@ -116,10 +117,24 @@ def test_decks_cmd_emits_one_canonical_shape_regardless_of_format(
     expected = {
         "count": 2,
         "items": [
-            {"id": 1, "name": "Root", "new": 1, "learn": 0, "review": 0, "total_due": 1,
-             "level": 0},
-            {"id": 2, "name": "A::B", "new": 0, "learn": 2, "review": 3, "total_due": 5,
-             "level": 1},
+            {
+                "id": 1,
+                "name": "Root",
+                "new": 1,
+                "learn": 0,
+                "review": 0,
+                "total_due": 1,
+                "level": 0,
+            },
+            {
+                "id": 2,
+                "name": "A::B",
+                "new": 0,
+                "learn": 2,
+                "review": 3,
+                "total_due": 5,
+                "level": 1,
+            },
         ],
     }
     assert cap.data == expected
@@ -133,8 +148,11 @@ def test_table_renderer_indents_deck_hierarchy_without_touching_data() -> None:
     from anki_cli.cli.formatter import OutputFormatter
 
     fmt = OutputFormatter(
-        output_format="table", backend="direct", collection_path=None,
-        no_color=True, copy_output=False,
+        output_format="table",
+        backend="direct",
+        collection_path=None,
+        no_color=True,
+        copy_output=False,
     )
     rows = [
         {"name": "Root", "level": 0, "total_due": 1},

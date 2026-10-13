@@ -31,10 +31,7 @@ def _base_obj(**overrides: Any) -> dict[str, Any]:
 
 
 def _invoke_success_json(
-    command,
-    *,
-    args: list[str] | None = None,
-    obj: dict[str, Any]
+    command, *, args: list[str] | None = None, obj: dict[str, Any]
 ) -> dict[str, Any]:
     runner = CliRunner()
     result = runner.invoke(command, args or [], obj=obj)
@@ -46,10 +43,7 @@ def _invoke_success_json(
 
 
 def _invoke_error_json(
-    command,
-    *,
-    args: list[str],
-    obj: dict[str, Any]
+    command, *, args: list[str], obj: dict[str, Any]
 ) -> tuple[Any, dict[str, Any]]:
     runner = CliRunner()
     result = runner.invoke(command, args, obj=obj)
@@ -105,6 +99,7 @@ def test_config_cmd_without_app_config_returns_empty_config() -> None:
     assert data["effective"]["color"] is True
     assert data["effective"]["collection_override"] is None
 
+
 def test_config_cmd_table_mode_smoke() -> None:
     runner = CliRunner()
     result = runner.invoke(config_cmd, [], obj=_base_obj(app_config=None, format="table"))
@@ -131,8 +126,7 @@ def test_config_path_cmd_uses_context_paths() -> None:
 
 def test_config_path_cmd_defaults_when_paths_absent() -> None:
     payload = _invoke_success_json(
-        config_path_cmd,
-        obj=_base_obj(collection_path=None, config_path=None)
+        config_path_cmd, obj=_base_obj(collection_path=None, config_path=None)
     )
     data = payload["data"]
 

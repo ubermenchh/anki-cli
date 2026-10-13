@@ -76,9 +76,7 @@ def filtered_deck_kind(
     reschedule: bool = True,
     searches: list[tuple[str, int]] | None = None,
 ) -> bytes:
-    terms = [
-        DeckFilteredSearchTerm(search=s, limit=n) for s, n in (searches or [("is:due", 100)])
-    ]
+    terms = [DeckFilteredSearchTerm(search=s, limit=n) for s, n in (searches or [("is:due", 100)])]
     filtered = DeckFiltered(reschedule=reschedule, search_terms=terms)
     return bytes(DeckKindContainer(filtered=filtered))
 
@@ -110,9 +108,7 @@ def deck_config_blob(
 def notetype_config_blob(
     *, kind: str = "normal", sort_field_idx: int = 0, css: str = "", **kw: Any
 ) -> bytes:
-    kind_enum = (
-        NotetypeConfigKind.KIND_CLOZE if kind == "cloze" else NotetypeConfigKind.KIND_NORMAL
-    )
+    kind_enum = NotetypeConfigKind.KIND_CLOZE if kind == "cloze" else NotetypeConfigKind.KIND_NORMAL
     return bytes(NotetypeConfig(kind=kind_enum, sort_field_idx=sort_field_idx, css=css, **kw))
 
 
@@ -246,16 +242,25 @@ class Collection:
             templates = [("Card 1", f"{{{{{first}}}}}", "{{FrontSide}}")]
         for ord_, (tname, front, back) in enumerate(templates):
             self.insert_template(
-                ntid=id, ord=ord_, name=tname, front=front, back=back,
-                mtime_secs=mtime_secs, usn=usn,
+                ntid=id,
+                ord=ord_,
+                name=tname,
+                front=front,
+                back=back,
+                mtime_secs=mtime_secs,
+                usn=usn,
             )
         return id
 
     def insert_field(self, *, ntid: int, ord: int, name: str, config: bytes | None = None) -> None:
         self._insert(
             "fields",
-            {"ntid": ntid, "ord": ord, "name": name,
-             "config": bytes(NotetypeFieldConfig()) if config is None else config},
+            {
+                "ntid": ntid,
+                "ord": ord,
+                "name": name,
+                "config": bytes(NotetypeFieldConfig()) if config is None else config,
+            },
         )
 
     def insert_template(
@@ -272,8 +277,14 @@ class Collection:
     ) -> None:
         self._insert(
             "templates",
-            {"ntid": ntid, "ord": ord, "name": name, "mtime_secs": mtime_secs, "usn": usn,
-             "config": template_config_blob(front, back) if config is None else config},
+            {
+                "ntid": ntid,
+                "ord": ord,
+                "name": name,
+                "mtime_secs": mtime_secs,
+                "usn": usn,
+                "config": template_config_blob(front, back) if config is None else config,
+            },
         )
 
     def insert_note(
@@ -346,10 +357,24 @@ class Collection:
         self._insert(
             "cards",
             {
-                "id": id, "nid": nid, "did": did, "ord": ord, "mod": mod, "usn": usn,
-                "type": type, "queue": queue, "due": due, "ivl": ivl, "factor": factor,
-                "reps": reps, "lapses": lapses, "left": left, "odue": odue, "odid": odid,
-                "flags": flags, "data": data,
+                "id": id,
+                "nid": nid,
+                "did": did,
+                "ord": ord,
+                "mod": mod,
+                "usn": usn,
+                "type": type,
+                "queue": queue,
+                "due": due,
+                "ivl": ivl,
+                "factor": factor,
+                "reps": reps,
+                "lapses": lapses,
+                "left": left,
+                "odue": odue,
+                "odid": odid,
+                "flags": flags,
+                "data": data,
             },
         )
         return id
@@ -370,8 +395,15 @@ class Collection:
         self._insert(
             "revlog",
             {
-                "id": id, "cid": cid, "usn": usn, "ease": ease, "ivl": ivl,
-                "lastIvl": lastIvl, "factor": factor, "time": time, "type": type,
+                "id": id,
+                "cid": cid,
+                "usn": usn,
+                "ease": ease,
+                "ivl": ivl,
+                "lastIvl": lastIvl,
+                "factor": factor,
+                "time": time,
+                "type": type,
             },
         )
         return id
@@ -395,13 +427,17 @@ class Collection:
         assert found is not None, f"{table} row {key}={id} not found"
         return dict(found)
 
-    def rows(self, table: str, where: str = "1=1", params: tuple[Any, ...] = (),
-             order: str = "rowid") -> list[dict[str, Any]]:
+    def rows(
+        self, table: str, where: str = "1=1", params: tuple[Any, ...] = (), order: str = "rowid"
+    ) -> list[dict[str, Any]]:
         conn = self.connect()
         try:
-            return [dict(r) for r in conn.execute(
-                f"SELECT * FROM {table} WHERE {where} ORDER BY {order}", params
-            )]
+            return [
+                dict(r)
+                for r in conn.execute(
+                    f"SELECT * FROM {table} WHERE {where} ORDER BY {order}", params
+                )
+            ]
         finally:
             conn.close()
 
@@ -453,8 +489,20 @@ def seed_review_card(col: Collection, *, ivl: int = 10, usn: int = 0, data: str 
     col.insert_notetype(id=DEFAULT_NOTETYPE_ID, name="Basic", fields=["Front", "Back"])
     col.insert_note(id=1000, fields=["Q", "A"])
     return col.insert_card(
-        id=100, nid=1000, did=DEFAULT_DECK_ID, mod=111, usn=usn, type=2, queue=2, due=30,
-        ivl=ivl, factor=2500, reps=20, lapses=1, flags=3, data=data,
+        id=100,
+        nid=1000,
+        did=DEFAULT_DECK_ID,
+        mod=111,
+        usn=usn,
+        type=2,
+        queue=2,
+        due=30,
+        ivl=ivl,
+        factor=2500,
+        reps=20,
+        lapses=1,
+        flags=3,
+        data=data,
     )
 
 

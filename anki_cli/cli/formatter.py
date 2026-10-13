@@ -125,9 +125,13 @@ class OutputFormatter:
             click.echo(f"warning: {warning}", err=True)
 
     def _build_meta(self, command: str, *, warnings: Sequence[str] | None = None) -> Meta:
-        timestamp = datetime.now(tz=UTC).isoformat(timespec="seconds").replace(
-            "+00:00",
-            "Z",
+        timestamp = (
+            datetime.now(tz=UTC)
+            .isoformat(timespec="seconds")
+            .replace(
+                "+00:00",
+                "Z",
+            )
         )
         merged = [*self.bootstrap_warnings, *(warnings or [])]
         return Meta(
@@ -195,11 +199,9 @@ class OutputFormatter:
             display_columns = columns
 
         display_columns = [
-            col for col in display_columns
-            if any(
-                row.get(col) is not None and row.get(col) != ""
-                for row in rows
-            )
+            col
+            for col in display_columns
+            if any(row.get(col) is not None and row.get(col) != "" for row in rows)
         ]
 
         if not display_columns:
@@ -224,9 +226,7 @@ class OutputFormatter:
             )
 
         for row in rows:
-            table.add_row(
-                *[self._stringify(row.get(column)) for column in display_columns]
-            )
+            table.add_row(*[self._stringify(row.get(column)) for column in display_columns])
 
         console = Console(
             record=True,

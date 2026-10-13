@@ -22,6 +22,7 @@ jobs:
           enable-cache: true
       - run: uv sync --group dev --extra tui --frozen
       - run: uv run ruff check .
+      - run: uv run ruff format --check .
       - run: uv run ty check anki_cli
 
   test:
@@ -38,5 +39,5 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - run: uv sync --group dev --frozen
+      - run: uv sync --group dev --extra tui --frozen
       - run: uv run pytest

@@ -17,8 +17,13 @@ _FILTERED_KIND = bytes(DeckKindContainer(filtered=DeckFiltered(reschedule=True))
 
 def _make_store(tmp_path: Path) -> tuple[AnkiDirectStore, Path]:
     col = new_collection(tmp_path / "collection.anki2", seed=False)
-    for did, name in ((1, "Default"), (2, "Target"), (10, "Lang"), (11, "Lang::Child"),
-                      (12, "Other")):
+    for did, name in (
+        (1, "Default"),
+        (2, "Target"),
+        (10, "Lang"),
+        (11, "Lang::Child"),
+        (12, "Other"),
+    ):
         col.insert_deck(id=did, name=name, kind=_NORMAL_KIND)
     col.insert_deck(id=555, name="Cram", kind=_FILTERED_KIND)
     col.insert_notetype(id=10, name="Basic", fields=["Front", "Back"])
@@ -47,9 +52,23 @@ def _insert_card(
     flags: int = 0,
 ) -> None:
     Collection(db_path).insert_card(
-        id=card_id, nid=1000, did=did, type=card_type, queue=queue, due=due, ivl=ivl,
-        factor=factor, reps=reps, lapses=lapses, left=left, odue=odue, odid=odid, data=data,
-        mod=mod, usn=usn, flags=flags,
+        id=card_id,
+        nid=1000,
+        did=did,
+        type=card_type,
+        queue=queue,
+        due=due,
+        ivl=ivl,
+        factor=factor,
+        reps=reps,
+        lapses=lapses,
+        left=left,
+        odue=odue,
+        odid=odid,
+        data=data,
+        mod=mod,
+        usn=usn,
+        flags=flags,
     )
 
 

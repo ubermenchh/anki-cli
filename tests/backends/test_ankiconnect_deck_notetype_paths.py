@@ -728,9 +728,18 @@ def test_note_and_card_read_delete_wrappers(
             return [4, 2]
         if action == "notesInfo":
             if params["notes"] == [1]:
-                return [{"noteId": 1, "modelName": "Basic", "tags": ["t"], "mod": 5,
-                         "fields": {"Back": {"value": "A", "order": 1},
-                                    "Front": {"value": "Q", "order": 0}}}]
+                return [
+                    {
+                        "noteId": 1,
+                        "modelName": "Basic",
+                        "tags": ["t"],
+                        "mod": 5,
+                        "fields": {
+                            "Back": {"value": "A", "order": 1},
+                            "Front": {"value": "Q", "order": 0},
+                        },
+                    }
+                ]
             if params["notes"] == [998]:
                 return [{}]
             return []
@@ -740,10 +749,24 @@ def test_note_and_card_read_delete_wrappers(
             if params["cards"] == [998]:
                 return [{}]
             if params["cards"] == [7]:
-                return [{"cardId": 7, "note": 1, "deckName": "D", "modelName": "Basic",
-                         "type": 2, "queue": 2, "due": 40, "interval": 3, "factor": 2500,
-                         "reps": 4, "lapses": 0, "left": 0, "ord": 0,
-                         "fields": {"Front": {"value": "Q", "order": 0}}}]
+                return [
+                    {
+                        "cardId": 7,
+                        "note": 1,
+                        "deckName": "D",
+                        "modelName": "Basic",
+                        "type": 2,
+                        "queue": 2,
+                        "due": 40,
+                        "interval": 3,
+                        "factor": 2500,
+                        "reps": 4,
+                        "lapses": 0,
+                        "left": 0,
+                        "ord": 0,
+                        "fields": {"Front": {"value": "Q", "order": 0}},
+                    }
+                ]
             return []
         return None
 

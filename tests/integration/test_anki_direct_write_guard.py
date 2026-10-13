@@ -45,9 +45,7 @@ def _insert_note(
     back: str = "B0",
     tags: str = " old ",
 ) -> None:
-    Collection(db_path).insert_note(
-        id=note_id, fields=[front, back], tags=tags, mod=1, usn=-1
-    )
+    Collection(db_path).insert_note(id=note_id, fields=[front, back], tags=tags, mod=1, usn=-1)
 
 
 def _note_row(db_path: Path, note_id: int) -> dict[str, Any]:

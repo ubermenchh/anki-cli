@@ -43,8 +43,12 @@ def test_capability_flags() -> None:
 @pytest.mark.parametrize("method", INTROSPECTION)
 def test_ankiconnect_raises_backend_unsupported(method: str) -> None:
     backend = AnkiConnectBackend.__new__(AnkiConnectBackend)  # no HTTP probe
-    args = {"get_next_due_card": (), "preview_ratings": (1,),
-            "snapshot_card_state": (1,), "restore_card_state": ({},)}[method]
+    args = {
+        "get_next_due_card": (),
+        "preview_ratings": (1,),
+        "snapshot_card_state": (1,),
+        "restore_card_state": ({},),
+    }[method]
 
     with pytest.raises(BackendUnsupportedError) as excinfo:
         getattr(backend, method)(*args)
@@ -61,13 +65,16 @@ def test_ankiconnect_raises_backend_unsupported(method: str) -> None:
 def test_no_consumer_probes_the_backend_by_name_or_store() -> None:
     """The point of the Protocol additions: callers branch on the capability."""
     probe = re.compile(
-        r'(_store\b'
+        r"(_store\b"
         r'|getattr\([^,]+,\s*"name"[^)]*\)\s*[!=]=\s*"direct"'
         r'|\.name\s*[!=]=\s*"direct")'
     )
     offenders: list[str] = []
-    for path in [*ROOT.glob("anki_cli/cli/**/*.py"), *ROOT.glob("anki_cli/tui/**/*.py"),
-                 *ROOT.glob("anki_cli/core/**/*.py")]:
+    for path in [
+        *ROOT.glob("anki_cli/cli/**/*.py"),
+        *ROOT.glob("anki_cli/tui/**/*.py"),
+        *ROOT.glob("anki_cli/core/**/*.py"),
+    ]:
         for lineno, line in enumerate(path.read_text().splitlines(), 1):
             if probe.search(line) and "UndoStore" not in line and "undo_store" not in line.lower():
                 offenders.append(f"{path.relative_to(ROOT)}:{lineno}: {line.strip()}")

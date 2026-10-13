@@ -33,13 +33,13 @@ def test_get_due_counts_all_decks_counts_only_due_cards(tmp_path: Path) -> None:
         tmp_path,
         decks=[(1, "DeckA"), (2, "DeckB")],
         cards=[
-            (1, 1, 0, 999),          # new (always counted)
-            (2, 1, 1, 0),            # intraday learn due (epoch)
-            (3, 1, 1, 10**12),       # intraday learn not due
-            (4, 1, 3, 0),            # day-learn due (day index 0)
-            (7, 1, 3, 10**6),        # day-learn not due (day index far ahead) -- #19
-            (5, 2, 2, 0),            # review due
-            (6, 2, 2, 10**9),        # review not due
+            (1, 1, 0, 999),  # new (always counted)
+            (2, 1, 1, 0),  # intraday learn due (epoch)
+            (3, 1, 1, 10**12),  # intraday learn not due
+            (4, 1, 3, 0),  # day-learn due (day index 0)
+            (7, 1, 3, 10**6),  # day-learn not due (day index far ahead) -- #19
+            (5, 2, 2, 0),  # review due
+            (6, 2, 2, 10**9),  # review not due
         ],
     )
 
@@ -103,9 +103,9 @@ def test_get_next_due_card_prefers_learning_before_review_and_new(tmp_path: Path
         tmp_path,
         decks=[(1, "DeckA")],
         cards=[
-            (10, 1, 2, 0),   # review due
-            (11, 1, 0, 0),   # new
-            (12, 1, 1, 100), # learn due (should win by priority)
+            (10, 1, 2, 0),  # review due
+            (11, 1, 0, 0),  # new
+            (12, 1, 1, 100),  # learn due (should win by priority)
         ],
     )
 
@@ -120,7 +120,7 @@ def test_get_next_due_card_learning_uses_due_then_id_order(tmp_path: Path) -> No
         cards=[
             (50, 1, 1, 86_400 * 2),  # intraday learn, epoch = day 2
             (40, 1, 1, 86_400 * 2),  # same instant, lower id -> should win
-            (30, 1, 3, 3),           # day-learn due day 3 (later than day 2)
+            (30, 1, 3, 3),  # day-learn due day 3 (later than day 2)
             (60, 1, 1, 86_400 * 4),  # intraday learn, day 4
         ],
     )
@@ -135,7 +135,7 @@ def test_get_next_due_card_orders_day_learn_by_absolute_time(tmp_path: Path) -> 
         decks=[(1, "DeckA")],
         cards=[
             (50, 1, 1, 86_400 * 5),  # intraday learn due on day 5
-            (40, 1, 3, 1),           # day-learn due on day 1 -> earlier, wins
+            (40, 1, 3, 1),  # day-learn due on day 1 -> earlier, wins
         ],
     )
 
@@ -149,7 +149,7 @@ def test_get_next_due_card_skips_day_learn_not_yet_due(tmp_path: Path) -> None:
         decks=[(1, "DeckA")],
         cards=[
             (40, 1, 3, 10**6),  # day index far in the future
-            (10, 1, 2, 0),      # review due today
+            (10, 1, 2, 0),  # review due today
         ],
     )
 
@@ -161,9 +161,9 @@ def test_get_next_due_card_falls_back_review_then_new(tmp_path: Path) -> None:
         tmp_path / "review_case",
         decks=[(1, "DeckA")],
         cards=[
-            (20, 1, 1, 10**12), # learn not due
-            (21, 1, 2, 0),      # review due
-            (22, 1, 0, 0),      # new
+            (20, 1, 1, 10**12),  # learn not due
+            (21, 1, 2, 0),  # review due
+            (22, 1, 0, 0),  # new
         ],
     )
     assert store_review.get_next_due_card() == {"card_id": 21, "kind": "review_due"}
@@ -172,9 +172,9 @@ def test_get_next_due_card_falls_back_review_then_new(tmp_path: Path) -> None:
         tmp_path / "new_case",
         decks=[(1, "DeckA")],
         cards=[
-            (30, 1, 1, 10**12), # learn not due
+            (30, 1, 1, 10**12),  # learn not due
             (31, 1, 2, 10**9),  # review not due
-            (32, 1, 0, 5),      # new
+            (32, 1, 0, 5),  # new
         ],
     )
     assert store_new.get_next_due_card() == {"card_id": 32, "kind": "new"}
@@ -185,7 +185,7 @@ def test_get_next_due_card_returns_none_when_no_candidates(tmp_path: Path) -> No
         tmp_path,
         decks=[(1, "DeckA")],
         cards=[
-            (40, 1, 1, 10**12), # learn not due
+            (40, 1, 1, 10**12),  # learn not due
             (41, 1, 2, 10**9),  # review not due
         ],
     )
@@ -199,8 +199,8 @@ def test_get_next_due_card_respects_deck_filter(tmp_path: Path) -> None:
         tmp_path,
         decks=[(1, "DeckA"), (2, "DeckB")],
         cards=[
-            (100, 1, 1, 0), # DeckA learn due
-            (200, 2, 1, 0), # DeckB learn due
+            (100, 1, 1, 0),  # DeckA learn due
+            (200, 2, 1, 0),  # DeckB learn due
         ],
     )
 

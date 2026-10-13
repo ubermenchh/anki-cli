@@ -55,8 +55,7 @@ class DuplicateNoteError(NoteRejectedError):
         if len(duplicate_ids) > len(shown):
             ids += f" and {len(duplicate_ids) - len(shown)} more"
         super().__init__(
-            f"Duplicate note: first field matches existing note(s) {ids} "
-            f"in notetype '{notetype}'."
+            f"Duplicate note: first field matches existing note(s) {ids} in notetype '{notetype}'."
         )
 
 
