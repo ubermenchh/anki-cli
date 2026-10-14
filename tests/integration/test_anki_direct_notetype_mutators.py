@@ -783,3 +783,168 @@ def test_set_notetype_css_validates_and_missing_notetype(
 
     with pytest.raises(LookupError, match="Notetype not found"):
         store.set_notetype_css(name="Missing", css="x")
+
+
+# --- #44: notes are rewritten a chunk at a time -------------------------------------
+
+
+def _chunk_sizes(monkeypatch: pytest.MonkeyPatch, store: AnkiDirectStore) -> list[int]:
+    """Record the size of every page ``_note_chunks`` hands out."""
+    sizes: list[int] = []
+    real = store._note_chunks
+
+    def spy(conn: Any, ntid: int) -> Any:
+        for rows in real(conn, ntid):
+            sizes.append(len(rows))
+            yield rows
+
+    monkeypatch.setattr(store, "_note_chunks", spy)
+    return sizes
+
+
+def _tri_with_notes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, count: int
+) -> tuple[AnkiDirectStore, Path, int, list[int]]:
+    import anki_cli.db.notetypes as notetypes_mod
+
+    monkeypatch.setattr(notetypes_mod, "_NOTE_REWRITE_CHUNK", 3)
+    store, db_path = _make_store(tmp_path)
+    _enable_writes(monkeypatch, store)
+    store.create_notetype(
+        name="Tri",
+        fields=["Front", "Extra", "Back"],
+        templates=[{"name": "Card 1", "front": "{{Front}}", "back": "{{Back}}"}],
+    )
+    ntid = int(_notetype_row_by_name(db_path, "Tri")["id"])
+    # Sparse, interleaved ids with another notetype's notes in between: a page
+    # must neither skip a note nor touch one that belongs to someone else.
+    ids = [1000 + 7 * i for i in range(count)]
+    for n, note_id in enumerate(ids):
+        _insert_note(db_path, note_id=note_id, mid=ntid, fields=[f"f{n}", f"e{n}", f"b{n}"])
+        _insert_note(db_path, note_id=note_id + 1, mid=ntid + 1, fields=["other", "type"])
+    return store, db_path, ntid, ids
+
+
+def test_remove_field_rewrites_every_note_across_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path, _ntid, ids = _tri_with_notes(monkeypatch, tmp_path, count=10)
+    sizes = _chunk_sizes(monkeypatch, store)
+
+    result = store.remove_notetype_field(name="Tri", field_name="Extra")
+
+    assert result["updated_notes"] == 10
+    assert sizes == [3, 3, 3, 1]  # never more than one chunk in memory
+    for n, note_id in enumerate(ids):
+        row = _note_row(db_path, note_id)
+        assert row["flds"] == f"f{n}\x1fb{n}", note_id
+        assert row["usn"] == -1
+        other = _note_row(db_path, note_id + 1)
+        assert other["flds"] == "other\x1ftype" and other["usn"] == 0
+
+
+def test_add_field_appends_to_every_note_across_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path, _ntid, ids = _tri_with_notes(monkeypatch, tmp_path, count=7)
+    sizes = _chunk_sizes(monkeypatch, store)
+
+    result = store.add_notetype_field(name="Tri", field_name="Hint")
+
+    assert result["updated_notes"] == 7
+    assert sizes == [3, 3, 1]
+    for n, note_id in enumerate(ids):
+        assert _note_row(db_path, note_id)["flds"] == f"f{n}\x1fe{n}\x1fb{n}\x1f"
+        assert _note_row(db_path, note_id + 1)["flds"] == "other\x1ftype"
+
+
+def test_an_exact_multiple_of_the_chunk_size_needs_no_empty_extra_page(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, _db_path, _ntid, _ids = _tri_with_notes(monkeypatch, tmp_path, count=6)
+    sizes = _chunk_sizes(monkeypatch, store)
+    assert store.remove_notetype_field(name="Tri", field_name="Extra")["updated_notes"] == 6
+    assert sizes == [3, 3]
+
+
+def test_a_notetype_with_no_notes_rewrites_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, _db_path, _ntid, _ids = _tri_with_notes(monkeypatch, tmp_path, count=0)
+    assert store.remove_notetype_field(name="Tri", field_name="Extra")["updated_notes"] == 0
+
+
+def test_a_failure_in_a_later_chunk_rolls_back_every_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Paging bounds memory, not atomicity: it is still one write transaction, so
+    a failure on page three must leave page one (and the schema) untouched."""
+    store, db_path, ntid, ids = _tri_with_notes(monkeypatch, tmp_path, count=10)
+    calls = {"n": 0}
+    real = store._field_checksum
+
+    def flaky(value: str) -> int:
+        calls["n"] += 1
+        if calls["n"] == 8:  # inside the third page
+            raise RuntimeError("disk on fire")
+        return real(value)
+
+    monkeypatch.setattr(store, "_field_checksum", flaky)
+
+    with pytest.raises(RuntimeError, match="disk on fire"):
+        store.remove_notetype_field(name="Tri", field_name="Extra")
+
+    for n, note_id in enumerate(ids):
+        row = _note_row(db_path, note_id)
+        assert row["flds"] == f"f{n}\x1fe{n}\x1fb{n}", note_id  # not rewritten
+        assert row["usn"] == 0
+    assert [f["name"] for f in _fields_for_ntid(db_path, ntid)] == ["Front", "Extra", "Back"]
+
+
+def test_removing_a_field_leaves_reqs_equal_to_a_fresh_recompute(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """#44 part 2: a template that needed *both* fields must not keep a stale
+    'all of them' requirement that mentions the field that is gone. reqs come
+    from the rewritten templates, exactly as Anki recomputes them."""
+    from anki_cli.core.template import parse_template, template_requirements
+
+    store, db_path = _make_store(tmp_path)
+    _enable_writes(monkeypatch, store)
+    store.create_notetype(
+        name="Both",
+        fields=["A", "B", "C"],
+        templates=[
+            {"name": "Card 1", "front": "{{#A}}{{B}}{{/A}}", "back": "{{C}}"},
+            {"name": "Card 2", "front": "{{C}}", "back": "{{A}}"},
+        ],
+    )
+    ntid = int(_notetype_row_by_name(db_path, "Both")["id"])
+    before = NotetypeConfig().parse(bytes(_notetype_row_by_id(db_path, ntid)["config"]))
+    assert before.reqs[0].kind == NotetypeConfigCardRequirementKind.KIND_ALL  # the premise
+
+    store.remove_notetype_field(name="Both", field_name="B")
+
+    after = NotetypeConfig().parse(bytes(_notetype_row_by_id(db_path, ntid)["config"]))
+    names = [f["name"] for f in _fields_for_ntid(db_path, ntid)]
+    assert names == ["A", "C"]
+    templates = _templates_for_ntid(db_path, ntid)
+    kinds = {
+        "any": NotetypeConfigCardRequirementKind.KIND_ANY,
+        "all": NotetypeConfigCardRequirementKind.KIND_ALL,
+        "none": NotetypeConfigCardRequirementKind.KIND_NONE,
+    }
+    assert len(after.reqs) == 2
+    for req, row in zip(after.reqs, templates, strict=True):
+        q = NotetypeTemplateConfig().parse(bytes(row["config"])).q_format
+        kind, ords = template_requirements(parse_template(q), names)
+        assert req.kind == kinds[kind], q
+        assert list(req.field_ords) == list(ords), q
+        # No requirement may point at a field slot that no longer exists.
+        assert all(o < len(names) for o in req.field_ords)

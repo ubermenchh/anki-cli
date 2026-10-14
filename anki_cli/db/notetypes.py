@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Iterator
 
 from anki_cli.core.template import (
     _CLOZE_RE,
@@ -27,6 +28,11 @@ from anki_cli.proto.anki.notetypes import (
     NotetypeFieldConfig,
     NotetypeTemplateConfig,
 )
+
+# Notes rewritten per page when a field is added to / removed from a notetype.
+# A notetype can own hundreds of thousands of HTML-heavy notes; paging keeps the
+# rows in memory to one chunk instead of the whole notetype twice over (#44).
+_NOTE_REWRITE_CHUNK = 5000
 
 
 class NotetypesMixin(ConnectionMixin):
@@ -366,6 +372,26 @@ class NotetypesMixin(ConnectionMixin):
             "full_sync_required": True,
         }
 
+    def _note_chunks(self, conn: sqlite3.Connection, ntid: int) -> Iterator[list[sqlite3.Row]]:
+        """The notes of one notetype, ``_NOTE_REWRITE_CHUNK`` at a time.
+
+        Keyset-paginated by ``id`` (the primary key, so each page resumes where
+        the last stopped) and fetched with ``fetchall()`` so no cursor is open
+        while the caller updates. Updating a page never changes ``id``, so the
+        next page is unaffected. All of it stays inside the caller's single
+        write transaction; only the *memory* is bounded, not the atomicity.
+        """
+        last_id = 0
+        while True:
+            rows = conn.execute(
+                "SELECT id, flds FROM notes WHERE mid = ? AND id > ? ORDER BY id LIMIT ?",
+                (ntid, last_id, _NOTE_REWRITE_CHUNK),
+            ).fetchall()
+            if not rows:
+                return
+            yield rows
+            last_id = int(rows[-1]["id"])
+
     def _append_field_to_notes(
         self,
         conn: sqlite3.Connection,
@@ -381,26 +407,22 @@ class NotetypesMixin(ConnectionMixin):
         so the new slot lands at the right ordinal. Mirrors Anki's
         ``Note::reorder_fields`` for the append case.
         """
-        note_rows = conn.execute(
-            "SELECT id, flds FROM notes WHERE mid = ?",
-            (ntid,),
-        ).fetchall()
-        if not note_rows:
-            return 0
+        updated = 0
+        for note_rows in self._note_chunks(conn, ntid):
+            updates: list[tuple[str, int, int]] = []
+            for note_row in note_rows:
+                values = self._split_fields(str(note_row["flds"] or ""))[:field_count]
+                if len(values) < field_count:
+                    values.extend([""] * (field_count - len(values)))
+                values.append("")
+                updates.append(("\x1f".join(values), now_sec, int(note_row["id"])))
 
-        updates: list[tuple[str, int, int]] = []
-        for note_row in note_rows:
-            values = self._split_fields(str(note_row["flds"] or ""))[:field_count]
-            if len(values) < field_count:
-                values.extend([""] * (field_count - len(values)))
-            values.append("")
-            updates.append(("\x1f".join(values), now_sec, int(note_row["id"])))
-
-        conn.executemany(
-            "UPDATE notes SET flds = ?, mod = ?, usn = -1 WHERE id = ?",
-            updates,
-        )
-        return len(updates)
+            conn.executemany(
+                "UPDATE notes SET flds = ?, mod = ?, usn = -1 WHERE id = ?",
+                updates,
+            )
+            updated += len(updates)
+        return updated
 
     def _remove_field_from_notes(
         self,
@@ -417,38 +439,34 @@ class NotetypesMixin(ConnectionMixin):
         ``field_count`` is the number of fields *before* removal; ``sort_idx`` is
         the sort field index *after* removal.
         """
-        note_rows = conn.execute(
-            "SELECT id, flds FROM notes WHERE mid = ?",
-            (ntid,),
-        ).fetchall()
-        if not note_rows:
-            return 0
-
-        updates: list[tuple[str, str, int, int, int]] = []
-        for note_row in note_rows:
-            values = self._split_fields(str(note_row["flds"] or ""))
-            if len(values) < field_count:
-                values.extend([""] * (field_count - len(values)))
-            del values[removed_ord]
-            updates.append(
-                (
-                    "\x1f".join(values),
-                    self._sort_field_value(values, sort_idx),
-                    self._field_checksum(values[0] if values else ""),
-                    now_sec,
-                    int(note_row["id"]),
+        updated = 0
+        for note_rows in self._note_chunks(conn, ntid):
+            updates: list[tuple[str, str, int, int, int]] = []
+            for note_row in note_rows:
+                values = self._split_fields(str(note_row["flds"] or ""))
+                if len(values) < field_count:
+                    values.extend([""] * (field_count - len(values)))
+                del values[removed_ord]
+                updates.append(
+                    (
+                        "\x1f".join(values),
+                        self._sort_field_value(values, sort_idx),
+                        self._field_checksum(values[0] if values else ""),
+                        now_sec,
+                        int(note_row["id"]),
+                    )
                 )
-            )
 
-        conn.executemany(
-            """
-            UPDATE notes
-            SET flds = ?, sfld = ?, csum = ?, mod = ?, usn = -1
-            WHERE id = ?
-            """,
-            updates,
-        )
-        return len(updates)
+            conn.executemany(
+                """
+                UPDATE notes
+                SET flds = ?, sfld = ?, csum = ?, mod = ?, usn = -1
+                WHERE id = ?
+                """,
+                updates,
+            )
+            updated += len(updates)
+        return updated
 
     def add_notetype_template(
         self,
