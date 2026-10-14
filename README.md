@@ -6,7 +6,7 @@ Hybrid Anki CLI for humans and agents.
   <a href="https://github.com/ubermenchh/anki-cli/actions/workflows/ci.yml"><img src="https://github.com/ubermenchh/anki-cli/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://pypi.org/project/anki-cli/"><img src="https://img.shields.io/pypi/v/anki-cli" alt="PyPI version"></a>
   <a href="https://pypi.org/project/anki-cli/"><img src="https://img.shields.io/pypi/pyversions/anki-cli" alt="Python versions"></a>
-  <a href="https://pypi.org/project/anki-cli/"><img src="https://img.shields.io/pypi/dm/anki-cli" alt="PyPI downloads per month"></a>
+  <a href="https://pepy.tech/projects/anki-cli"><img src="https://static.pepy.tech/badge/anki-cli" alt="Total PyPI downloads"></a>
   <a href="LICENSE"><img src="https://img.shields.io/pypi/l/anki-cli" alt="License: MIT"></a>
   <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
 </p>
