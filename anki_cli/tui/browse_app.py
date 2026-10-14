@@ -328,7 +328,8 @@ class BrowseApp(ThemedApp):
     /* Footer colours are set here, not left to the theme's footer-* variables,
        which assume a footer on a $primary background. */
     Footer {
-        background: $surface;
+        background: $background;
+        padding: 0 1;
     }
     Footer FooterKey, Footer .footer-key--key, Footer .footer-key--description {
         background: transparent;
@@ -350,7 +351,7 @@ class BrowseApp(ThemedApp):
     }
     #header {
         height: 1;
-        background: $surface;
+        background: $background;
         padding: 0 1;
     }
     #header-text {
@@ -407,8 +408,11 @@ class BrowseApp(ThemedApp):
         border: round $primary;
         border-title-color: $primary;
     }
+    /* One background for the whole table: a filled header and zebra rows read
+       as stripes against the flat panes around it. The cursor row is the only
+       highlight. */
     DataTable > .datatable--header {
-        background: $surface;
+        background: $background;
         color: $primary;
         text-style: bold;
     }
@@ -420,7 +424,7 @@ class BrowseApp(ThemedApp):
         background: $background;
     }
     DataTable > .datatable--odd-row {
-        background: $surface;
+        background: $background;
     }
     #preview {
         width: 2fr;

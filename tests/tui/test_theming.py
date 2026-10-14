@@ -57,14 +57,16 @@ def test_palette_follows_theme_variables() -> None:
     assert custom.error == tokyo.error
 
 
-def test_default_look_is_unchanged(run_async: Any) -> None:
+def test_default_look_is_flat_tokyo_night(run_async: Any) -> None:
     async def scenario() -> None:
         app = browse_mod.BrowseApp(backend=FakeBackend())
         async with app.run_test(size=(130, 30)) as pilot:
             await pilot.pause()
             assert app.theme == TOKYO_NIGHT.name
             assert app.query_one("#preview").styles.background.hex.lower() == "#16161e"
-            assert app.query_one("#header").styles.background.hex.lower() == "#1f2335"
+            # Header, footer, panes and table rows share one flat background.
+            for sel in ("#header", "#table", "Footer"):
+                assert app.query_one(sel).styles.background.hex.lower() == "#16161e", sel
 
     run_async(scenario())
 
