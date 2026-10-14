@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import click
 from markdownify import markdownify
@@ -32,6 +32,7 @@ from anki_cli.cli.params import (
     option_arity,
     preprocess_argv,
 )
+from anki_cli.core.review_session import ReviewSession, parse_ease
 
 from .colors import (
     BLUE,
@@ -244,7 +245,9 @@ _QUERY_COMMANDS = frozenset({"cards", "cards:ids", "notes", "search"})
 def _apply_deck_context(parts: list[str], *, resolved: str, deck: str) -> list[str]:
     """Scope ``parts`` to the REPL's ``use <deck>`` context, unless the line
     already names a deck (``--deck`` or a ``deck:`` search term)."""
-    if "--deck" in parts or any(p.startswith("--deck=") for p in parts):
+    # ``deck=X`` is the key=value spelling of ``--deck X``; it is expanded later,
+    # so it has to count as "the line already names a deck" here too.
+    if "--deck" in parts or any(p.startswith(("--deck=", "deck=")) for p in parts):
         return parts
     deck_term = f'deck:"{deck}"'
     if resolved in _QUERY_COMMANDS:
@@ -417,6 +420,7 @@ def _grouped_help() -> None:
     shell_table.add_row("    use <deck>", "Set default deck context")
     shell_table.add_row("    use", "Clear deck context")
     shell_table.add_row("    set format <fmt>", "Switch output format")
+    shell_table.add_row("    review [deck]", "Inline review session (here, not due counts)")
     shell_table.add_row("    !<cmd>", "Run a shell command")
     shell_table.add_row("    !!", "Repeat last command")
     shell_table.add_row("    clear", "Clear screen")
@@ -463,183 +467,148 @@ def _render_review_progress(reviewed: int, total: int, deck: str | None) -> Tabl
     return layout
 
 
-def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
-    from anki_cli.backends.factory import backend_session_from_context
-    from anki_cli.core.undo import UndoItem, UndoStore, now_epoch_ms
-
+def _prompt_reveal() -> bool:
+    """Wait for Enter. ``False`` means the user bailed out (Ctrl-D / Ctrl-C)."""
     try:
-        backend_ctx = backend_session_from_context(ctx_obj)
-        backend = backend_ctx.__enter__()
-        # Undo, snapshots and the scheduler-ordered picker need state only the
-        # direct backend exposes (AnkiBackend.supports_scheduler_introspection).
-        introspects = bool(getattr(backend, "supports_scheduler_introspection", False))
-    except Exception as exc:
-        console.print(f"[{RED}]Error:[/] {exc}")
-        return
+        input("  press enter to reveal... ")
+    except (EOFError, KeyboardInterrupt):
+        console.print()
+        return False
+    return True
 
-    undo = UndoStore()
+
+def _prompt_rating() -> str:
+    try:
+        return console.input(f"  [bold {GREEN}]rate>[/] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return "q"
+
+
+def _review_loop(
+    session: ReviewSession,
+    *,
+    reveal: Callable[[], bool] = _prompt_reveal,
+    rate: Callable[[], str] = _prompt_rating,
+) -> int:
+    """The inline review session. ``reveal`` and ``rate`` are the two places it
+    waits on the user, so the whole state machine runs without a terminal.
+    Returns how many cards were answered (net of undos)."""
+    deck = session.deck
     reviewed = 0
 
     try:
-        counts = backend.get_due_counts(deck=deck.strip() if deck else None)
+        counts = session.backend.get_due_counts(deck=deck)
         total_due = counts.get("new", 0) + counts.get("learn", 0) + counts.get("review", 0)
     except Exception:
         total_due = 0
 
-    try:
-        while True:
-            card_id: int | None = None
-            kind = "none"
-
-            if introspects:
-                picked = backend.get_next_due_card(deck)
-                cid = picked.get("card_id") if isinstance(picked, dict) else None
-                card_id = int(cid) if isinstance(cid, int) else None
-                kind = str(picked.get("kind", "none")) if isinstance(picked, dict) else "none"
-
-            if card_id is None:
-                from anki_cli.core.scheduler import pick_next_due_card_id
-
-                card_id, kind = pick_next_due_card_id(backend, deck=deck)
-
-            if card_id is None:
-                summary = Text()
-                summary.append("Session complete\n\n", style=f"bold {GREEN}")
-                summary.append(f"Reviewed {reviewed} cards", style=TEXT)
-                if deck:
-                    summary.append(f"  ({deck})", style=DIM)
-                console.print()
-                console.print(
-                    Panel(
-                        summary,
-                        border_style=GREEN,
-                        title=f"[bold {GREEN}]Done[/]",
-                        padding=(1, 2),
-                    )
+    while True:
+        picked = session.next()
+        if picked.card_id is None:
+            summary = Text()
+            summary.append("Session complete\n\n", style=f"bold {GREEN}")
+            summary.append(f"Reviewed {reviewed} cards", style=TEXT)
+            if deck:
+                summary.append(f"  ({deck})", style=DIM)
+            console.print()
+            console.print(
+                Panel(
+                    summary,
+                    border_style=GREEN,
+                    title=f"[bold {GREEN}]Done[/]",
+                    padding=(1, 2),
                 )
-                break
+            )
+            return reviewed
 
-            rendered = _render_card_inline(backend, card_id)
-            if rendered is None:
-                console.print(f"  [{RED}](render failed, skipping)[/]")
+        card_id = picked.card_id
+        rendered = _render_card_inline(session.backend, card_id)
+        if rendered is None:
+            # Nothing was answered, so the scheduler would hand back this same
+            # card forever; stop instead of spinning.
+            console.print(f"  [{RED}]card {card_id} cannot be rendered; stopping[/]")
+            return reviewed
+
+        question, answer = rendered
+
+        console.print()
+        if total_due > 0:
+            console.print(_render_review_progress(reviewed, total_due, deck))
+        console.print(
+            Panel(
+                Markdown(question),
+                title=f"[bold {CYAN}]Question[/] [{DIM}]({picked.kind} card={card_id})[/]",
+                border_style=CYAN,
+                padding=(1, 2),
+            )
+        )
+
+        if not reveal():
+            return reviewed
+
+        console.print(
+            Panel(
+                Markdown(answer),
+                title=f"[bold {GREEN}]Answer[/]",
+                border_style=GREEN,
+                padding=(1, 2),
+            )
+        )
+
+        console.print(f"  [{DIM}]1=again  2=hard  3=good  4=easy  u=undo  q=stop[/]")
+
+        while True:
+            choice = rate()
+
+            if choice == "q":
+                console.print(f"\n  [{DIM}]Stopped. reviewed={reviewed}[/]\n")
+                return reviewed
+
+            if choice == "u":
+                if not session.introspects:
+                    console.print(f"  [{DIM}](undo only available for direct backend)[/]")
+                    continue
+                try:
+                    outcome = session.undo()
+                except Exception as exc:
+                    console.print(f"  [{RED}]undo failed:[/] {escape(str(exc))}")
+                    continue
+                if outcome is None:
+                    console.print(f"  [{DIM}](nothing to undo)[/]")
+                    continue
+                reviewed = max(0, reviewed - 1)
+                console.print(f"  [{DIM}](undone)[/]")
                 continue
 
-            question, answer = rendered
-
-            console.print()
-            if total_due > 0:
-                console.print(_render_review_progress(reviewed, total_due, deck))
-            console.print(
-                Panel(
-                    Markdown(question),
-                    title=f"[bold {CYAN}]Question[/] [{DIM}]({kind} card={card_id})[/]",
-                    border_style=CYAN,
-                    padding=(1, 2),
-                )
-            )
+            try:
+                ease = parse_ease(choice)
+            except ValueError:
+                console.print(f"  [{DIM}](1/2/3/4/u/q)[/]")
+                continue
 
             try:
-                # Use standard input styled nicely
-                input("  press enter to reveal... ")
-            except (EOFError, KeyboardInterrupt):
-                console.print()
-                break
+                outcome = session.answer(card_id, ease)
+            except Exception as exc:
+                msg = str(exc) or type(exc).__name__
+                console.print(f"  [{RED}]answer failed:[/] {escape(msg)}")
+                continue
 
-            console.print(
-                Panel(
-                    Markdown(answer),
-                    title=f"[bold {GREEN}]Answer[/]",
-                    border_style=GREEN,
-                    padding=(1, 2),
-                )
-            )
+            if outcome.undo_error:
+                console.print(f"  [{DIM}]answered; undo not saved: {escape(outcome.undo_error)}[/]")
+            reviewed += 1
+            console.print(f"  [{DIM}]rated {ease}  (reviewed={reviewed})[/]")
+            break
 
-            console.print(f"  [{DIM}]1=again  2=hard  3=good  4=easy  u=undo  q=stop[/]")
 
-            while True:
-                try:
-                    # Switch click prompt for rich console input for hex coloring
-                    choice = console.input(f"  [bold {GREEN}]rate>[/] ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    choice = "q"
+def _inline_review(ctx_obj: dict[str, Any], deck: str | None) -> None:
+    from anki_cli.backends.factory import backend_session_from_context
 
-                if choice == "q":
-                    console.print(f"\n  [{DIM}]Stopped. reviewed={reviewed}[/]\n")
-                    return
-                if choice == "u":
-                    if introspects:
-                        col = getattr(backend, "collection_path", None)
-                        collection = str(col) if col is not None else ""
-                        item = undo.pop(collection=collection)
-                        if item is None:
-                            console.print(f"  [{DIM}](nothing to undo)[/]")
-                            continue
-                        try:
-                            backend.restore_card_state(item.snapshot)
-                            reviewed = max(0, reviewed - 1)
-                            console.print(f"  [{DIM}](undone)[/]")
-                        except Exception as exc:
-                            console.print(f"  [{RED}]undo failed:[/] {escape(str(exc))}")
-                    else:
-                        console.print(f"  [{DIM}](undo only available for direct backend)[/]")
-                    continue
-
-                ease_map = {
-                    "1": 1,
-                    "2": 2,
-                    "3": 3,
-                    "4": 4,
-                    "again": 1,
-                    "hard": 2,
-                    "good": 3,
-                    "easy": 4,
-                }
-                ease = ease_map.get(choice)
-                if ease is None:
-                    console.print(f"  [{DIM}](1/2/3/4/u/q)[/]")
-                    continue
-
-                snapshot: dict[str, Any] | None = None
-                collection = ""
-                if introspects:
-                    col = getattr(backend, "collection_path", None)
-                    collection = str(col) if col is not None else ""
-                    snapshot = cast(dict[str, Any], backend.snapshot_card_state(int(card_id)))
-
-                try:
-                    result = backend.answer_card(card_id=int(card_id), ease=ease)
-                except Exception as exc:
-                    msg = str(exc) or type(exc).__name__
-                    console.print(f"  [{RED}]answer failed:[/] {escape(msg)}")
-                else:
-                    # Push only after a successful answer so a failed answer
-                    # cannot leave a stale undo entry. The snapshot carries
-                    # the id of the revlog row this answer wrote so undo can
-                    # delete exactly that row instead of a time window.
-                    if snapshot is not None:
-                        revlog_id = result.get("revlog_id") if isinstance(result, Mapping) else None
-                        undo_item = UndoItem(
-                            collection=collection,
-                            card_id=int(card_id),
-                            snapshot={**snapshot, "revlog_id": revlog_id},
-                            created_at_epoch_ms=now_epoch_ms(),
-                        )
-                        # Best-effort: the answer is already committed, so a
-                        # failed undo write must not escape the loop.
-                        try:
-                            undo.push(undo_item)
-                        except OSError as exc:
-                            console.print(
-                                f"  [{DIM}]answered; undo not saved: {escape(str(exc))}[/]"
-                            )
-                    reviewed += 1
-                    console.print(f"  [{DIM}]rated {ease}  (reviewed={reviewed})[/]")
-                break
-
-    finally:
-        close = getattr(backend, "close", None)
-        if callable(close):
-            close()
+    try:
+        # ``with`` so the backend session is always closed, however the loop ends.
+        with backend_session_from_context(ctx_obj) as backend:
+            _review_loop(ReviewSession(backend, deck))
+    except Exception as exc:
+        console.print(f"[{RED}]Error:[/] {escape(str(exc))}")
 
 
 def _render_card_inline(backend: Any, card_id: int) -> tuple[str, str] | None:
