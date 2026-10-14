@@ -57,7 +57,7 @@ class FakeBackend:
         self.calls.append((name, args))
 
     def get_due_counts(self, deck: str | None = None) -> dict[str, int]:
-        return {"new": 12, "learning": 3, "review": 47}
+        return {"new": 12, "learn": 3, "review": 47}
 
     def get_next_due_card(self, deck: str | None = None) -> dict[str, Any]:
         return {"card_id": self.cards[0]["cardId"], "kind": "review_due"}

@@ -4,16 +4,19 @@ import contextlib
 import html as _html
 import re
 import shlex
+import threading
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any, ClassVar, cast
 
-from rich.markup import escape
 from rich.text import Text
+from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static
+from textual.widgets import Button, Footer, Input, Static
+from textual.worker import get_current_worker
 
 from anki_cli import __version__
 from anki_cli.core.render import extract_note_id, extract_ord, pick_template, render_card
@@ -27,8 +30,8 @@ from anki_cli.tui.colors import (
     DIM,
     GREEN,
     MENU_BG,
-    RED,
     TEXT,
+    TOKYO_NIGHT,
     TOOLBAR_BG,
     YELLOW,
 )
@@ -143,61 +146,120 @@ class PreviewScreen(ModalScreen[None]):
             yield Static("esc/q to close", id="preview-hint")
 
 
+@dataclass
+class _Loaded:
+    """Everything one card needs on screen, fetched off the UI thread (#84)."""
+
+    card_id: int | None = None
+    kind: str = "none"
+    card: dict[str, Any] | None = None
+    rendered: tuple[int, str, str] | None = None
+    error: str | None = None
+    hints: dict[int, str] = field(default_factory=dict)
+    counts: dict[str, int] = field(default_factory=dict)
+
+
+_RATINGS: tuple[tuple[int, str], ...] = ((1, "Again"), (2, "Hard"), (3, "Good"), (4, "Easy"))
+_DEFAULT_HINTS: dict[int, str] = {1: "<10m", 2: "-", 3: "-", 4: "-"}
+
+
 class ReviewApp(App[None]):
-    # Textual's default AUTO_FOCUS="*" would focus #cmd (the only focusable
-    # widget) on mount, so Space / 1-4 / q typed into the command box instead
-    # of firing their bindings until the user found Esc (#81). ":" focuses it.
+    # Textual's default AUTO_FOCUS="*" would focus the first Button on mount, so
+    # Space / 1-4 / q still work only because the app owns them; leaving focus
+    # unset keeps Enter from pressing a rating by accident (#81).
     AUTO_FOCUS = None
 
-    # Under 30 rows the fixed chrome (labels, paddings, two min-height panels,
-    # a 4-row rate row and 3 bottom bars) did not fit in 80x24 and the rating
-    # buttons fell off the bottom. Screen.-short trims the decoration.
+    # Under 30 rows the buttons drop to one row and the card padding goes.
     VERTICAL_BREAKPOINTS: ClassVar[list[tuple[int, str]]] = [(0, "-short"), (30, "-tall")]
 
     CSS = f"""
     Screen {{
         background: {TOOLBAR_BG};
     }}
-
-    #topbar {{
-        dock: top;
-        height: 2;
+    #header {{
+        height: 1;
         background: {MENU_BG};
-        border-bottom: solid {BORDER};
         padding: 0 1;
     }}
-    #topbar-title {{
+    #header-title {{
         width: auto;
         color: {BLUE};
         text-style: bold;
     }}
-    #topbar-right {{
+    #header-stats {{
         width: 1fr;
         text-align: right;
         color: {DIM};
     }}
 
-    /* One docked container for the bottom: docking three widgets to the same
-       edge makes them overlap, which hid the hint bar and every error message
-       written to #status (#78). */
-    #bottom {{
-        dock: bottom;
-        height: auto;
+    /* The card is a centred column: wide terminals get a readable measure
+       instead of a card stretched edge to edge. */
+    #study {{
+        height: 1fr;
+        align-horizontal: center;
+        padding: 1 2;
     }}
-    #status {{
-        height: 1;
+    #column {{
+        width: 100%;
+        max-width: 90;
+        height: 1fr;
+    }}
+    .card-panel {{
+        height: 1fr;
+        min-height: 5;
         background: {TOOLBAR_BG};
-        color: {DIM};
-        padding: 0 1;
+        border: round {BORDER};
+        border-title-color: {DIM};
+        padding: 1 2;
+        scrollbar-size: 1 1;
+        scrollbar-color: {BORDER};
+        scrollbar-background: {TOOLBAR_BG};
     }}
-    #hintbar {{
-        /* No border: a 1-cell border on a height-1 widget leaves no content
-           row (#80). The background change is the separator. Auto height so
-           the bar wraps instead of truncating on narrow terminals. */
+    .card-panel:focus {{
+        border: round {BLUE};
+        border-title-color: {BLUE};
+        background-tint: transparent;
+    }}
+    #answer-panel {{
+        display: none;
+    }}
+    #column.-revealed #answer-panel {{
+        display: block;
+    }}
+    #question, #answer {{
+        color: {TEXT};
+    }}
+
+    /* One action row that morphs: "Show answer" until the answer is up, then
+       the four ratings. */
+    #actions {{
+        height: 3;
+        margin-top: 1;
+    }}
+    #actions Button {{
+        height: 3;
+        width: 1fr;
+        margin: 0 1 0 0;
+    }}
+    #rate-row {{
+        display: none;
+        height: 3;
+    }}
+    #rate-row Button:last-of-type {{
+        margin-right: 0;
+    }}
+    #column.-revealed #rate-row {{
+        display: block;
+    }}
+    #column.-revealed #show-answer {{
+        display: none;
+    }}
+    #show-answer {{
+        margin-right: 0;
+    }}
+
+    #cmd-slot {{
         height: auto;
-        background: {MENU_BG};
-        color: {DIM};
-        padding: 0 1;
     }}
     #cmd {{
         height: 1;
@@ -206,137 +268,46 @@ class ReviewApp(App[None]):
         color: {TEXT};
         padding: 0 1;
     }}
-    #cmd:focus {{
-        background: {TOOLBAR_BG};
-    }}
 
-    #body {{
-        height: 1fr;
-    }}
-    #study-main {{
-        width: 1fr;
-        border-right: solid {BORDER};
-        padding: 1 2;
-    }}
-    #study-side {{
-        width: 30;
-        background: {MENU_BG};
-        padding: 1;
-    }}
-
-    #counter {{
-        height: 1;
-        text-align: right;
-        color: {DIM};
-    }}
-    #deck-badge {{
-        height: 1;
-        color: {BLUE};
-        text-style: bold;
-        text-align: center;
-    }}
-
-    .panel-label {{
-        height: 1;
-        color: {DIM};
-        text-style: bold;
-    }}
-
-    #question-panel {{
-        height: 1fr;
-        min-height: 6;
-        border: round {BORDER};
-        background: {MENU_BG};
-        padding: 1 2;
-    }}
-    #question {{
-        color: {TEXT};
-    }}
-
-    #answer-panel {{
-        height: 1fr;
-        min-height: 6;
-        border: round {BLUE};
-        background: {TOOLBAR_BG};
-        padding: 1 2;
-    }}
-    #answer {{
-        color: {TEXT};
-    }}
-
-    /* Two content rows inside a round border: "1 Again" and the scheduler's
-       interval preview. height: 3 left one row and clipped the hint (#80). */
-    #rate-row {{
-        height: 4;
-    }}
-    .rate-btn {{
-        width: 1fr;
-        height: 4;
-        border: round {BORDER};
-        content-align: center middle;
-        text-align: center;
-    }}
-    #rate-1 {{
-        color: {RED};
-        border: round {RED};
-    }}
-    #rate-2 {{
-        color: {YELLOW};
-        border: round {YELLOW};
-    }}
-    #rate-3 {{
-        color: {BLUE};
-        border: round {BLUE};
-    }}
-    #rate-4 {{
-        color: {GREEN};
-        border: round {GREEN};
-    }}
-
-    .side-title {{
-        /* 1 row of text + 1 row of border-bottom (#80). */
-        height: 2;
-        color: {DIM};
-        text-style: bold;
-        border-bottom: solid {BORDER};
-    }}
-    .side-block {{
-        height: auto;
-        color: {TEXT};
-        padding-bottom: 1;
-    }}
-
-    Screen.-short #study-main {{
+    Screen.-short #study {{
         padding: 0 1;
     }}
-    Screen.-short .panel-label {{
-        display: none;
-    }}
-    Screen.-short #question-panel, Screen.-short #answer-panel {{
+    Screen.-short .card-panel {{
         padding: 0 1;
-        min-height: 4;
+        min-height: 3;
     }}
-    Screen.-short .side-block {{
-        padding-bottom: 0;
+    Screen.-short #actions, Screen.-short #rate-row {{
+        height: 1;
+        margin-top: 0;
+    }}
+    Screen.-short #actions Button {{
+        height: 1;
+        border: none;
     }}
     """
 
+    # Footer renders the ``show=True`` entries, so this list is also the
+    # on-screen key legend; ``?`` opens the full list. 1-4 are shown on the
+    # buttons themselves.
     BINDINGS: ClassVar[list[Binding]] = [
-        Binding("space", "toggle_answer", "Show/Hide answer", key_display="Space"),
-        Binding("1", "rate(1)", "Again"),
-        Binding("2", "rate(2)", "Hard"),
-        Binding("3", "rate(3)", "Good"),
-        Binding("4", "rate(4)", "Easy"),
-        Binding("u", "undo", "Undo"),
-        Binding("p", "preview", "Preview"),
-        Binding("n", "next", "Next"),
-        Binding(":", "focus_command", "Command"),
+        Binding("space", "toggle_answer", "Flip", key_display="Space", show=True),
+        Binding("1", "rate(1)", "Again", show=False),
+        Binding("2", "rate(2)", "Hard", show=False),
+        Binding("3", "rate(3)", "Good", show=False),
+        Binding("4", "rate(4)", "Easy", show=False),
+        Binding("u", "undo", "Undo", show=True),
+        Binding("p", "preview", "Preview", show=True),
+        Binding("n", "next", "Next", show=True),
+        Binding(":", "focus_command", "Command", show=True),
         Binding("escape", "blur_command", "Blur command", show=False),
-        Binding("q", "quit", "Quit"),
+        Binding("question_mark", "show_help_panel", "Help", key_display="?", show=True),
+        Binding("q", "quit", "Quit", show=True),
     ]
 
     def __init__(self, *, backend: Any, deck: str | None) -> None:
         super().__init__()
+        self.register_theme(TOKYO_NIGHT)
+        self.theme = TOKYO_NIGHT.name
         self._backend = backend
         # Undo, preview and the scheduler-ordered picker need scheduler state
         # only the direct backend exposes (AnkiBackend.supports_scheduler_introspection).
@@ -352,55 +323,38 @@ class ReviewApp(App[None]):
         # answer repaints from this instead of re-fetching card, note and
         # notetype on every keypress (#35).
         self._rendered: tuple[int, str, str] | None = None
+        self._hints: dict[int, str] = dict(_DEFAULT_HINTS)
+        self._counts: dict[str, int] = {"new": 0, "learn": 0, "review": 0, "total": 0}
+        self._loading = False
         self._session_total = 0
         self._answered = 0
         self._rating_counts: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
 
     def compose(self) -> ComposeResult:
-        with Horizontal(id="topbar"):
-            yield Static(f"anki-cli {__version__} — study", id="topbar-title")
-            yield Static("", id="topbar-right")
+        with Horizontal(id="header"):
+            yield Static(Text(f"anki-cli {__version__} · study"), id="header-title")
+            yield Static("", id="header-stats")
 
-        with Horizontal(id="body"):
-            with Vertical(id="study-main"):
-                yield Static("", id="counter")
-                yield Static("", id="deck-badge")
-
-                yield Static("QUESTION", classes="panel-label")
-                with VerticalScroll(id="question-panel"):
-                    yield Static("", id="question")
-
-                yield Static("ANSWER", classes="panel-label")
-                with VerticalScroll(id="answer-panel"):
-                    yield Static("", id="answer")
-
+        with Vertical(id="study"), Vertical(id="column"):
+            with VerticalScroll(id="question-panel", classes="card-panel"):
+                yield Static("", id="question")
+            with VerticalScroll(id="answer-panel", classes="card-panel"):
+                yield Static("", id="answer")
+            with Vertical(id="actions"):
+                yield Button("Show answer (Space)", id="show-answer", variant="default")
                 with Horizontal(id="rate-row"):
-                    yield Static("", id="rate-1", classes="rate-btn")
-                    yield Static("", id="rate-2", classes="rate-btn")
-                    yield Static("", id="rate-3", classes="rate-btn")
-                    yield Static("", id="rate-4", classes="rate-btn")
+                    yield Button("1 Again", id="rate-1", classes="rate-btn", variant="error")
+                    yield Button("2 Hard", id="rate-2", classes="rate-btn", variant="warning")
+                    yield Button("3 Good", id="rate-3", classes="rate-btn", variant="success")
+                    yield Button("4 Easy", id="rate-4", classes="rate-btn", variant="primary")
 
-            with Vertical(id="study-side"):
-                yield Static("SESSION", classes="side-title")
-                yield Static("", id="session-block", classes="side-block")
-
-                yield Static("TODAY", classes="side-title")
-                yield Static("", id="today-block", classes="side-block")
-
-                yield Static("REMAINING", classes="side-title")
-                yield Static("", id="remaining-block", classes="side-block")
-
-                yield Static("SHORTCUTS", classes="side-title")
-                yield Static("", id="shortcuts-block", classes="side-block")
-
-        with Vertical(id="bottom"):
-            yield Static("", id="status")
-            yield Static("", id="hintbar")
-            yield Input(placeholder=":help", id="cmd")
+        # Mounted by ":" and removed again, so it is not a permanent bottom bar.
+        yield Vertical(id="cmd-slot")
+        yield Footer(compact=True)
 
     def on_mount(self) -> None:
-        self._render_hint_bar()
-        self._render_shortcuts()
+        self.query_one("#question-panel").border_title = "Question"
+        self.query_one("#answer-panel").border_title = "Answer"
         self._refresh_rate_buttons()
         self._refresh_chrome()
         self._load_next()
@@ -409,7 +363,7 @@ class ReviewApp(App[None]):
         self.exit()
 
     def action_toggle_answer(self) -> None:
-        if self._card_id is None:
+        if self._card_id is None or self._loading:
             return
         self._show_answer = not self._show_answer
         self._render_current()
@@ -417,14 +371,21 @@ class ReviewApp(App[None]):
     def action_next(self) -> None:
         self._load_next()
 
+    @on(Button.Pressed, "#show-answer")
+    def _on_show_answer(self) -> None:
+        self.action_toggle_answer()
+
+    @on(Button.Pressed, ".rate-btn")
+    def _on_rate_pressed(self, event: Button.Pressed) -> None:
+        self.action_rate(int((event.button.id or "rate-0").rsplit("-", 1)[1]))
+
     def action_rate(self, ease: int) -> None:
-        if self._card_id is None:
+        if self._card_id is None or self._loading:
             return
 
         # Require showing the answer before rating (closer to Anki UX).
         if not self._show_answer:
             self._show_answer = True
-            self._set_status("Answer shown. Press 1-4 to rate.")
             self._render_current()
             return
 
@@ -444,7 +405,7 @@ class ReviewApp(App[None]):
         except Exception as exc:
             # A locked collection or a vanished card surfaces here, not as a
             # Textual traceback that exits 0 (#83).
-            self._set_status(f"answer failed: {escape(str(exc))}")
+            self._set_status(f"answer failed: {exc}")
             return
 
         if snapshot is not None:
@@ -462,7 +423,7 @@ class ReviewApp(App[None]):
             try:
                 self._undo.push(undo_item)
             except OSError as exc:
-                self._set_status(f"answered; undo not saved: {escape(str(exc))}")
+                self._set_status(f"answered; undo not saved: {exc}")
 
         self._answered += 1
         self._rating_counts[int(ease)] = self._rating_counts.get(int(ease), 0) + 1
@@ -478,7 +439,7 @@ class ReviewApp(App[None]):
         try:
             item = self._undo.pop(collection=collection)
         except Exception as exc:
-            self._set_status(f"undo failed: {escape(str(exc))}")
+            self._set_status(f"undo failed: {exc}")
             return
         if item is None:
             self._set_status("undo empty")
@@ -487,18 +448,15 @@ class ReviewApp(App[None]):
         try:
             self._backend.restore_card_state(item.snapshot)
         except Exception as exc:
-            self._set_status(f"undo failed: {escape(str(exc))}")
+            self._set_status(f"undo failed: {exc}")
             return
 
         if self._answered > 0:
             self._answered -= 1
 
-        self._card_id = int(item.card_id)
-        self._kind = "undo"
-        self._show_answer = False
-        self._rendered = None  # the restored card's state changed
-        self._render_current()
         self._set_status("undone")
+        # The restored card's state changed, so it is re-fetched and re-rendered.
+        self._load_next(card_id=int(item.card_id), kind="undo")
 
     def action_preview(self) -> None:
         if self._card_id is None:
@@ -510,7 +468,7 @@ class ReviewApp(App[None]):
         try:
             items = self._backend.preview_ratings(int(self._card_id))
         except Exception as exc:
-            self._set_status(f"preview failed: {escape(str(exc))}")
+            self._set_status(f"preview failed: {exc}")
             return
 
         lines: list[str] = []
@@ -526,20 +484,27 @@ class ReviewApp(App[None]):
         body = "\n".join(lines) if lines else "(no preview data)"
         self.push_screen(PreviewScreen(f"Preview ratings - card {self._card_id}", body))
 
-    def action_focus_command(self) -> None:
-        cmd = self.query_one("#cmd", Input)
+    async def action_focus_command(self) -> None:
+        existing = self.query("#cmd")
+        if existing:
+            existing.first(Input).focus()
+            return
+        cmd = Input(value=":", placeholder=":help", id="cmd")
+        await self.query_one("#cmd-slot").mount(cmd)
         cmd.focus()
-        if not cmd.value:
-            cmd.value = ":"
+        cmd.cursor_position = len(cmd.value)
 
-    def action_blur_command(self) -> None:
-        cmd = self.query_one("#cmd", Input)
-        cmd.value = ""
+    async def action_blur_command(self) -> None:
+        await self._close_command()
+
+    async def _close_command(self) -> None:
+        for cmd in self.query("#cmd"):
+            await cmd.remove()
         self.set_focus(None)
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
         raw = event.value.strip()
-        event.input.value = ""
+        await self._close_command()
 
         if not raw:
             return
@@ -558,22 +523,39 @@ class ReviewApp(App[None]):
             self.query_one(selector, Static).update(value)
 
     def _set_status(self, msg: str) -> None:
-        self._ui_update("#status", msg)
+        """Toast an action result; failures are shown as errors."""
+        lowered = msg.lower()
+        if "failed" in lowered or "not saved" in lowered:
+            severity = "error"
+        elif lowered.startswith(("unknown command", "parse error", "usage", "undo empty")) or (
+            "only for direct" in lowered
+        ):
+            severity = "warning"
+        else:
+            severity = "information"
+        self._toast(msg, severity=severity)
 
-    def _safe_due_counts(self) -> dict[str, int]:
+    def _toast(self, message: str, *, severity: str = "information") -> None:
+        if threading.current_thread() is threading.main_thread():
+            self.notify(message, severity=severity, markup=False)  # type: ignore[arg-type]
+        else:
+            with contextlib.suppress(Exception):
+                self.call_from_thread(self.notify, message, severity=severity, markup=False)
+
+    @staticmethod
+    def _due_counts(backend: Any, deck: str | None) -> dict[str, int]:
+        empty = {"new": 0, "learn": 0, "review": 0, "total": 0}
         try:
-            raw = self._backend.get_due_counts(deck=self._deck)
+            raw = backend.get_due_counts(deck=deck)
         except Exception:
-            return {"new": 0, "learn": 0, "review": 0, "total": 0}
-
+            return empty
         if not isinstance(raw, Mapping):
-            return {"new": 0, "learn": 0, "review": 0, "total": 0}
+            return empty
 
         new_count = to_int(raw.get("new"), 0)
         learn_count = to_int(raw.get("learn"), 0)
         review_count = to_int(raw.get("review"), 0)
         total_count = to_int(raw.get("total"), new_count + learn_count + review_count)
-
         return {
             "new": new_count,
             "learn": learn_count,
@@ -581,16 +563,17 @@ class ReviewApp(App[None]):
             "total": total_count,
         }
 
-    def _rating_hints(self) -> dict[int, str]:
-        hints = {1: "<10m", 2: "-", 3: "-", 4: "-"}
-        if self._card_id is None:
-            return hints
+    def _safe_due_counts(self) -> dict[str, int]:
+        return self._due_counts(self._backend, self._deck)
 
-        if not self._introspects:
+    @staticmethod
+    def _rating_hints_for(backend: Any, introspects: bool, card_id: int | None) -> dict[int, str]:
+        hints = dict(_DEFAULT_HINTS)
+        if card_id is None or not introspects:
             return hints
 
         try:
-            items = self._backend.preview_ratings(int(self._card_id))
+            items = backend.preview_ratings(int(card_id))
         except Exception:
             return hints
 
@@ -610,44 +593,24 @@ class ReviewApp(App[None]):
 
         return hints
 
+    def _rating_hints(self) -> dict[int, str]:
+        return self._rating_hints_for(self._backend, self._introspects, self._card_id)
+
     def _refresh_rate_buttons(self) -> None:
-        hints = self._rating_hints()
-        self._ui_update("#rate-1", f"1 Again\n{hints[1]}")
-        self._ui_update("#rate-2", f"2 Hard\n{hints[2]}")
-        self._ui_update("#rate-3", f"3 Good\n{hints[3]}")
-        self._ui_update("#rate-4", f"4 Easy\n{hints[4]}")
-
-    def _render_hint_bar(self) -> None:
-        # Derive the bar from BINDINGS so it can only advertise keys that
-        # actually do something.
-        hint = Text()
-        first = True
-        for binding in self.BINDINGS:
-            if not binding.show:
-                continue
-            if not first:
-                hint.append("   ")
-            hint.append(f" {binding.key_display or binding.key} ", style=f"bold {BLUE}")
-            hint.append(f" {binding.description}", style=DIM)
-            first = False
-        self._ui_update("#hintbar", hint)
-
-    def _render_shortcuts(self) -> None:
-        sc = Text()
-        for key, label in [("Space", "flip"), ("q", "quit")]:
-            sc.append(f" {key} ", style=f"bold {BLUE}")
-            sc.append(f"  {label}\n", style=DIM)
-        self._ui_update("#shortcuts-block", sc)
+        for ease, name in _RATINGS:
+            with contextlib.suppress(Exception):
+                self.query_one(
+                    f"#rate-{ease}", Button
+                ).label = f"{ease} {name} · {self._hints.get(ease, '-')}"
 
     def _refresh_chrome(self) -> None:
-        counts = self._safe_due_counts()
+        counts = self._counts
         remaining_total = counts["total"]
 
         if self._session_total <= 0:
             self._session_total = remaining_total
 
-        done_from_remaining = max(0, self._session_total - remaining_total)
-        done = max(done_from_remaining, self._answered)
+        done = max(max(0, self._session_total - remaining_total), self._answered)
 
         if self._session_total > 0:
             pct = int((done * 100) / self._session_total)
@@ -656,93 +619,129 @@ class ReviewApp(App[None]):
         pct = max(0, min(100, pct))
 
         deck_name = self._deck or "all decks"
-        self._ui_update("#topbar-right", f"{deck_name} · {remaining_total} remaining")
-        self._ui_update("#counter", f"{done} / {self._session_total} · {pct}%")
+        title = Text()
+        title.append(f"anki-cli {__version__} · study · {deck_name}")
+        self._ui_update("#header-title", title)
 
-        bar = _progress_bar(pct, width=20)
-        session = Text()
-        session.append(f" {bar} ", style=BLUE)
-        session.append(f" {pct}%\n", style=f"bold {BLUE}")
-        session.append(f" {done}/{self._session_total} done", style=DIM)
-        self._ui_update("#session-block", session)
+        stats = Text()
+        stats.append(f"{done}/{self._session_total} · {pct}%   ", style=DIM)
+        stats.append(f"new {counts['new']}", style=f"bold {BLUE}")
+        stats.append("  ")
+        stats.append(f"learn {counts['learn']}", style=f"bold {YELLOW}")
+        stats.append("  ")
+        stats.append(f"review {counts['review']}", style=f"bold {GREEN}")
+        self._ui_update("#header-stats", stats)
 
-        today = Text()
-        today.append("Again  ", style=DIM)
-        today.append(f"{self._rating_counts.get(1, 0)}\n", style=f"bold {RED}")
-        today.append("Hard   ", style=DIM)
-        today.append(f"{self._rating_counts.get(2, 0)}\n", style=f"bold {YELLOW}")
-        today.append("Good   ", style=DIM)
-        today.append(f"{self._rating_counts.get(3, 0)}\n", style=f"bold {BLUE}")
-        today.append("Easy   ", style=DIM)
-        today.append(f"{self._rating_counts.get(4, 0)}", style=f"bold {GREEN}")
-        self._ui_update("#today-block", today)
-
-        remaining = Text()
-        remaining.append("New     ", style=BLUE)
-        remaining.append(f"{counts['new']}\n", style=f"bold {BLUE}")
-        remaining.append("Learn   ", style=YELLOW)
-        remaining.append(f"{counts['learn']}\n", style=f"bold {YELLOW}")
-        remaining.append("Review  ", style=GREEN)
-        remaining.append(f"{counts['review']}", style=f"bold {GREEN}")
-        self._ui_update("#remaining-block", remaining)
-
-    def _load_next(self) -> None:
+    def _fetch_next(self, card_id: int | None, kind: str) -> _Loaded:
+        """Pick and fully prepare the next card. Runs on a worker thread."""
+        loaded = _Loaded()
         try:
-            # The scheduler's own ordering when the backend exposes it; the
-            # query-based picker is the approximation otherwise.
-            if self._introspects:
+            if card_id is not None:
+                loaded.card_id, loaded.kind = int(card_id), kind
+            elif self._introspects:
+                # The scheduler's own ordering when the backend exposes it; the
+                # query-based picker is the approximation otherwise.
                 picked = self._backend.get_next_due_card(self._deck)
                 cid = picked.get("card_id") if isinstance(picked, dict) else None
-                kind = str(picked.get("kind", "none")) if isinstance(picked, dict) else "none"
-                self._card_id = int(cid) if isinstance(cid, int) else None
-                self._kind = kind
+                loaded.kind = (
+                    str(picked.get("kind", "none")) if isinstance(picked, dict) else "none"
+                )
+                loaded.card_id = int(cid) if isinstance(cid, int) else None
             else:
-                self._card_id, self._kind = pick_next_due_card_id(self._backend, deck=self._deck)
+                loaded.card_id, loaded.kind = pick_next_due_card_id(self._backend, deck=self._deck)
         except Exception as exc:
-            self._card_id = None
-            self._kind = "error"
-            self._current_card = None
-            self._set_status(f"failed to pick next card: {exc}")
+            loaded.card_id, loaded.kind = None, "error"
+            loaded.error = f"failed to pick next card: {exc}"
+            return loaded
+
+        loaded.counts = self._safe_due_counts()
+        if loaded.card_id is None:
+            return loaded
+
+        with contextlib.suppress(Exception):
+            card_obj = self._backend.get_card(int(loaded.card_id))
+            if isinstance(card_obj, Mapping):
+                loaded.card = dict(card_obj)
+
+        try:
+            rendered = self._render_card(loaded.card_id, reveal_answer=True)
+            loaded.rendered = (
+                loaded.card_id,
+                _strip_html_basic(str(rendered.get("question") or "")),
+                _strip_html_basic(str(rendered.get("answer") or "")),
+            )
+        except Exception as exc:
+            loaded.error = f"render failed: {exc}"
+        loaded.hints = self._rating_hints_for(self._backend, self._introspects, loaded.card_id)
+        return loaded
+
+    def _load_next(self, card_id: int | None = None, kind: str = "next") -> None:
+        # Hide the previous card's controls while the next one loads, so a
+        # second keypress cannot answer the card that was just rated.
+        self._loading = True
+        self._card_id = None
+        self._load_worker(card_id, kind)
+
+    @work(thread=True, exclusive=True, group="load")
+    def _load_worker(self, card_id: int | None, kind: str) -> None:
+        loaded = self._fetch_next(card_id, kind)
+        if get_current_worker().is_cancelled:
+            return
+        self.call_from_thread(self._apply_loaded, loaded)
+
+    def _apply_loaded(self, loaded: _Loaded) -> None:
+        self._loading = False
+        self._card_id = loaded.card_id
+        self._kind = loaded.kind
+        self._show_answer = False
+        self._current_card = loaded.card
+        self._rendered = loaded.rendered
+        self._counts = loaded.counts or self._counts
+        self._hints = loaded.hints or dict(_DEFAULT_HINTS)
+
+        if loaded.error and loaded.card_id is None:
+            self._set_status(loaded.error)
             self._ui_update("#question", "")
             self._ui_update("#answer", "")
             self._refresh_rate_buttons()
             self._refresh_chrome()
+            self._sync_reveal()
             return
-
-        self._show_answer = False
-        self._rendered = None
 
         if self._card_id is None:
             deck = self._deck or "(all)"
-            self._current_card = None
-            self._set_status(f"No due cards. deck={deck}")
-            self._ui_update("#deck-badge", deck)
-            self._ui_update("#question", "No due cards.")
+            self.query_one("#question-panel").border_title = f"Question · {deck}"
+            self._ui_update("#question", f"No due cards. deck={deck}")
             self._ui_update("#answer", "")
             self._refresh_rate_buttons()
             self._refresh_chrome()
+            self._sync_reveal()
             return
 
-        self._current_card = None
-        with contextlib.suppress(Exception):
-            card_obj = self._backend.get_card(int(self._card_id))
-            if isinstance(card_obj, Mapping):
-                self._current_card = dict(card_obj)
+        if loaded.error:
+            self._ui_update("#question", loaded.error)
+            self._ui_update("#answer", "")
+            self._refresh_rate_buttons()
+            self._refresh_chrome()
+            self._sync_reveal()
+            return
 
         self._render_current()
-        self._set_status(f"card_id={self._card_id} kind={self._kind}")
+
+    def _sync_reveal(self) -> None:
+        """Show the answer block and rating row only once the answer is up."""
+        revealed = self._show_answer and self._card_id is not None
+        with contextlib.suppress(Exception):
+            self.query_one("#column").set_class(revealed, "-revealed")
 
     def _render_current(self) -> None:
         assert self._card_id is not None
-        fresh = self._rendered is None or self._rendered[0] != self._card_id
-        if fresh:
+        if self._rendered is None or self._rendered[0] != self._card_id:
             try:
                 rendered = self._render_card(self._card_id, reveal_answer=True)
             except Exception as exc:
                 self._ui_update("#question", f"render failed: {exc}")
                 self._ui_update("#answer", "")
-                self._refresh_rate_buttons()
-                self._refresh_chrome()
                 return
             self._rendered = (
                 self._card_id,
@@ -750,27 +749,21 @@ class ReviewApp(App[None]):
                 _strip_html_basic(str(rendered.get("answer") or "")),
             )
 
-        assert self._rendered is not None
         _, question, answer = self._rendered
 
         self._ui_update("#question", question or "(empty question)")
-        if self._show_answer:
-            self._ui_update("#answer", answer or "(empty answer)")
-        else:
-            self._ui_update("#answer", "[space] show answer")
-
-        if not fresh:
-            # Flipping the answer changes nothing else on screen.
-            return
+        self._ui_update("#answer", answer or "(empty answer)")
+        self._sync_reveal()
 
         deck_badge = self._deck
         if not deck_badge and isinstance(self._current_card, Mapping):
             raw_deck = self._current_card.get("deckName")
             if isinstance(raw_deck, str) and raw_deck.strip():
                 deck_badge = raw_deck.strip()
-        badge = Text()
-        badge.append(f"  {(deck_badge or 'all decks').upper()}  ", style=f"bold {BLUE}")
-        self._ui_update("#deck-badge", badge)
+        with contextlib.suppress(Exception):
+            self.query_one(
+                "#question-panel"
+            ).border_title = f"Question · {deck_badge or 'all decks'}"
 
         self._refresh_rate_buttons()
         self._refresh_chrome()
