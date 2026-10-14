@@ -878,3 +878,39 @@ def test_helper_edge_cases_for_validate_and_tag_coercion(
     assert backend._extract_tags(" a, b ") == ["a", "b"]
     assert backend._extract_tags("") == []
     assert backend._extract_tags(123) == []
+
+
+def test_get_cards_and_get_notes_are_one_request_in_id_order(
+    backend: AnkiConnectBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_invoke(action: str, **params: Any) -> Any:
+        calls.append((action, params))
+        if action == "cardsInfo":
+            # AnkiConnect answers in request order, with {} for an unknown id.
+            return [
+                {"cardId": i, "note": 1, "deckName": "D", "modelName": "Basic", "fields": {}}
+                if i != 998
+                else {}
+                for i in params["cards"]
+            ]
+        if action == "notesInfo":
+            return [
+                {"noteId": i, "modelName": "Basic", "tags": [], "mod": 1, "fields": {}}
+                if i != 998
+                else {}
+                for i in params["notes"]
+            ]
+        raise AssertionError(action)
+
+    monkeypatch.setattr(backend, "_invoke", fake_invoke)
+
+    cards = backend.get_cards([30, 998, 10, 30])
+    assert [c["cardId"] for c in cards] == [30, 10]
+    notes = backend.get_notes([5, 998, 4])
+    assert [n["id"] for n in notes] == [5, 4]
+    assert [a for a, _ in calls] == ["cardsInfo", "notesInfo"]
+    assert backend.get_cards([]) == [] and backend.get_notes([]) == []
+    assert len(calls) == 2

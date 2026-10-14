@@ -8,6 +8,7 @@ import sqlite3
 import time
 
 from anki_cli.db.codec import strip_html_preserving_media_filenames
+from anki_cli.db.connection import SQL_IN_CHUNK
 from anki_cli.db.deck_lookup import DeckLookupMixin
 from anki_cli.db.errors import DuplicateNoteError, EmptyNoteError, NoteRejectedError
 from anki_cli.db.notetypes import NotetypesMixin
@@ -37,19 +38,35 @@ class NotesMixin(NotetypesMixin, DeckLookupMixin):
         return [int(row["id"]) for row in rows]
 
     def get_note(self, note_id: int) -> dict[str, JSONValue]:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT id, guid, mid, mod, usn, tags, flds, sfld, csum, flags, data
-                FROM notes
-                WHERE id = ?
-                """,
-                (note_id,),
-            ).fetchone()
-
-        if row is None:
+        notes = self.get_notes([note_id])
+        if not notes:
             raise LookupError(f"Note not found: {note_id}")
+        return notes[0]
 
+    def get_notes(self, note_ids: list[int]) -> list[dict[str, JSONValue]]:
+        """Fetch many notes over one connection, in ``note_ids`` order.
+
+        Missing ids are skipped; duplicates are returned once.
+        """
+        ids = list(dict.fromkeys(int(i) for i in note_ids))
+        if not ids:
+            return []
+
+        rows: dict[int, sqlite3.Row] = {}
+        with self._connect() as conn:
+            for lo in range(0, len(ids), SQL_IN_CHUNK):
+                chunk = ids[lo : lo + SQL_IN_CHUNK]
+                marks = ",".join("?" * len(chunk))
+                sql = (
+                    "SELECT id, guid, mid, mod, usn, tags, flds, sfld, csum, flags, data "
+                    f"FROM notes WHERE id IN ({marks})"
+                )
+                for row in conn.execute(sql, chunk):
+                    rows[int(row["id"])] = row
+
+        return [self._note_dict(rows[i]) for i in ids if i in rows]
+
+    def _note_dict(self, row: sqlite3.Row) -> dict[str, JSONValue]:
         raw_tags = str(row["tags"] or "")
         raw_fields = str(row["flds"] or "")
 

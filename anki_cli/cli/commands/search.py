@@ -5,50 +5,43 @@ from typing import Any
 import click
 
 from anki_cli.cli.command import CommandContext, anki_command
+from anki_cli.cli.paging import limit_option, offset_option, paginate
 from anki_cli.models.output import JSONValue
 
-DEFAULT_CARD_LIMIT = 1000
 
-_LIMIT_OPTION = click.option(
-    "--limit",
-    type=int,
-    default=DEFAULT_CARD_LIMIT,
-    show_default=True,
-    help="Max cards to return with details (0 = no limit); count of all matches is in `total`",
-)
-
-
-def _card_search(cmd: CommandContext, *, query: str, limit: int) -> JSONValue:
+def _card_search(cmd: CommandContext, *, query: str, limit: int, offset: int) -> JSONValue:
     backend = cmd.backend
     with cmd.query_errors(query):
         card_ids = backend.find_cards(query)
     total = len(card_ids)
-    if limit > 0 and total > limit:
-        # Every card costs a get_card round trip; an unbounded run on a large
+    page = paginate(card_ids, limit=limit, offset=offset)
+    if len(page) < total:
+        # Details are fetched for the page only; an unbounded run on a large
         # collection is the footgun `cards` without --query invites.
-        card_ids = card_ids[:limit]
         cmd.warnings.append(
-            f"{total} cards matched; showing the first {limit}. "
-            "Pass --limit 0 for all, or use cards:ids for ids only."
+            f"{total} cards matched; showing {len(page)} from offset {offset}. "
+            "Raise --limit (0 = all), page with --offset, or use cards:ids for ids only."
         )
-    cards: list[dict[str, Any]] = [backend.get_card(cid) for cid in card_ids]
+    cards: list[dict[str, Any]] = backend.get_cards(page) if page else []
     return {"query": query, "count": len(cards), "total": total, "items": cards}
 
 
 @anki_command("cards")
 @click.option("--query", default="", help="Anki search query (empty = every card)")
-@_LIMIT_OPTION
-def cards_cmd(cmd: CommandContext, query: str, limit: int) -> JSONValue:
+@limit_option
+@offset_option
+def cards_cmd(cmd: CommandContext, query: str, limit: int, offset: int) -> JSONValue:
     """List cards matching a query, with full details.
 
     ``cards:ids`` returns ids only; ``browse`` opens the interactive TUI.
     """
-    return _card_search(cmd, query=query, limit=limit)
+    return _card_search(cmd, query=query, limit=limit, offset=offset)
 
 
 @anki_command("search", hidden=True)
 @click.option("--query", required=True, help="Anki search query")
-@_LIMIT_OPTION
-def search_cmd(cmd: CommandContext, query: str, limit: int) -> JSONValue:
+@limit_option
+@offset_option
+def search_cmd(cmd: CommandContext, query: str, limit: int, offset: int) -> JSONValue:
     """Alias of ``cards`` (kept for existing scripts)."""
-    return _card_search(cmd, query=query, limit=limit)
+    return _card_search(cmd, query=query, limit=limit, offset=offset)

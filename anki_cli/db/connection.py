@@ -36,6 +36,11 @@ from anki_cli.models.output import JSONValue
 logger = logging.getLogger(__name__)
 
 
+# ``WHERE id IN (...)`` batch size; stays under SQLite's bound-variable limit
+# (999 on older builds).
+SQL_IN_CHUNK = 500
+
+
 class ConnectionMixin(CodecMixin):
     """Helpers for Anki's collection(.anki21b/.anki2) schema."""
 
