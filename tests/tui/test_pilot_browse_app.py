@@ -511,3 +511,288 @@ def test_enter_opens_the_detail_modal_and_escape_closes_it(
             assert not isinstance(app.screen, DetailScreen)
 
     run_async(scenario())
+
+
+# --- #86: multi-select and typed actions -------------------------------------------
+
+
+def _screen_text(app: Any) -> str:
+    return " ".join(strip.text for strip in app.screen._compositor.render_strips())
+
+
+async def _settle(pilot: Any, app: BrowseApp) -> None:
+    await app.workers.wait_for_complete()
+    await pilot.pause()
+    await pilot.pause()
+
+
+def test_space_ticks_the_card_and_moves_on(fake_backend: FakeBackend, run_async: Any) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            table = await _mounted(pilot, app)
+            await pilot.press("space")
+            await pilot.pause()
+            assert app._marked == {1000}
+            assert table.cursor_row == 1
+            first = table.get_row_at(0)[0]
+            assert isinstance(first, Text) and first.plain.startswith("✓")
+            assert "1 selected" in str(app.query_one("#header-count", Static).content)
+
+            # Ticking it again (back on row 0) clears the mark.
+            await pilot.press("up", "space")
+            await pilot.pause()
+            assert app._marked == set()
+            assert "selected" not in str(app.query_one("#header-count", Static).content)
+
+    run_async(scenario())
+
+
+def test_batch_actions_apply_to_every_ticked_card(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("space", "space", "space")  # cards 1000, 1001, 1002
+            await pilot.press("s")
+            await _settle(pilot, app)
+            suspended = _calls(fake_backend, "suspend_cards")
+            assert suspended == [((1000, 1001, 1002),)]
+            assert any("3 cards suspended" in n.message for n in app._notifications)
+
+            await pilot.press("f", "3")
+            await _settle(pilot, app)
+            assert _calls(fake_backend, "set_card_flag") == [((1000, 1001, 1002), 3)]
+            # Ticks survive the reload that follows an action.
+            assert app._marked == {1000, 1001, 1002}
+
+    run_async(scenario())
+
+
+def test_without_ticks_actions_use_the_highlighted_card(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("down", "s")
+            await _settle(pilot, app)
+            assert _calls(fake_backend, "suspend_cards") == [((1001,),)]
+
+    run_async(scenario())
+
+
+def test_a_ticks_everything_and_a_second_press_clears_it(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("a")
+            await pilot.pause()
+            assert len(app._marked) == 6
+            assert "6 selected" in str(app.query_one("#header-count", Static).content)
+            await pilot.press("a")
+            await pilot.pause()
+            assert app._marked == set()
+
+    run_async(scenario())
+
+
+def test_escape_clears_the_ticks_before_it_quits(fake_backend: FakeBackend, run_async: Any) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("space", "space")
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app._marked == set()
+            assert app.is_running  # the first Esc only cleared the selection
+
+    run_async(scenario())
+
+
+def test_the_cursor_stays_on_its_card_after_an_action(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    """Every action reloads the table; that used to send the cursor to row 0."""
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            table = await _mounted(pilot, app)
+            await pilot.press("down", "down", "s")
+            await _settle(pilot, app)
+            assert table.cursor_row == 2
+
+    run_async(scenario())
+
+
+def test_deleting_ticked_notes_confirms_once_for_all_of_them(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    from anki_cli.tui.browse_app import ConfirmScreen
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("space", "space", "d")
+            await _settle(pilot, app)
+            assert isinstance(app.screen, ConfirmScreen)
+            assert "Delete 2 notes and 2 cards?" in _screen_text(app)
+            await pilot.press("y")
+            await _settle(pilot, app)
+            assert _calls(fake_backend, "delete_notes") == [((5000, 5001),)]
+
+    run_async(scenario())
+
+
+def test_move_prompts_for_an_existing_deck(fake_backend: FakeBackend, run_async: Any) -> None:
+    from textual.widgets import Input
+
+    from anki_cli.tui.prompts import PromptScreen
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("space", "space", "m")
+            await _settle(pilot, app)
+            assert isinstance(app.screen, PromptScreen)
+            box = app.screen.query_one(Input)
+
+            # An unknown deck keeps the prompt open and says why.
+            box.value = "Nope"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, PromptScreen)
+            assert "No deck called 'Nope'" in _screen_text(app)
+            assert _calls(fake_backend, "move_cards") == []
+
+            # Matching ignores case and uses the deck's real spelling.
+            box.value = "maths"
+            await pilot.press("enter")
+            await _settle(pilot, app)
+            assert _calls(fake_backend, "move_cards") == [((1000, 1001), "Maths")]
+
+    run_async(scenario())
+
+
+def test_escape_cancels_a_prompt(fake_backend: FakeBackend, run_async: Any) -> None:
+    from anki_cli.tui.prompts import PromptScreen
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("m")
+            await _settle(pilot, app)
+            assert isinstance(app.screen, PromptScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, PromptScreen)
+            assert _calls(fake_backend, "move_cards") == []
+
+    run_async(scenario())
+
+
+def test_tag_prompt_adds_and_removes(fake_backend: FakeBackend, run_async: Any) -> None:
+    from textual.widgets import Input
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("t")
+            await _settle(pilot, app)
+            box = app.screen.query_one(Input)
+
+            box.value = ""
+            await pilot.press("enter")
+            await pilot.pause()
+            assert "Type at least one tag" in _screen_text(app)
+
+            box.value = "verb -geo"
+            await pilot.press("enter")
+            await _settle(pilot, app)
+            assert _calls(fake_backend, "add_tags") == [((5000,), ("verb",))]
+            assert _calls(fake_backend, "remove_tags") == [((5000,), ("geo",))]
+            assert any("+verb -geo" in n.message for n in app._notifications)
+
+    run_async(scenario())
+
+
+def test_reschedule_prompt_takes_a_number_of_days(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    from textual.widgets import Input
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("R")
+            await _settle(pilot, app)
+            box = app.screen.query_one(Input)
+
+            for bad in ("soon", "-3", "1.5"):
+                box.value = bad
+                await pilot.press("enter")
+                await pilot.pause()
+                assert "whole number of days" in _screen_text(app), bad
+            assert _calls(fake_backend, "reschedule_cards") == []
+
+            box.value = "7"
+            await pilot.press("enter")
+            await _settle(pilot, app)
+            assert _calls(fake_backend, "reschedule_cards") == [((1000,), 7)]
+
+    run_async(scenario())
+
+
+def test_token_suggester_completes_the_last_word_and_keeps_the_minus() -> None:
+    from anki_cli.tui.prompts import TokenSuggester
+
+    tags = TokenSuggester(["geo", "networking", "verb"])
+
+    async def check() -> None:
+        assert await tags.get_suggestion("net") == "networking"
+        assert await tags.get_suggestion("geo ver") == "geo verb"
+        assert await tags.get_suggestion("geo -ver") == "geo -verb"
+        assert await tags.get_suggestion("verb") is None  # already complete
+        assert await tags.get_suggestion("") is None
+        assert await tags.get_suggestion("zzz") is None
+        decks = TokenSuggester(["Languages::Japanese", "Maths"], multi=False)
+        assert await decks.get_suggestion("lang") == "Languages::Japanese"
+        assert await decks.get_suggestion("Languages::J") == "Languages::Japanese"
+
+    asyncio.run(check())
+
+
+def test_new_row_actions_are_unavailable_without_a_card(run_async: Any) -> None:
+    backend = FakeBackend(cards=[])
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            for action in (
+                "toggle_mark",
+                "mark_all",
+                "move_selected",
+                "tag_selected",
+                "reschedule_selected",
+            ):
+                assert app.check_action(action, ()) is False, action
+            await pilot.press("m", "t", "R")
+            await pilot.pause()
+            assert type(app.screen).__name__ == "Screen"
+
+    run_async(scenario())

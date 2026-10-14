@@ -294,8 +294,8 @@ def test_footer_legend_lists_only_actual_bindings() -> None:
     assert shown == {
         "/": "Filter",
         "Enter": "Detail",
+        "Space": "Mark",
         "s": "Suspend",
-        "b": "Bury",
         "f": "Flag",
         "d": "Delete",
         "?": "Help",
@@ -360,3 +360,16 @@ def test_browser_row_shows_cloze_as_brackets_and_marks_flagged_cards() -> None:
 
     flagged = browse_mod._format_browser_row({"fields": ["Q"], "flags": 1}, question_width=20)
     assert flagged[0].plain == "\u2691 Q"
+
+
+def test_browser_row_marks_ticked_cards_before_the_flag() -> None:
+    card = {"fields": ["Q"], "flags": 2}
+    both = browse_mod._format_browser_row(card, question_width=20, marked=True)
+    assert both[0].plain == "\u2713 \u2691 Q"
+    only_mark = browse_mod._format_browser_row({"fields": ["Q"]}, question_width=20, marked=True)
+    assert only_mark[0].plain == "\u2713 Q"
+    # The prefix comes out of the column's width, so the cell never overflows it.
+    long = browse_mod._format_browser_row(
+        {"fields": ["x" * 50], "flags": 1}, question_width=20, marked=True
+    )
+    assert len(long[0].plain) == 20
