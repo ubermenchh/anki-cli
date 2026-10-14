@@ -30,6 +30,7 @@ from anki_cli.tui.colors import (
     DIM,
     GREEN,
     MENU_BG,
+    RED,
     TEXT,
     TOKYO_NIGHT,
     TOOLBAR_BG,
@@ -236,11 +237,34 @@ class ReviewApp(App[None]):
         height: 3;
         margin-top: 1;
     }}
+    /* Outlined, rounded buttons to match the panels; the variant colour is the
+       outline and the text, and the fill only appears on hover / focus. */
     #actions Button {{
         height: 3;
         width: 1fr;
         margin: 0 1 0 0;
+        min-width: 8;
+        border: round {BORDER};
+        background: {TOOLBAR_BG};
+        color: {TEXT};
+        text-style: bold;
+        tint: transparent;
     }}
+    #actions #show-answer {{
+        border: round {BLUE};
+        color: {BLUE};
+    }}
+    #actions #show-answer:hover, #actions #show-answer:focus {{
+        background: {BLUE} 20%;
+    }}
+    #actions #rate-1 {{ border: round {RED}; color: {RED}; }}
+    #actions #rate-2 {{ border: round {YELLOW}; color: {YELLOW}; }}
+    #actions #rate-3 {{ border: round {GREEN}; color: {GREEN}; }}
+    #actions #rate-4 {{ border: round {BLUE}; color: {BLUE}; }}
+    #actions #rate-1:hover, #actions #rate-1:focus {{ background: {RED} 20%; }}
+    #actions #rate-2:hover, #actions #rate-2:focus {{ background: {YELLOW} 20%; }}
+    #actions #rate-3:hover, #actions #rate-3:focus {{ background: {GREEN} 20%; }}
+    #actions #rate-4:hover, #actions #rate-4:focus {{ background: {BLUE} 20%; }}
     #rate-row {{
         display: none;
         height: 3;
@@ -283,6 +307,36 @@ class ReviewApp(App[None]):
     Screen.-short #actions Button {{
         height: 1;
         border: none;
+    }}
+    Screen.-short #actions #show-answer {{
+        border: none;
+        height: 1;
+        background: {BLUE} 20%;
+        color: {BLUE};
+    }}
+    Screen.-short #actions #rate-1 {{
+        border: none;
+        height: 1;
+        background: {RED} 20%;
+        color: {RED};
+    }}
+    Screen.-short #actions #rate-2 {{
+        border: none;
+        height: 1;
+        background: {YELLOW} 20%;
+        color: {YELLOW};
+    }}
+    Screen.-short #actions #rate-3 {{
+        border: none;
+        height: 1;
+        background: {GREEN} 20%;
+        color: {GREEN};
+    }}
+    Screen.-short #actions #rate-4 {{
+        border: none;
+        height: 1;
+        background: {BLUE} 20%;
+        color: {BLUE};
     }}
     """
 
