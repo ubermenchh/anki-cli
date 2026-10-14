@@ -109,11 +109,16 @@ def test_format_card_detail_wraps_long_fields_under_the_value_column() -> None:
     assert all(ln.index("word") == first_col for ln in field_lines)
 
 
-def test_format_card_detail_shows_flags_only_when_set() -> None:
-    assert "Flags" not in _render(browse_mod._format_card_detail({"cardId": 1, "flags": 0}))
+def test_format_card_detail_shows_the_flag_by_name_only_when_set() -> None:
+    assert "Flag" not in _render(browse_mod._format_card_detail({"cardId": 1, "flags": 0}))
     assert re.search(
-        r"Flags\s+3", _render(browse_mod._format_card_detail({"cardId": 1, "flags": 3}))
+        r"Flag\s+Red", _render(browse_mod._format_card_detail({"cardId": 1, "flags": 1}))
     )
+    # Only the low three bits are the colour; the rest are other Anki markers.
+    assert re.search(
+        r"Flag\s+Blue", _render(browse_mod._format_card_detail({"cardId": 1, "flags": 8 | 4}))
+    )
+    assert "Flag" not in _render(browse_mod._format_card_detail({"cardId": 1, "flags": 8}))
 
 
 @pytest.mark.parametrize(
@@ -290,6 +295,8 @@ def test_footer_legend_lists_only_actual_bindings() -> None:
         "/": "Filter",
         "Enter": "Detail",
         "s": "Suspend",
+        "b": "Bury",
+        "f": "Flag",
         "d": "Delete",
         "?": "Help",
         "q": "Quit",
@@ -325,3 +332,31 @@ def test_format_due_short_epoch_fallback_rounds_up_to_the_due_day(
     assert browse_mod._format_due_short(review(now + 86_400 + 60)) == "2d"
     assert browse_mod._format_due_short(review(now - 3600)) == "today"  # started already
     assert browse_mod._format_due_short(review(now - 5 * 86_400)) == "today"  # overdue
+
+
+def test_cloze_question_hides_the_answer_and_shows_hints() -> None:
+    assert browse_mod._cloze_question("{{c1::Photosynthesis}} makes sugar") == "[...] makes sugar"
+    assert browse_mod._cloze_question("{{c2::Paris::capital}}") == "[capital]"
+    assert browse_mod._cloze_question("{{c1::a}} and {{c2::b}}") == "[...] and [...]"
+    assert browse_mod._cloze_question("no cloze here") == "no cloze here"
+
+
+def test_cloze_answer_reveals_every_cloze() -> None:
+    assert browse_mod._cloze_answer("{{c1::a}} and {{c2::b::hint}}") == "a and b"
+
+
+def test_front_back_for_cloze_notes_uses_the_cloze_view() -> None:
+    card = {"fields": ["<b>{{c1::Mitochondria}}</b> make ATP", "Extra detail"]}
+    front, back = browse_mod._extract_front_back(card)
+    assert front == "[...] make ATP"
+    assert back == "Mitochondria make ATP\n\nExtra detail"
+    # A normal note is untouched.
+    assert browse_mod._extract_front_back({"fields": ["Q", "A"]}) == ("Q", "A")
+
+
+def test_browser_row_shows_cloze_as_brackets_and_marks_flagged_cards() -> None:
+    row = browse_mod._format_browser_row({"fields": ["{{c1::Paris}} is a city"], "flags": 0})
+    assert row[0].plain == "[...] is a city"
+
+    flagged = browse_mod._format_browser_row({"fields": ["Q"], "flags": 1}, question_width=20)
+    assert flagged[0].plain == "\u2691 Q"

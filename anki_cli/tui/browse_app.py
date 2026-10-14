@@ -17,7 +17,8 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Footer, Input, Static, Tab, Tabs
+from textual.widgets import Button, DataTable, Footer, Input, OptionList, Static, Tab, Tabs
+from textual.widgets.option_list import Option
 from textual.worker import get_current_worker
 
 from anki_cli import __version__
@@ -160,7 +161,7 @@ def _format_card_detail(card: Mapping[str, Any], pal: Palette = DEFAULT_PALETTE)
     interval = to_int(card.get("interval"), 0)
     factor = to_int(card.get("factor"), 0)
     lapses = to_int(card.get("lapses"), 0)
-    flags = to_int(card.get("flags"), 0)
+    flag = _flag_of(card)
 
     summary = grid(10)
     summary.add_row(label("Deck"), value(card.get("deckName", ""), pal.accent))
@@ -172,8 +173,8 @@ def _format_card_detail(card: Mapping[str, Any], pal: Palette = DEFAULT_PALETTE)
     summary.add_row(label("Ease"), value(f"{factor // 10}%" if factor > 0 else "-"))
     summary.add_row(label("Reps"), value(card.get("reps", 0)))
     summary.add_row(label("Lapses"), value(lapses, pal.error if lapses > 3 else pal.text))
-    if flags:
-        summary.add_row(label("Flags"), value(flags, pal.warning))
+    if flag:
+        summary.add_row(label("Flag"), value(_FLAGS[flag][0], _flag_color(flag, pal)))
 
     parts: list[Any] = [summary]
 
@@ -245,11 +246,51 @@ def _extract_field_values(card: Mapping[str, Any]) -> list[str]:
     return []
 
 
+_CLOZE_RE = re.compile(r"\{\{c\d+::(.*?)(?:::(.*?))?\}\}", re.S)
+
+
+def _cloze_question(text: str) -> str:
+    """``{{c1::answer::hint}}`` -> ``[hint]`` / ``[...]``, as Anki's browser shows it."""
+    return _CLOZE_RE.sub(lambda m: f"[{m.group(2)}]" if m.group(2) else "[...]", text)
+
+
+def _cloze_answer(text: str) -> str:
+    return _CLOZE_RE.sub(lambda m: m.group(1), text)
+
+
 def _extract_front_back(card: Mapping[str, Any]) -> tuple[str, str]:
+    """Question and answer text. Cloze notes keep every cloze in the first
+    field, so the question hides them and the answer shows them (+ Extra)."""
     values = _extract_field_values(card)
-    front = _strip_html_basic(values[0]) if len(values) > 0 else ""
-    back = _strip_html_basic(values[1]) if len(values) > 1 else ""
-    return front, back
+    first = _strip_html_basic(values[0]) if len(values) > 0 else ""
+    second = _strip_html_basic(values[1]) if len(values) > 1 else ""
+    if _CLOZE_RE.search(first):
+        answer = _cloze_answer(first)
+        return _cloze_question(first), f"{answer}\n\n{second}" if second else answer
+    return first, second
+
+
+# Anki's flag numbers: name and the Palette role it is drawn with.
+_FLAGS: dict[int, tuple[str, str | None]] = {
+    0: ("No flag", None),
+    1: ("Red", "error"),
+    2: ("Orange", "warning"),
+    3: ("Green", "success"),
+    4: ("Blue", "primary"),
+    5: ("Pink", "secondary"),
+    6: ("Turquoise", "accent"),
+    7: ("Purple", "secondary"),
+}
+
+
+def _flag_of(card: Mapping[str, Any]) -> int:
+    """The colour flag (the low three bits of ``cards.flags``)."""
+    return to_int(card.get("flags"), 0) & 7
+
+
+def _flag_color(flag: int, pal: Palette) -> str:
+    role = _FLAGS.get(flag, ("", None))[1]
+    return str(getattr(pal, role)) if role else pal.muted
 
 
 def _extract_note_id_from_card(card: Mapping[str, Any]) -> int | None:
@@ -266,7 +307,12 @@ def _format_browser_row(
     """One table row in ``_BROWSE_COLUMNS`` order: Question, Deck, Due, Ivl, Type."""
     front, _ = _extract_front_back(card)
     question_text = " ".join(front.split())
-    question = Text(_truncate(question_text, question_width), style=pal.text)
+    flag = _flag_of(card)
+    if flag:
+        question = Text("\u2691 ", style=_flag_color(flag, pal))
+        question.append(_truncate(question_text, question_width - 2), style=pal.text)
+    else:
+        question = Text(_truncate(question_text, question_width), style=pal.text)
 
     deck_name = str(card.get("deckName", ""))
     deck = Text(_truncate(_deck_leaf(deck_name), _FIXED_COLUMN_WIDTHS["Deck"]), style=pal.accent)
@@ -306,6 +352,163 @@ class CardTable(DataTable[Text | str]):
 
     def on_resize(self, event: events.Resize) -> None:
         self.post_message(self.Resized())
+
+
+class ConfirmScreen(ModalScreen[bool]):
+    """Yes/no question for something that cannot be undone. Defaults to No."""
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("y", "answer(True)", "Yes", show=False),
+        Binding("n", "answer(False)", "No", show=False),
+        Binding("escape", "answer(False)", "Cancel", show=False),
+    ]
+
+    DEFAULT_CSS = """
+        ConfirmScreen {
+            align: center middle;
+            background: $background 70%;
+        }
+        ConfirmScreen #confirm-panel {
+            width: 60;
+            max-width: 90%;
+            height: auto;
+            background: $background;
+            border: round $error;
+            border-title-color: $error;
+            border-title-style: bold;
+            padding: 1 2;
+        }
+        ConfirmScreen #confirm-buttons {
+            height: 3;
+            margin-top: 1;
+        }
+        ConfirmScreen Button {
+            width: 1fr;
+            height: 3;
+            margin: 0 1 0 0;
+            text-style: bold;
+            tint: transparent;
+        }
+        /* By id: Textual's own Button.-style-default fill outranks a type selector. */
+        ConfirmScreen #confirm-yes, ConfirmScreen #confirm-no {
+            background: $background;
+        }
+        ConfirmScreen #confirm-yes {
+            border: round $error;
+            color: $error;
+        }
+        ConfirmScreen #confirm-no {
+            border: round $border;
+            color: $foreground;
+            margin-right: 0;
+        }
+        ConfirmScreen #confirm-yes:hover, ConfirmScreen #confirm-yes:focus,
+        ConfirmScreen #confirm-no:hover, ConfirmScreen #confirm-no:focus {
+            color: $foreground;
+            text-style: bold underline;
+            background: $background;
+            background-tint: transparent;
+        }
+    """
+
+    def __init__(self, title: str, message: str, confirm_label: str = "Delete") -> None:
+        super().__init__()
+        self._title = title
+        self._message = message
+        self._confirm_label = confirm_label
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-panel"):
+            yield Static(Text(self._message))
+            with Horizontal(id="confirm-buttons"):
+                yield Button(f"{self._confirm_label}  (y)", id="confirm-yes")
+                yield Button("Cancel  (n)", id="confirm-no")
+
+    def on_mount(self) -> None:
+        self.query_one("#confirm-panel").border_title = self._title
+        self.query_one("#confirm-no", Button).focus()
+
+    @on(Button.Pressed, "#confirm-yes")
+    def _yes(self) -> None:
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#confirm-no")
+    def _no(self) -> None:
+        self.dismiss(False)
+
+    def action_answer(self, value: bool) -> None:
+        self.dismiss(value)
+
+
+class FlagScreen(ModalScreen[int | None]):
+    """Pick a colour flag: 0-7, or Esc to leave it alone."""
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("escape", "dismiss_none", "Cancel", show=False),
+        *(Binding(str(n), f"pick({n})", _FLAGS[n][0], show=False) for n in range(8)),
+    ]
+
+    DEFAULT_CSS = """
+        FlagScreen {
+            align: center middle;
+            background: $background 70%;
+        }
+        FlagScreen #flag-panel {
+            width: 36;
+            height: auto;
+            background: $background;
+            border: round $primary;
+            border-title-color: $primary;
+            border-title-style: bold;
+            border-subtitle-color: $text-muted;
+            padding: 1 2;
+        }
+        FlagScreen OptionList {
+            height: auto;
+            background: $background;
+            border: none;
+            padding: 0;
+        }
+        FlagScreen OptionList > .option-list--option-highlighted {
+            background: $panel;
+            color: $foreground;
+            text-style: bold;
+        }
+    """
+
+    def __init__(self, current: int, pal: Palette) -> None:
+        super().__init__()
+        self._current = current
+        self._pal = pal
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="flag-panel"):
+            yield OptionList(*(self._option(n) for n in range(8)), id="flag-list")
+
+    def _option(self, n: int) -> Option:
+        name = _FLAGS[n][0]
+        line = Text()
+        line.append("\u2691 " if n else "  ", style=_flag_color(n, self._pal))
+        line.append(f"{n}  {name}")
+        if n == self._current:
+            line.append("  \u2713", style=self._pal.muted)
+        return Option(line, id=str(n))
+
+    def on_mount(self) -> None:
+        panel = self.query_one("#flag-panel")
+        panel.border_title = "Set flag"
+        panel.border_subtitle = "0-7 or Enter \u00b7 esc cancels"
+        self.query_one("#flag-list", OptionList).highlighted = self._current
+
+    @on(OptionList.OptionSelected)
+    def _selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(int(event.option.id or 0))
+
+    def action_pick(self, n: int) -> None:
+        self.dismiss(n)
+
+    def action_dismiss_none(self) -> None:
+        self.dismiss(None)
 
 
 class DetailScreen(ModalScreen[None]):
@@ -531,6 +734,8 @@ class BrowseApp(ThemedApp):
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("slash", "focus_search", "Filter", key_display="/", show=True),
         Binding("s", "suspend_selected", "Suspend", show=True),
+        Binding("b", "bury_selected", "Bury", show=True),
+        Binding("f", "flag_selected", "Flag", show=True),
         Binding("d", "delete_selected", "Delete", show=True),
         Binding("r", "refresh", "Refresh", show=False),
         Binding("left_square_bracket", "prev_filter", "Prev tab", key_display="[", show=False),
@@ -538,7 +743,7 @@ class BrowseApp(ThemedApp):
         Binding("1", "focus_pane('table')", "Cards", show=False),
         Binding("2", "focus_pane('preview-scroll')", "Preview", show=False),
         Binding("p", "toggle_preview", "Preview on/off", show=False),
-        Binding("f", "toggle_zoom", "Zoom pane", show=False),
+        Binding("z", "toggle_zoom", "Zoom pane", show=False),
         Binding("question_mark", "show_help_panel", "Help", key_display="?", show=True),
         Binding("q", "quit", "Quit", show=True),
         Binding("escape", "escape", "Back / Quit", show=False),
@@ -570,7 +775,6 @@ class BrowseApp(ThemedApp):
         self._visible_cards: list[dict[str, Any]] = []
         self._active_filter = "all"
         self._last_cursor_row = -999
-        self._delete_arm_note_id: int | None = None
         self._current_question_width = 56
 
     def compose(self) -> ComposeResult:
@@ -592,11 +796,21 @@ class BrowseApp(ThemedApp):
                 yield Static("", id="preview-meta")
         yield Footer(compact=True)
 
+    # Row actions are pointless (and clutter the footer) with nothing selected.
+    _ROW_ACTIONS: ClassVar[frozenset[str]] = frozenset(
+        {"suspend_selected", "bury_selected", "flag_selected", "delete_selected"}
+    )
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        return not (action in self._ROW_ACTIONS and not self._visible_cards)
+
     def app_commands(self) -> Iterable[SystemCommand]:
         yield command("Open card details", "Enter", self.action_show_detail)
         yield command("Search cards", "/", self.action_focus_search)
         yield command("Suspend / unsuspend card", "s", self.action_suspend_selected)
-        yield command("Delete note", "d, twice", self.action_delete_selected)
+        yield command("Bury / unbury card", "b", self.action_bury_selected)
+        yield command("Set flag", "f", self.action_flag_selected)
+        yield command("Delete note", "d", self.action_delete_selected)
         yield command("Toggle preview", "p", self.action_toggle_preview)
         # Found by typing; keeps the opening list short.
         for key in self._FILTER_ORDER:
@@ -606,7 +820,7 @@ class BrowseApp(ThemedApp):
                 lambda key=key: self._set_filter(key),
                 common=False,
             )
-        yield command("Zoom pane", "f", self.action_toggle_zoom, common=False)
+        yield command("Zoom pane", "z", self.action_toggle_zoom, common=False)
         yield command("Reload cards", "r", self.action_refresh, common=False)
 
     def on_palette_changed(self) -> None:
@@ -735,6 +949,51 @@ class BrowseApp(ThemedApp):
         self._toast(f"Card {card_id} {action}")
         self._load_cards(self._current_query())
 
+    def action_bury_selected(self) -> None:
+        card = self._selected_card()
+        card_id = to_int(card.get("cardId"), 0) if card else 0
+        if card is None or card_id <= 0:
+            self._toast("No card selected", severity="warning")
+            return
+        self._bury_card(card_id, to_int(card.get("queue"), 0) in (-2, -3))
+
+    @work(thread=True, group="mutate")
+    def _bury_card(self, card_id: int, buried: bool) -> None:
+        try:
+            if buried:
+                self._backend.unbury_cards(card_ids=[card_id])
+            else:
+                self._backend.bury_cards([card_id])
+        except Exception as exc:
+            self._toast(f"{'Unbury' if buried else 'Bury'} failed: {exc}", severity="error")
+            return
+        self._toast(f"Card {card_id} {'unburied' if buried else 'buried'}")
+        self._load_cards(self._current_query())
+
+    def action_flag_selected(self) -> None:
+        card = self._selected_card()
+        card_id = to_int(card.get("cardId"), 0) if card else 0
+        if card is None or card_id <= 0:
+            self._toast("No card selected", severity="warning")
+            return
+
+        def done(flag: int | None) -> None:
+            if flag is not None:
+                self._set_flag(card_id, flag)
+
+        self.push_screen(FlagScreen(_flag_of(card), self.palette), done)
+
+    @work(thread=True, group="mutate")
+    def _set_flag(self, card_id: int, flag: int) -> None:
+        try:
+            self._backend.set_card_flag([card_id], flag)
+        except Exception as exc:
+            self._toast(f"Flag failed: {exc}", severity="error")
+            return
+        name = _FLAGS[flag][0]
+        self._toast(f"Card {card_id}: {name.lower()}" if flag else f"Card {card_id}: flag cleared")
+        self._load_cards(self._current_query())
+
     def action_delete_selected(self) -> None:
         card = self._selected_card()
         if card is None:
@@ -746,13 +1005,29 @@ class BrowseApp(ThemedApp):
             self._toast("Selected card has no note id", severity="error")
             return
 
-        if self._delete_arm_note_id != note_id:
-            self._delete_arm_note_id = note_id
-            self._toast(f"Press d again to delete note {note_id}", severity="warning")
-            return
+        self._ask_delete(note_id)
 
-        self._delete_arm_note_id = None
-        self._delete_note(note_id)
+    @work(thread=True, group="mutate")
+    def _ask_delete(self, note_id: int) -> None:
+        # A note owns every card made from it, so say how many go with it.
+        try:
+            count = len(self._backend.find_cards(f"nid:{note_id}"))
+        except Exception:
+            count = sum(1 for c in self._cards if _extract_note_id_from_card(c) == note_id)
+        self.call_from_thread(self._confirm_delete, note_id, count)
+
+    def _confirm_delete(self, note_id: int, count: int) -> None:
+        cards = f"{count} card{'s' if count != 1 else ''}" if count else "all its cards"
+        message = (
+            f"Delete note {note_id} and {cards}?\n\n"
+            "Every card made from the note is removed. This can't be undone."
+        )
+
+        def done(confirmed: bool | None) -> None:
+            if confirmed:
+                self._delete_note(note_id)
+
+        self.push_screen(ConfirmScreen("Delete note", message), done)
 
     @work(thread=True, group="mutate")
     def _delete_note(self, note_id: int) -> None:
@@ -826,7 +1101,6 @@ class BrowseApp(ThemedApp):
         if filter_key not in self._FILTER_ORDER or filter_key == self._active_filter:
             return
         self._active_filter = filter_key
-        self._delete_arm_note_id = None
         self._visible_cards = [card for card in self._cards if self._matches_filter(card)]
         self._populate_table(reset_cursor=True)
         self._render_filter_tabs()
@@ -889,7 +1163,6 @@ class BrowseApp(ThemedApp):
             row = to_int(getattr(table, "cursor_row", -1), -1)
             if force or row != self._last_cursor_row:
                 self._last_cursor_row = row
-                self._delete_arm_note_id = None
                 self._update_preview_for_row(row)
 
     def _render_preview_empty(self) -> None:
@@ -934,6 +1207,8 @@ class BrowseApp(ThemedApp):
             tags = "-"
 
         meta = Text()
+        meta.append(" Deck     ", style=pal.muted)
+        meta.append(f"{card.get('deckName') or '-'}\n", style=pal.accent)
         meta.append(" Queue    ", style=pal.muted)
         meta.append(f"{queue_label or '-':<10}", style=f"bold {queue_color}")
         meta.append(" Interval ", style=pal.muted)
