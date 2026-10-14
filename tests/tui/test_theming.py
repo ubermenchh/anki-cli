@@ -184,3 +184,81 @@ def test_failing_save_is_a_toast_not_a_crash(run_async: Any) -> None:
         assert not app.return_code
 
     run_async(scenario())
+
+
+def _titles(app: Any) -> list[str]:
+    return [c.title for c in app.get_system_commands(app.screen)]
+
+
+def test_browse_command_palette_lists_screen_actions(run_async: Any) -> None:
+    async def scenario() -> None:
+        app = browse_mod.BrowseApp(backend=FakeBackend())
+        async with app.run_test(size=(130, 30)) as pilot:
+            await pilot.pause()
+            titles = _titles(app)
+            for wanted in (
+                "Open card details",
+                "Search cards",
+                "Filter: New",
+                "Suspend / unsuspend card",
+                "Toggle preview",
+                "Theme",
+                "Keys",
+                "Quit",
+            ):
+                assert wanted in titles, (wanted, titles)
+            # Textual's generic entries that mean nothing here are hidden.
+            assert not {"Screenshot", "Maximize", "Minimize"} & set(titles)
+
+            # A command runs its action.
+            command = next(
+                c for c in app.get_system_commands(app.screen) if c.title == "Filter: New"
+            )
+            command.callback()
+            await pilot.pause()
+            assert app._active_filter == "new"
+
+    run_async(scenario())
+
+
+def test_review_command_palette_lists_screen_actions(run_async: Any) -> None:
+    async def scenario() -> None:
+        app = review_mod.ReviewApp(backend=FakeBackend(), deck=None)
+        async with app.run_test(size=(120, 36)) as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            titles = _titles(app)
+            for wanted in (
+                "Flip card",
+                "Answer: Again",
+                "Answer: Easy",
+                "Undo last answer",
+                "Skip to next card",
+                "Theme",
+            ):
+                assert wanted in titles, (wanted, titles)
+
+            command = next(c for c in app.get_system_commands(app.screen) if c.title == "Flip card")
+            command.callback()
+            await pilot.pause()
+            assert app._show_answer is True
+
+    run_async(scenario())
+
+
+def test_palette_opens_and_is_styled_from_the_theme(run_async: Any) -> None:
+    from textual.command import CommandPalette
+
+    async def scenario() -> None:
+        app = browse_mod.BrowseApp(backend=FakeBackend())
+        async with app.run_test(size=(130, 30)) as pilot:
+            await pilot.pause()
+            await pilot.press("ctrl+p")
+            await pilot.pause(0.3)
+            assert isinstance(app.screen, CommandPalette)
+            box = app.screen.query_one("#--input")
+            # The input box uses the theme's primary colour for its round border.
+            assert box.styles.border_top[0] == "round"
+            assert box.styles.border_top[1].hex.lower() == "#7aa2f7"
+
+    run_async(scenario())

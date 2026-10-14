@@ -7,15 +7,76 @@ are rebuilt when the theme changes.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from textual.app import App
+from textual.app import App, SystemCommand
 from textual.color import Color
+from textual.screen import Screen
 from textual.theme import Theme
 
 from .colors import TOKYO_NIGHT
+
+# Textual's command palette is its own screen; this restyles it from the theme so
+# it matches the apps instead of showing its stock slab (#85).
+PALETTE_CSS = """
+CommandPalette {
+    background: $background 70%;
+}
+CommandPalette > Vertical {
+    width: 80%;
+    max-width: 96;
+    margin-top: 2;
+}
+CommandPalette #--input {
+    background: $background;
+    border: round $primary;
+}
+CommandPalette #--input.--list-visible {
+    border: round $primary;
+}
+CommandPalette #--input Input {
+    background: transparent;
+}
+CommandPalette SearchIcon {
+    color: $primary;
+}
+CommandPalette CommandList {
+    background: $background;
+    border: none;
+    scrollbar-size: 1 1;
+    scrollbar-color: $border;
+    scrollbar-color-hover: $text-muted;
+    scrollbar-background: $background;
+}
+CommandPalette CommandList.--visible,
+CommandPalette CommandList.--visible:focus {
+    border: round $border;
+}
+CommandPalette CommandList > .option-list--option {
+    color: $foreground;
+    text-style: bold;
+}
+CommandPalette CommandList > .option-list--option-highlighted {
+    background: $panel;
+    color: $foreground;
+    text-style: bold;
+}
+CommandPalette > .command-palette--help-text {
+    color: $text-muted;
+}
+CommandPalette > .command-palette--highlight {
+    color: $primary;
+    text-style: bold underline;
+}
+.-no-color CommandPalette > .command-palette--help-text {
+    color: $foreground;
+}
+"""
+
+# Built-in palette entries that mean nothing in a terminal card reviewer.
+_HIDDEN_SYSTEM_COMMANDS = frozenset({"Screenshot", "Maximize", "Minimize"})
 
 DEFAULT_THEME = TOKYO_NIGHT.name
 # Selected by --no-color / display.color = false: the terminal's own palette.
@@ -136,6 +197,16 @@ class ThemedApp(App[None]):
             except Exception as exc:
                 self.notify(f"Could not save theme: {exc}", severity="warning", markup=False)
         self.on_palette_changed()
+
+    def app_commands(self) -> Iterable[SystemCommand]:
+        """Commands for this screen, listed first in the command palette."""
+        return ()
+
+    def get_system_commands(self, screen: Screen[Any]) -> Iterable[SystemCommand]:
+        yield from self.app_commands()
+        for command in super().get_system_commands(screen):
+            if command.title not in _HIDDEN_SYSTEM_COMMANDS:
+                yield command
 
     def on_palette_changed(self) -> None:
         """Rebuild any Rich text that baked the old colours in."""

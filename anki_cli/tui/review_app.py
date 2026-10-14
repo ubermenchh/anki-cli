@@ -5,13 +5,13 @@ import html as _html
 import re
 import shlex
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, cast
 
 from rich.text import Text
 from textual import on, work
-from textual.app import ComposeResult
+from textual.app import ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
@@ -23,7 +23,7 @@ from anki_cli.core.render import extract_note_id, extract_ord, pick_template, re
 from anki_cli.core.scheduler import pick_next_due_card_id
 from anki_cli.core.undo import UndoItem, UndoStore, now_epoch_ms
 from anki_cli.tui._utils import due_day_label, relative_eta, to_int
-from anki_cli.tui.theming import ThemedApp
+from anki_cli.tui.theming import PALETTE_CSS, ThemedApp
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _BR_RE = re.compile(r"(?i)<br\s*/?>")
@@ -161,7 +161,9 @@ class ReviewApp(ThemedApp):
     # Under 30 rows the buttons drop to one row and the card padding goes.
     VERTICAL_BREAKPOINTS: ClassVar[list[tuple[int, str]]] = [(0, "-short"), (30, "-tall")]
 
-    CSS = """
+    CSS = (
+        PALETTE_CSS
+        + """
     Screen {
         background: $background;
     }
@@ -372,6 +374,7 @@ class ReviewApp(ThemedApp):
         text-style: bold underline;
     }
     """
+    )
 
     # Footer renders the ``show=True`` entries, so this list is also the
     # on-screen key legend; ``?`` opens the full list. 1-4 are shown on the
@@ -444,6 +447,23 @@ class ReviewApp(ThemedApp):
             # Mounted by ":" and removed again, so it is not a permanent bottom bar.
             yield Vertical(id="cmd-slot")
             yield Footer(compact=True)
+
+    def app_commands(self) -> Iterable[SystemCommand]:
+        yield SystemCommand(
+            "Flip card", "Show or hide the answer (Space)", self.action_toggle_answer
+        )
+        for ease, name in _RATINGS:
+            yield SystemCommand(
+                f"Answer: {name}",
+                f"Rate the card {name.lower()}; reveals the answer first if hidden ({ease})",
+                lambda ease=ease: self.action_rate(ease),
+            )
+        yield SystemCommand("Undo last answer", "Restore the previous card (u)", self.action_undo)
+        yield SystemCommand(
+            "Preview ratings", "Show what each rating would schedule (p)", self.action_preview
+        )
+        yield SystemCommand("Skip to next card", "Pick the next due card (n)", self.action_next)
+        yield SystemCommand("Command line", "Type a :command (:)", self.action_focus_command)
 
     def on_palette_changed(self) -> None:
         self._refresh_chrome()
