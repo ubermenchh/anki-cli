@@ -7,14 +7,14 @@ import shlex
 import threading
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Footer, Input, Static
 from textual.worker import get_current_worker
 
@@ -22,7 +22,7 @@ from anki_cli import __version__
 from anki_cli.core.render import extract_note_id, extract_ord, pick_template, render_card
 from anki_cli.core.review_session import ReviewSession
 from anki_cli.tui._utils import due_day_label, relative_eta, to_int
-from anki_cli.tui.theming import PALETTE_CSS, ThemedApp, command
+from anki_cli.tui.theming import DEFAULT_PALETTE, PALETTE_CSS, Palette, ThemedApp, command
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _BR_RE = re.compile(r"(?i)<br\s*/?>")
@@ -151,19 +151,20 @@ _RATINGS: tuple[tuple[int, str], ...] = ((1, "Again"), (2, "Hard"), (3, "Good"),
 _DEFAULT_HINTS: dict[int, str] = {1: "<10m", 2: "-", 3: "-", 4: "-"}
 
 
-class ReviewApp(ThemedApp):
-    # Textual's default AUTO_FOCUS="*" would focus the first Button on mount, so
-    # Space / 1-4 / q still work only because the app owns them; leaving focus
-    # unset keeps Enter from pressing a rating by accident (#81).
-    AUTO_FOCUS = None
+class ReviewScreen(Screen[None]):
+    """The review UI. It is a Screen so browse can push it for one card (``o``);
+    ``ReviewApp`` below hosts it for ``anki review:start``."""
+
+    # Textual's default AUTO_FOCUS="*" would focus the first widget on mount.
+    # Leaving focus unset keeps Enter from pressing a rating by accident (#81);
+    # an empty string (not None) is what disables it on a Screen.
+    AUTO_FOCUS = ""
 
     # Under 30 rows the buttons drop to one row and the card padding goes.
     VERTICAL_BREAKPOINTS: ClassVar[list[tuple[int, str]]] = [(0, "-short"), (30, "-tall")]
 
-    CSS = (
-        PALETTE_CSS
-        + """
-    Screen {
+    CSS = """
+    ReviewScreen {
         background: $background;
     }
     /* Header, card, buttons and footer all live in one centred column, so they
@@ -311,69 +312,68 @@ class ReviewApp(ThemedApp):
         padding: 0 1;
     }
 
-    Screen.-short #header {
+    ReviewScreen.-short #header {
         margin-bottom: 0;
     }
-    Screen.-short #column > Footer {
+    ReviewScreen.-short #column > Footer {
         margin-top: 0;
     }
-    Screen.-short .card-panel {
+    ReviewScreen.-short .card-panel {
         padding: 0 1;
         min-height: 3;
     }
-    Screen.-short #actions, Screen.-short #rate-row {
+    ReviewScreen.-short #actions, ReviewScreen.-short #rate-row {
         height: 1;
         margin-top: 0;
     }
-    Screen.-short #actions Button {
+    ReviewScreen.-short #actions Button {
         height: 1;
         border: none;
     }
-    Screen.-short #actions #show-answer {
+    ReviewScreen.-short #actions #show-answer {
         border: none;
         height: 1;
         background: $primary 20%;
         color: $primary;
     }
-    Screen.-short #actions #rate-1 {
+    ReviewScreen.-short #actions #rate-1 {
         border: none;
         height: 1;
         background: $error 20%;
         color: $error;
     }
-    Screen.-short #actions #rate-2 {
+    ReviewScreen.-short #actions #rate-2 {
         border: none;
         height: 1;
         background: $warning 20%;
         color: $warning;
     }
-    Screen.-short #actions #rate-3 {
+    ReviewScreen.-short #actions #rate-3 {
         border: none;
         height: 1;
         background: $success 20%;
         color: $success;
     }
-    Screen.-short #actions #rate-4 {
+    ReviewScreen.-short #actions #rate-4 {
         border: none;
         height: 1;
         background: $primary 20%;
         color: $primary;
     }
-    Screen.-short #actions #show-answer:hover,
-    Screen.-short #actions #show-answer:focus,
-    Screen.-short #actions #rate-1:hover,
-    Screen.-short #actions #rate-1:focus,
-    Screen.-short #actions #rate-2:hover,
-    Screen.-short #actions #rate-2:focus,
-    Screen.-short #actions #rate-3:hover,
-    Screen.-short #actions #rate-3:focus,
-    Screen.-short #actions #rate-4:hover,
-    Screen.-short #actions #rate-4:focus {
+    ReviewScreen.-short #actions #show-answer:hover,
+    ReviewScreen.-short #actions #show-answer:focus,
+    ReviewScreen.-short #actions #rate-1:hover,
+    ReviewScreen.-short #actions #rate-1:focus,
+    ReviewScreen.-short #actions #rate-2:hover,
+    ReviewScreen.-short #actions #rate-2:focus,
+    ReviewScreen.-short #actions #rate-3:hover,
+    ReviewScreen.-short #actions #rate-3:focus,
+    ReviewScreen.-short #actions #rate-4:hover,
+    ReviewScreen.-short #actions #rate-4:focus {
         color: $foreground;
         text-style: bold underline;
     }
     """
-    )
 
     # Footer renders the ``show=True`` entries, so this list is also the
     # on-screen key legend; ``?`` opens the full list. 1-4 are shown on the
@@ -389,7 +389,7 @@ class ReviewApp(ThemedApp):
         Binding("n", "next", "Next", show=True),
         Binding(":", "focus_command", "Command", show=True),
         Binding("escape", "blur_command", "Blur command", show=False),
-        Binding("question_mark", "show_help_panel", "Help", key_display="?", show=True),
+        Binding("question_mark", "app.show_help_panel", "Help", key_display="?", show=True),
         Binding("q", "quit", "Quit", show=True),
     ]
 
@@ -398,11 +398,14 @@ class ReviewApp(ThemedApp):
         *,
         backend: Any,
         deck: str | None,
-        theme: str | None = None,
-        no_color: bool = False,
-        persist_theme: Callable[[str], None] | None = None,
+        card_id: int | None = None,
+        standalone: bool = False,
     ) -> None:
-        super().__init__(theme=theme, no_color=no_color, persist_theme=persist_theme)
+        """``card_id`` reviews that one card and then leaves (opened from browse);
+        ``standalone`` is set by the host app, which exits instead of popping."""
+        super().__init__()
+        self._single_card_id = card_id
+        self._standalone = standalone
         self._backend = backend
         # Undo, preview and the scheduler-ordered picker need scheduler state
         # only the direct backend exposes (AnkiBackend.supports_scheduler_introspection).
@@ -425,6 +428,32 @@ class ReviewApp(ThemedApp):
         self._session_total = 0
         self._answered = 0
         self._rating_counts: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
+
+    @property
+    def palette(self) -> Palette:
+        """The active theme's colours (the default look when not mounted)."""
+        try:
+            return cast("ThemedApp", self.app).palette
+        except Exception:
+            return DEFAULT_PALETTE
+
+    def _push(self, screen: Screen[Any]) -> None:
+        self.app.push_screen(screen)
+
+    def _leave(self) -> None:
+        """Quit when hosting the app; otherwise go back to whoever pushed us."""
+        if self._standalone:
+            self.app.exit()
+        else:
+            self.dismiss()
+
+    @property
+    def _single_card(self) -> bool:
+        return self._single_card_id is not None
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # "Next card" would leave the one card this screen was opened for.
+        return not (action == "next" and self._single_card)
 
     @property
     def _deck(self) -> str | None:
@@ -470,15 +499,17 @@ class ReviewApp(ThemedApp):
         self._refresh_chrome()
 
     def on_mount(self) -> None:
-        self._theme_ready()
         self.query_one("#question-panel").border_title = "Question"
         self.query_one("#answer-panel").border_title = "Answer"
         self._refresh_rate_buttons()
         self._refresh_chrome()
-        self._load_next()
+        if self._single_card_id is not None:
+            self._load_next(card_id=self._single_card_id, kind="browse")
+        else:
+            self._load_next()
 
     async def action_quit(self) -> None:
-        self.exit()
+        self._leave()
 
     def action_toggle_answer(self) -> None:
         if self._card_id is None or self._loading:
@@ -520,6 +551,9 @@ class ReviewApp(ThemedApp):
 
         self._answered += 1
         self._rating_counts[int(ease)] = self._rating_counts.get(int(ease), 0) + 1
+        if self._single_card:
+            self._leave()
+            return
         self._load_next()
 
     def action_undo(self) -> None:
@@ -567,7 +601,7 @@ class ReviewApp(ThemedApp):
             lines.append(f"ease={ease} queue={queue} interval={ivl} due_info={due_info}")
 
         body = "\n".join(lines) if lines else "(no preview data)"
-        self.push_screen(PreviewScreen(f"Preview ratings - card {self._card_id}", body))
+        self._push(PreviewScreen(f"Preview ratings - card {self._card_id}", body))
 
     async def action_focus_command(self) -> None:
         existing = self.query("#cmd")
@@ -580,7 +614,10 @@ class ReviewApp(ThemedApp):
         cmd.cursor_position = len(cmd.value)
 
     async def action_blur_command(self) -> None:
-        await self._close_command()
+        if self.query("#cmd"):
+            await self._close_command()
+        elif self._single_card:
+            self._leave()  # Esc goes back to the table that opened this card
 
     async def _close_command(self) -> None:
         for cmd in self.query("#cmd"):
@@ -622,10 +659,10 @@ class ReviewApp(ThemedApp):
 
     def _toast(self, message: str, *, severity: str = "information") -> None:
         if threading.current_thread() is threading.main_thread():
-            self.notify(message, severity=severity, markup=False)  # type: ignore[arg-type]
+            self.app.notify(message, severity=severity, markup=False)  # type: ignore[arg-type]
         else:
             with contextlib.suppress(Exception):
-                self.call_from_thread(self.notify, message, severity=severity, markup=False)
+                self.app.call_from_thread(self.app.notify, message, severity=severity, markup=False)
 
     @staticmethod
     def _due_counts(backend: Any, deck: str | None) -> dict[str, int]:
@@ -703,14 +740,15 @@ class ReviewApp(ThemedApp):
             pct = 100 if remaining_total == 0 else 0
         pct = max(0, min(100, pct))
 
-        deck_name = self._deck or "all decks"
+        where = f"card {self._single_card_id}" if self._single_card else (self._deck or "all decks")
         title = Text()
-        title.append(f"anki-cli {__version__} · study · {deck_name}")
+        title.append(f"anki-cli {__version__} · study · {where}")
         self._ui_update("#header-title", title)
 
         pal = self.palette
         stats = Text()
-        stats.append(f"{done}/{self._session_total} · {pct}%   ", style=pal.muted)
+        if not self._single_card:  # session progress means nothing for one card
+            stats.append(f"{done}/{self._session_total} · {pct}%   ", style=pal.muted)
         stats.append(f"new {counts['new']}", style=f"bold {pal.primary}")
         stats.append("  ")
         stats.append(f"learn {counts['learn']}", style=f"bold {pal.warning}")
@@ -765,7 +803,7 @@ class ReviewApp(ThemedApp):
         loaded = self._fetch_next(card_id, kind)
         if get_current_worker().is_cancelled:
             return
-        self.call_from_thread(self._apply_loaded, loaded)
+        self.app.call_from_thread(self._apply_loaded, loaded)
 
     def _apply_loaded(self, loaded: _Loaded) -> None:
         self._loading = False
@@ -864,7 +902,7 @@ class ReviewApp(ThemedApp):
         args = parts[1:]
 
         if cmd in {"help", "h", "?"}:
-            self.push_screen(
+            self._push(
                 PreviewScreen(
                     "Commands",
                     "\n".join(
@@ -885,7 +923,7 @@ class ReviewApp(ThemedApp):
             return
 
         if cmd in {"quit", "exit", "q"}:
-            self.exit()
+            self._leave()
             return
 
         if cmd == "deck":
@@ -943,3 +981,26 @@ class ReviewApp(ThemedApp):
             return
 
         self._set_status(f"unknown command: {cmd} (try :help)")
+
+
+class ReviewApp(ThemedApp):
+    """``anki review:start``: the review screen as an application of its own."""
+
+    CSS = PALETTE_CSS
+    AUTO_FOCUS = None
+
+    def __init__(
+        self,
+        *,
+        backend: Any,
+        deck: str | None,
+        theme: str | None = None,
+        no_color: bool = False,
+        persist_theme: Callable[[str], None] | None = None,
+    ) -> None:
+        super().__init__(theme=theme, no_color=no_color, persist_theme=persist_theme)
+        self.review = ReviewScreen(backend=backend, deck=deck, standalone=True)
+
+    def on_mount(self) -> None:
+        self._theme_ready()
+        self.push_screen(self.review)

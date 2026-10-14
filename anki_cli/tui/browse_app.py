@@ -26,6 +26,7 @@ from anki_cli import __version__
 
 from ._utils import due_day_label, relative_eta, to_int
 from .prompts import PromptScreen, TokenSuggester
+from .review_app import ReviewScreen
 from .theming import DEFAULT_PALETTE, PALETTE_CSS, Palette, ThemedApp, command
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -775,6 +776,7 @@ class BrowseApp(ThemedApp):
         Binding("t", "tag_selected", "Edit tags", show=False),
         Binding("R", "reschedule_selected", "Reschedule", show=False),
         Binding("d", "delete_selected", "Delete", show=True),
+        Binding("o", "open_in_review", "Review card", show=False),
         Binding("r", "refresh", "Refresh", show=False),
         Binding("left_square_bracket", "prev_filter", "Prev tab", key_display="[", show=False),
         Binding("right_square_bracket", "next_filter", "Next tab", key_display="]", show=False),
@@ -851,14 +853,27 @@ class BrowseApp(ThemedApp):
             "tag_selected",
             "reschedule_selected",
             "delete_selected",
+            "open_in_review",
         }
     )
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # These are app-level bindings, so a screen pushed on top (review) would
+        # still receive them: `d` there must not delete the card under it.
+        if isinstance(self.screen, ReviewScreen) and action in self._own_actions():
+            return False
         return not (action in self._ROW_ACTIONS and not self._visible_cards)
+
+    @classmethod
+    def _own_actions(cls) -> frozenset[str]:
+        """The action names of this app's own key bindings, minus the generic
+        ones that every screen may use."""
+        names = {b.action.split("(")[0] for b in cls.BINDINGS if isinstance(b, Binding)}
+        return frozenset(names - {"quit", "show_help_panel"})
 
     def app_commands(self) -> Iterable[SystemCommand]:
         yield command("Open card details", "Enter", self.action_show_detail)
+        yield command("Review this card", "o", self.action_open_in_review)
         yield command("Search cards", "/", self.action_focus_search)
         yield command("Mark / unmark card", "Space", self.action_toggle_mark)
         yield command("Mark all cards", "a", self.action_mark_all, common=False)
@@ -976,6 +991,22 @@ class BrowseApp(ThemedApp):
             screen.minimize()
         elif self.focused is not None and not isinstance(self.focused, Input):
             screen.maximize(self.focused)
+
+    def action_open_in_review(self) -> None:
+        card = self._selected_card()
+        cid = self._cid(card) if card else 0
+        if card is None or cid <= 0:
+            self._toast("No card selected", severity="warning")
+            return
+        if not getattr(self._backend, "supports_scheduler_introspection", False):
+            self._toast("Reviewing needs the direct backend (--backend direct)", severity="warning")
+            return
+
+        def back(_: None) -> None:
+            # The answer changed the card, so show it as it is now.
+            self._reload()
+
+        self.push_screen(ReviewScreen(backend=self._backend, deck=None, card_id=cid), back)
 
     def action_show_detail(self) -> None:
         row_idx = self._selected_row_index()

@@ -43,12 +43,12 @@ async def _settle(pilot: Any) -> None:
 
 
 def _plain(app: ReviewApp, selector: str) -> str:
-    content = app.query_one(selector, Static).content
+    content = app.screen.query_one(selector, Static).content
     return content.plain if isinstance(content, Text) else str(content)
 
 
 def _label(app: ReviewApp, selector: str) -> str:
-    return str(app.query_one(selector, Button).label)
+    return str(app.screen.query_one(selector, Button).label)
 
 
 def test_footer_legend_and_help_panel(fake_backend: FakeBackend, run_async: Any) -> None:
@@ -58,12 +58,12 @@ def test_footer_legend_and_help_panel(fake_backend: FakeBackend, run_async: Any)
         app = ReviewApp(backend=fake_backend, deck=None)
         async with app.run_test(size=(120, 36)) as pilot:
             await _settle(pilot)
-            assert app.query_one(Footer).region.height == 1
-            assert not app.query("#hintbar") and not app.query("#status")
-            assert not app.query(HelpPanel)
+            assert app.screen.query_one(Footer).region.height == 1
+            assert not app.screen.query("#hintbar") and not app.screen.query("#status")
+            assert not app.screen.query(HelpPanel)
             await pilot.press("question_mark")
             await pilot.pause()
-            assert app.query(HelpPanel)
+            assert app.screen.query(HelpPanel)
 
     run_async(scenario())
 
@@ -73,8 +73,8 @@ def test_failures_are_toasts(fake_backend: FakeBackend, run_async: Any) -> None:
         app = ReviewApp(backend=fake_backend, deck=None)
         async with app.run_test(size=(120, 36)) as pilot:
             await _settle(pilot)
-            app._set_status("answer failed: collection locked")
-            app._set_status("undone")
+            app.review._set_status("answer failed: collection locked")
+            app.review._set_status("undone")
             await pilot.pause()
             notes = {n.message: n.severity for n in app._notifications}
             assert notes["answer failed: collection locked"] == "error"
@@ -92,29 +92,29 @@ def test_action_row_morphs_when_the_answer_is_revealed(
         app = ReviewApp(backend=fake_backend, deck=None)
         async with app.run_test(size=(120, 36)) as pilot:
             await _settle(pilot)
-            assert app.query_one("#show-answer").display
-            assert not app.query_one("#rate-row").display
-            assert not app.query_one("#answer-panel").display
+            assert app.screen.query_one("#show-answer").display
+            assert not app.screen.query_one("#rate-row").display
+            assert not app.screen.query_one("#answer-panel").display
             assert "capital of France" in _plain(app, "#question")
 
             await pilot.press("space")
             await pilot.pause()
-            assert not app.query_one("#show-answer").display
-            assert app.query_one("#rate-row").display
-            assert app.query_one("#answer-panel").display
+            assert not app.screen.query_one("#show-answer").display
+            assert app.screen.query_one("#rate-row").display
+            assert app.screen.query_one("#answer-panel").display
             assert "Paris" in _plain(app, "#answer")
 
             # Real Buttons, one variant per rating, with the scheduler's interval;
             # the "no due_info" item falls back to the raw interval, never "?".
-            variants = [app.query_one(f"#rate-{n}", Button).variant for n in (1, 2, 3, 4)]
+            variants = [app.screen.query_one(f"#rate-{n}", Button).variant for n in (1, 2, 3, 4)]
             assert variants == ["error", "warning", "success", "primary"]
             assert _label(app, "#rate-2") == "2 Hard · 36d"
             assert "?" not in _label(app, "#rate-1")
 
             await pilot.press("space")
             await pilot.pause()
-            assert app.query_one("#show-answer").display
-            assert not app.query_one("#rate-row").display
+            assert app.screen.query_one("#show-answer").display
+            assert not app.screen.query_one("#rate-row").display
 
     run_async(scenario())
 
@@ -126,7 +126,7 @@ def test_clicking_buttons_flips_and_rates(fake_backend: FakeBackend, run_async: 
             await _settle(pilot)
             await pilot.click("#show-answer")
             await pilot.pause()
-            assert app._show_answer is True
+            assert app.review._show_answer is True
             await pilot.click("#rate-3")
             await _settle(pilot)
             assert ("answer_card", (1000, 3)) in fake_backend.calls
@@ -148,20 +148,20 @@ def test_layout_fits_at_every_size(
             await pilot.press("space")
             await pilot.pause()
             width, height = size
-            footer = app.query_one(Footer).region
-            rate = app.query_one("#rate-row").region
+            footer = app.screen.query_one(Footer).region
+            rate = app.screen.query_one("#rate-row").region
             assert rate.y + rate.height <= footer.y, (size, rate, footer)
             assert rate.height == (1 if height < 30 else 3), (size, rate)
             for n in (1, 2, 3, 4):
-                btn = app.query_one(f"#rate-{n}").region
+                btn = app.screen.query_one(f"#rate-{n}").region
                 assert btn.height == rate.height and btn.width >= 8, (size, n, btn)
                 assert btn.right <= width, (size, n, btn)
             for sel in ("#question-panel", "#answer-panel"):
-                assert app.query_one(sel).region.height >= 3, (size, sel)
-            column = app.query_one("#column").region
+                assert app.screen.query_one(sel).region.height >= 3, (size, sel)
+            column = app.screen.query_one("#column").region
             # Header and footer share the card's edges instead of spanning the screen.
             for sel in ("#header", "Footer"):
-                region = app.query_one(sel).region
+                region = app.screen.query_one(sel).region
                 assert (region.x, region.right) == (column.x, column.right), (size, sel, region)
             assert column.width <= 90, (size, column)
             if width > 94:
@@ -181,9 +181,9 @@ def test_keys_work_at_startup_without_pressing_escape(
         async with app.run_test(size=(120, 36)) as pilot:
             await _settle(pilot)
             assert app.focused is None
-            assert app._show_answer is False
+            assert app.review._show_answer is False
             await pilot.press("space")
-            assert app._show_answer is True
+            assert app.review._show_answer is True
             await pilot.press("3")
             await _settle(pilot)
             assert ("answer_card", (1000, 3)) in fake_backend.calls
@@ -196,21 +196,21 @@ def test_command_input_exists_only_while_invoked(fake_backend: FakeBackend, run_
         app = ReviewApp(backend=fake_backend, deck=None)
         async with app.run_test(size=(120, 36)) as pilot:
             await _settle(pilot)
-            assert not app.query("#cmd")
+            assert not app.screen.query("#cmd")
             await pilot.press("colon")
             await pilot.pause()
             assert isinstance(app.focused, Input)
             assert app.focused.value == ":"
             await pilot.press("escape")
             await pilot.pause()
-            assert not app.query("#cmd")
+            assert not app.screen.query("#cmd")
             assert app.focused is None
 
             # A submitted command runs and the input goes away again.
             await pilot.press("colon", "s", "h", "o", "w", "enter")
             await pilot.pause()
-            assert not app.query("#cmd")
-            assert app._show_answer is True
+            assert not app.screen.query("#cmd")
+            assert app.review._show_answer is True
 
     run_async(scenario())
 
@@ -285,7 +285,7 @@ def test_flipping_the_answer_does_not_touch_the_backend(
         async with app.run_test(size=(120, 36)) as pilot:
             await _settle(pilot)
             before = dict(backend.counts)
-            assert not app.query_one("#answer-panel").display
+            assert not app.screen.query_one("#answer-panel").display
 
             await pilot.press("space")
             await pilot.pause()
@@ -340,11 +340,25 @@ def test_keys_are_ignored_while_the_next_card_loads(
         async with app.run_test(size=(120, 36)) as pilot:
             await _settle(pilot)
             await pilot.press("space", "3")
-            assert app._loading is True
+            assert app.review._loading is True
             await pilot.press("3", "3")
             gate.set()
             await _settle(pilot)
             answered = [c for c in fake_backend.calls if c[0] == "answer_card"]
             assert len(answered) == 1, answered
+
+    run_async(scenario())
+
+
+def test_q_quits_the_standalone_review_app(fake_backend: FakeBackend, run_async: Any) -> None:
+    """As the host of the screen, `q` exits the app (pushed from browse it goes back)."""
+
+    async def scenario() -> None:
+        app = ReviewApp(backend=fake_backend, deck=None)
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _settle(pilot)
+            await pilot.press("q")
+            await pilot.pause()
+            assert app._exit is True
 
     run_async(scenario())
