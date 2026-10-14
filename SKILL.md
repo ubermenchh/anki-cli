@@ -391,6 +391,7 @@ allow_non_localhost = false
 [display]
 default_output = "table"
 color = true
+theme = "anki-tokyo-night"   # any Textual theme name; set from the TUI palette (ctrl+p)
 ```
 
 For remote AnkiConnect (e.g. via Tailscale or LAN):

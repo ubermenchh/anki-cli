@@ -173,6 +173,28 @@ def set_config_value(
     return refreshed, old_value, final_value
 
 
+def tui_options(obj: Mapping[str, Any]) -> dict[str, Any]:
+    """Keyword arguments every TUI app takes, from the CLI context object.
+
+    ``theme`` and ``no_color`` come from the resolved config / ``--no-color``;
+    ``persist_theme`` saves a theme picked from the command palette back to
+    ``display.theme`` so the choice sticks (#5, #85).
+    """
+    app_config = obj.get("app_config")
+    display = getattr(app_config, "display", None)
+    raw_path = obj.get("config_path")
+    config_path = Path(raw_path) if isinstance(raw_path, (str, Path)) else None
+
+    def persist_theme(name: str) -> None:
+        set_config_value(key="display.theme", raw_value=name, config_path=config_path)
+
+    return {
+        "theme": getattr(display, "theme", None),
+        "no_color": bool(obj.get("no_color")),
+        "persist_theme": persist_theme,
+    }
+
+
 def _normalize_legacy_values(parsed: dict[str, Any], path: Path, warnings: list[str]) -> None:
     """Strip values ``main`` persisted that this version must ignore.
 

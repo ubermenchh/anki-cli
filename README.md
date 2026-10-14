@@ -242,6 +242,19 @@ Interactive TUI review (requires TUI extras, direct backend):
 anki review:start --deck "Japanese"
 ```
 
+### TUI themes
+
+Both TUIs (`browse`, `review:start`) follow the active [Textual theme](https://textual.textualize.io/guide/design/).
+Press `ctrl+p` and pick "Change theme"; the choice is saved to `display.theme` and used next time.
+You can also set it directly:
+
+```bash
+anki config:set --key display.theme --value nord
+```
+
+The default is `anki-tokyo-night`; any built-in Textual theme name works. `--no-color` (or
+`display.color = false`) uses the terminal's own palette instead and does not change the saved theme.
+
 ## Output and Exit Codes
 
 Global output formats:

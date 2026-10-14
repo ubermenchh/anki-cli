@@ -868,10 +868,11 @@ def run_repl(ctx_obj: dict[str, Any]) -> None:
                         query = f"deck:{deck_context}"
                 try:
                     from anki_cli.backends.factory import backend_session_from_context as _bsc
+                    from anki_cli.config_runtime import tui_options
                     from anki_cli.tui.browse_app import BrowseApp
 
                     with _bsc(ctx_obj) as browse_backend:
-                        app = BrowseApp(backend=browse_backend, query=query)
+                        app = BrowseApp(backend=browse_backend, query=query, **tui_options(ctx_obj))
                         app.run()
                 except ImportError:
                     console.print(

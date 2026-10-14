@@ -220,5 +220,7 @@ def review_start_cmd(cmd: CommandContext, deck: str | None) -> None:
             exit_code=2,
             details={"backend": getattr(backend, "name", "unknown")},
         )
-    cmd.run_tui(ReviewApp(backend=backend, deck=deck.strip() if deck else None))
+    cmd.run_tui(
+        ReviewApp(backend=backend, deck=deck.strip() if deck else None, **cmd.tui_options())
+    )
     return None
