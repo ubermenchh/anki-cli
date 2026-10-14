@@ -216,13 +216,20 @@ class ThemedApp(App[None]):
             except Exception as exc:
                 self.notify(f"Could not save theme: {exc}", severity="warning", markup=False)
         self.on_palette_changed()
+        for screen in self.screen_stack:
+            hook = getattr(screen, "on_palette_changed", None)
+            if callable(hook):
+                hook()
 
     def app_commands(self) -> Iterable[SystemCommand]:
         """Commands for this screen, listed first in the command palette."""
         return ()
 
     def get_system_commands(self, screen: Screen[Any]) -> Iterable[SystemCommand]:
-        yield from self.app_commands()
+        # A screen that brings its own commands (the review screen pushed over
+        # browse) replaces the app's: the app's act on the screen underneath.
+        provider = getattr(screen, "app_commands", None)
+        yield from provider() if callable(provider) else self.app_commands()
         for builtin in super().get_system_commands(screen):
             if builtin.title in _HIDDEN_SYSTEM_COMMANDS:
                 continue

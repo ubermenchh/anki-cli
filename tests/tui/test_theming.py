@@ -97,12 +97,12 @@ def test_switching_theme_recolours_the_review_screen(run_async: Any) -> None:
         async with app.run_test(size=(120, 36)) as pilot:
             await app.workers.wait_for_complete()
             await pilot.pause()
-            content = app.query_one("#header-stats", Static).content
+            content = app.screen.query_one("#header-stats", Static).content
             before = {str(span.style) for span in content.spans}
             app.theme = "dracula"
             await pilot.pause()
             await pilot.pause()
-            content = app.query_one("#header-stats", Static).content
+            content = app.screen.query_one("#header-stats", Static).content
             after = {str(span.style) for span in content.spans}
             assert before != after
             assert f"bold {app.palette.primary}" in after
@@ -250,7 +250,7 @@ def test_review_command_palette_lists_screen_actions(run_async: Any) -> None:
 
             commands["Flip card"].callback()
             await pilot.pause()
-            assert app._show_answer is True
+            assert app.review._show_answer is True
 
     run_async(scenario())
 

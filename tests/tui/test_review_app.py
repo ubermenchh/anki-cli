@@ -79,7 +79,7 @@ def test_render_card_normal_hidden_and_revealed_answer() -> None:
                 "templates": {"Card 1": {"Front": "{{Front}}", "Back": "{{Back}}"}},
             }
 
-    app = review_mod.ReviewApp(backend=Backend(), deck=None)
+    app = review_mod.ReviewScreen(backend=Backend(), deck=None)
 
     hidden = app._render_card(1, reveal_answer=False)
     shown = app._render_card(1, reveal_answer=True)
@@ -108,7 +108,7 @@ def test_render_card_falls_back_to_note_model_name() -> None:
                 "templates": {"Card 1": {"Front": "{{Front}}", "Back": "{{Back}}"}},
             }
 
-    app = review_mod.ReviewApp(backend=Backend(), deck=None)
+    app = review_mod.ReviewScreen(backend=Backend(), deck=None)
     rendered = app._render_card(2, reveal_answer=True)
     assert rendered == {"question": "Hello", "answer": "World"}
 
@@ -130,7 +130,7 @@ def test_render_card_cloze_uses_ord_plus_one_index() -> None:
                 "templates": {"Cloze": {"Front": "{{cloze:Text}}", "Back": "{{cloze:Text}}"}},
             }
 
-    app = review_mod.ReviewApp(backend=Backend(), deck=None)
+    app = review_mod.ReviewScreen(backend=Backend(), deck=None)
     rendered = app._render_card(3, reveal_answer=True)
 
     assert rendered["question"] == "[...] is in France"
@@ -142,7 +142,7 @@ def test_render_card_missing_note_id_raises() -> None:
         def get_card(self, card_id: int) -> dict[str, Any]:
             return {"id": card_id, "ord": 0}
 
-    app = review_mod.ReviewApp(backend=Backend(), deck=None)
+    app = review_mod.ReviewScreen(backend=Backend(), deck=None)
 
     with pytest.raises(RuntimeError, match=r"(?i)card has no note id"):
         app._render_card(4, reveal_answer=True)
@@ -162,14 +162,14 @@ def test_render_card_no_templates_raises() -> None:
         def get_notetype(self, name: str) -> dict[str, Any]:
             return {"kind": "normal", "templates": {}}
 
-    app = review_mod.ReviewApp(backend=Backend(), deck=None)
+    app = review_mod.ReviewScreen(backend=Backend(), deck=None)
 
     with pytest.raises(RuntimeError, match=r"(?i)no templates found"):
         app._render_card(5, reveal_answer=True)
 
 
 def test_run_command_parse_error_sets_status() -> None:
-    app = review_mod.ReviewApp(backend=object(), deck=None)
+    app = review_mod.ReviewScreen(backend=object(), deck=None)
     statuses: list[str] = []
 
     def capture(msg: str) -> None:
@@ -183,13 +183,13 @@ def test_run_command_parse_error_sets_status() -> None:
 
 
 def test_run_command_help_pushes_preview_screen() -> None:
-    app = review_mod.ReviewApp(backend=object(), deck=None)
+    app = review_mod.ReviewScreen(backend=object(), deck=None)
     pushed: list[review_mod.PreviewScreen] = []
 
     def capture(screen: review_mod.PreviewScreen) -> None:
         pushed.append(screen)
 
-    app.push_screen = capture  # type: ignore[method-assign]
+    app._push = capture  # type: ignore[method-assign]
     app._run_command("help")
 
     assert len(pushed) == 1
@@ -197,7 +197,7 @@ def test_run_command_help_pushes_preview_screen() -> None:
 
 
 def test_run_command_deck_sets_filter_and_loads_next() -> None:
-    app = review_mod.ReviewApp(backend=object(), deck=None)
+    app = review_mod.ReviewScreen(backend=object(), deck=None)
     calls = {"load_next": 0}
 
     def load_next() -> None:
@@ -214,7 +214,7 @@ def test_run_command_deck_sets_filter_and_loads_next() -> None:
 
 
 def test_run_command_show_and_hide_toggle_answer_when_card_loaded() -> None:
-    app = review_mod.ReviewApp(backend=object(), deck=None)
+    app = review_mod.ReviewScreen(backend=object(), deck=None)
     app._card_id = 123
     app._show_answer = False
     calls = {"render": 0}
@@ -232,7 +232,7 @@ def test_run_command_show_and_hide_toggle_answer_when_card_loaded() -> None:
 
 
 def test_run_command_rate_aliases_map_to_expected_ease() -> None:
-    app = review_mod.ReviewApp(backend=object(), deck=None)
+    app = review_mod.ReviewScreen(backend=object(), deck=None)
     called: list[int] = []
 
     def rate(ease: int) -> None:
@@ -247,7 +247,7 @@ def test_run_command_rate_aliases_map_to_expected_ease() -> None:
 
 
 def test_run_command_rate_usage_validation() -> None:
-    app = review_mod.ReviewApp(backend=object(), deck=None)
+    app = review_mod.ReviewScreen(backend=object(), deck=None)
     statuses: list[str] = []
 
     def capture(msg: str) -> None:
@@ -267,7 +267,7 @@ def test_run_command_rate_usage_validation() -> None:
 
 
 def test_run_command_dispatches_next_undo_preview_and_unknown() -> None:
-    app = review_mod.ReviewApp(backend=object(), deck=None)
+    app = review_mod.ReviewScreen(backend=object(), deck=None)
     calls = {"next": 0, "undo": 0, "preview": 0}
     statuses: list[str] = []
 
@@ -306,7 +306,7 @@ def test_action_rate_requires_answer_first_then_answers() -> None:
             self.calls.append((card_id, ease))
 
     backend = Backend()
-    app = review_mod.ReviewApp(backend=backend, deck=None)
+    app = review_mod.ReviewScreen(backend=backend, deck=None)
     app._card_id = 77
     app._show_answer = False
 
@@ -344,7 +344,7 @@ def test_action_rate_reports_backend_failure() -> None:
         def answer_card(self, *, card_id: int, ease: int) -> None:
             raise RuntimeError("boom")
 
-    app = review_mod.ReviewApp(backend=Backend(), deck=None)
+    app = review_mod.ReviewScreen(backend=Backend(), deck=None)
     app._card_id = 88
     app._show_answer = True
 
@@ -369,7 +369,7 @@ def test_action_rate_reports_backend_failure() -> None:
 def test_bindings_the_footer_advertises_are_real() -> None:
     """The Footer legend comes from BINDINGS, so it can only list real keys."""
     shown = {
-        (b.key_display or b.key): b.description for b in review_mod.ReviewApp.BINDINGS if b.show
+        (b.key_display or b.key): b.description for b in review_mod.ReviewScreen.BINDINGS if b.show
     }
     assert shown == {
         "Space": "Flip",
@@ -381,14 +381,14 @@ def test_bindings_the_footer_advertises_are_real() -> None:
         "q": "Quit",
     }
     # 1-4 stay bound (they are labelled on the buttons) but are not in the legend.
-    keys = {b.key for b in review_mod.ReviewApp.BINDINGS}
+    keys = {b.key for b in review_mod.ReviewScreen.BINDINGS}
     assert {"1", "2", "3", "4"} <= keys
     for phantom in ("edit", "mark", "suspend"):
         assert phantom not in " ".join(shown.values()).lower()
 
 
 def test_set_status_severity_follows_the_message() -> None:
-    app = review_mod.ReviewApp(backend=object(), deck=None)
+    app = review_mod.ReviewScreen(backend=object(), deck=None)
     seen: list[tuple[str, str]] = []
     app._toast = lambda msg, *, severity="information": seen.append((msg, severity))  # type: ignore[method-assign]
 
@@ -404,7 +404,7 @@ def test_set_status_severity_follows_the_message() -> None:
 
 
 def test_rating_hints_fall_back_without_scheduler_introspection() -> None:
-    app = review_mod.ReviewApp(backend=object(), deck=None)
+    app = review_mod.ReviewScreen(backend=object(), deck=None)
     app._card_id = 1
     assert app._rating_hints() == {1: "<10m", 2: "-", 3: "-", 4: "-"}
 
@@ -421,7 +421,7 @@ def test_action_rate_failed_answer_leaves_no_undo_entry(tmp_path) -> None:
         def answer_card(self, *, card_id: int, ease: int) -> None:
             raise RuntimeError("boom")
 
-    app = review_mod.ReviewApp(backend=Backend(), deck=None)
+    app = review_mod.ReviewScreen(backend=Backend(), deck=None)
     app._card_id = 5
     app._show_answer = True
     app._session.undo_store = UndoStore(path=tmp_path / "undo.json")
@@ -455,7 +455,7 @@ def test_action_rate_successful_answer_pushes_undo(tmp_path) -> None:
             self.queue = 9
             return {"card_id": card_id, "ease": ease, "revlog_id": 777}
 
-    app = review_mod.ReviewApp(backend=Backend(), deck=None)
+    app = review_mod.ReviewScreen(backend=Backend(), deck=None)
     app._card_id = 5
     app._show_answer = True
     app._session.undo_store = UndoStore(path=tmp_path / "undo.json")
@@ -488,7 +488,7 @@ def test_action_rate_undo_push_failure_still_counts_answer(tmp_path) -> None:
         def push(self, item: Any, *, max_items: int = 50) -> None:
             raise OSError("undo.json: no space left on device")
 
-    app = review_mod.ReviewApp(backend=Backend(), deck=None)
+    app = review_mod.ReviewScreen(backend=Backend(), deck=None)
     app._card_id = 5
     app._show_answer = True
     app._session.undo_store = FailingUndoStore()  # type: ignore[assignment]
