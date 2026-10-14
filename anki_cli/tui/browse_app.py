@@ -399,6 +399,7 @@ class BrowseApp(App[None]):
         scrollbar-background: {TOOLBAR_BG};
     }}
     #table:focus {{
+        background-tint: transparent;
         border: round {BLUE};
         border-title-color: {BLUE};
     }}
@@ -422,7 +423,7 @@ class BrowseApp(App[None]):
         min-width: 30;
         max-width: 60;
         height: 1fr;
-        background: {MENU_BG};
+        background: {TOOLBAR_BG};
         border: round {BORDER};
         border-title-color: {DIM};
         padding: 0 1;
