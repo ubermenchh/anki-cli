@@ -5,8 +5,11 @@ import html as _html
 import re
 import threading
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from typing import Any, ClassVar
 
+from rich.console import Group, RenderableType
+from rich.table import Table
 from rich.text import Text
 from textual import events, on, work
 from textual.app import ComposeResult
@@ -93,54 +96,106 @@ def _truncate(text: str, length: int = 80) -> str:
     return text[: length - 1] + "\u2026"
 
 
-def _format_card_detail(card: Mapping[str, Any], pal: Palette = DEFAULT_PALETTE) -> Text:
-    """Format full card details for the detail modal."""
-    t = Text()
+def _format_due_long(card: Mapping[str, Any]) -> str:
+    """Human due line for the detail modal, e.g. ``2026-10-20 · in 5 days``."""
+    queue = to_int(card.get("queue"), 0)
+    due_info = card.get("due_info")
 
-    def _row(label: str, value: str, value_style: str = pal.text) -> None:
-        t.append(f"{label:<12}", style=pal.muted)
-        t.append(str(value), style=value_style)
-        t.append("\n")
+    if queue == -1:
+        return "suspended"
+    if queue in (-2, -3):
+        return "buried"
+    if not isinstance(due_info, Mapping):
+        return "-" if due_info in ("", None) else str(due_info)
 
-    _row("Card ID:", str(card.get("cardId", "")))
-    _row("Note ID:", str(card.get("note", "")))
-    _row("Deck:", str(card.get("deckName", "")), pal.accent)
-    _row("Notetype:", str(card.get("notetype_name", "")))
-    _row("Ord:", str(card.get("ord", "")))
-    _row("Type:", str(card.get("type", "")))
+    kind = str(due_info.get("kind") or "")
+    if kind == "new_position":
+        raw = due_info.get("raw")
+        return f"new card #{raw}" if raw is not None else "new"
+
+    epoch = to_int(due_info.get("epoch_secs"), 0)
+    if kind == "learn_epoch_secs":
+        when = datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M") if epoch else ""
+        return f"{when} · {relative_eta(epoch)}" if when else relative_eta(epoch)
+
+    if kind in ("review_day_index", "learn_day_index"):
+        days = due_info.get("days_from_today")
+        if isinstance(days, int):
+            if days == 0:
+                rel = "today"
+            elif days == 1:
+                rel = "tomorrow"
+            elif days == -1:
+                rel = "yesterday"
+            elif days > 1:
+                rel = f"in {days} days"
+            else:
+                rel = f"{-days} days overdue"
+        else:
+            rel = due_day_label(due_info)
+        date = datetime.fromtimestamp(epoch).strftime("%Y-%m-%d") if epoch else ""
+        return f"{date} · {rel}" if date else rel
+
+    raw = due_info.get("raw")
+    return str(raw) if raw is not None else "-"
+
+
+def _format_card_detail(card: Mapping[str, Any], pal: Palette = DEFAULT_PALETTE) -> Group:
+    """The detail modal body: a summary, the fields by name, tags, then the ids."""
+
+    def grid(label_width: int) -> Table:
+        t = Table.grid(padding=(0, 2))
+        t.add_column(width=label_width, no_wrap=True)
+        t.add_column(ratio=1, overflow="fold")
+        return t
+
+    def label(text: str) -> Text:
+        return Text(text, style=pal.muted)
+
+    def value(text: Any, style: str | None = None) -> Text:
+        return Text(str(text), style=style or pal.text)
 
     queue_int = card.get("queue")
-    queue_label = QUEUE_LABELS.get(int(queue_int), str(queue_int)) if queue_int is not None else ""
-    queue_color = str(getattr(pal, _QUEUE_ROLES.get(queue_label, "muted")))
-    _row("Queue:", f"{queue_label} ({queue_int})", queue_color)
+    queue_label = _queue_label(queue_int)
+    interval = to_int(card.get("interval"), 0)
+    factor = to_int(card.get("factor"), 0)
+    lapses = to_int(card.get("lapses"), 0)
+    flags = to_int(card.get("flags"), 0)
 
-    _row("Due:", str(card.get("due_info", "")))
-    _row("Interval:", str(card.get("interval", "")))
-    _row("Factor:", str(card.get("factor", "")))
-    _row("Reps:", str(card.get("reps", "")))
+    summary = grid(10)
+    summary.add_row(label("Deck"), value(card.get("deckName", ""), pal.accent))
+    if card.get("notetype_name"):
+        summary.add_row(label("Notetype"), value(card.get("notetype_name")))
+    summary.add_row(label("Queue"), value(queue_label or "-", _queue_color(queue_int, pal)))
+    summary.add_row(label("Due"), value(_format_due_long(card)))
+    summary.add_row(label("Interval"), value(f"{interval}d" if interval > 0 else "-"))
+    summary.add_row(label("Ease"), value(f"{factor // 10}%" if factor > 0 else "-"))
+    summary.add_row(label("Reps"), value(card.get("reps", 0)))
+    summary.add_row(label("Lapses"), value(lapses, pal.error if lapses > 3 else pal.text))
+    if flags:
+        summary.add_row(label("Flags"), value(flags, pal.warning))
 
-    lapses_val = card.get("lapses", "")
-    lapses_int = int(lapses_val) if isinstance(lapses_val, int) else 0
-    _row("Lapses:", str(lapses_val), pal.error if lapses_int > 3 else pal.text)
-    _row("Flags:", str(card.get("flags", "")))
+    parts: list[Any] = [summary]
 
     values = _extract_field_values(card)
     if values:
-        t.append("\n")
-        t.append("--- Fields ---\n", style=f"bold {pal.warning}")
-        for i, value in enumerate(values):
-            text = _strip_html_basic(value)
-            t.append(f"  [{i}] ", style=pal.muted)
-            t.append(f"{text}\n", style=pal.text)
+        names = card.get("field_names")
+        fields = grid(10)
+        for i, raw in enumerate(values):
+            name = str(names[i]) if isinstance(names, (list, tuple)) and i < len(names) else ""
+            fields.add_row(label(name or f"[{i}]"), value(_strip_html_basic(raw) or "(empty)"))
+        parts += [Text(""), Text("FIELDS", style=f"bold {pal.warning}"), fields]
 
     tags = card.get("tags")
     if isinstance(tags, (list, tuple)) and tags:
-        t.append("\n")
-        t.append("Tags: ", style=pal.muted)
-        t.append(", ".join(str(tag) for tag in tags), style=pal.accent)
-        t.append("\n")
+        tag_grid = grid(10)
+        tag_grid.add_row(label("Tags"), value(", ".join(str(tag) for tag in tags), pal.accent))
+        parts += [Text(""), tag_grid]
 
-    return t
+    ids = Text(style=pal.muted)
+    ids.append(f"card {card.get('cardId', '')}  ·  note {card.get('note', '')}")
+    parts += [Text(""), ids]
+    return Group(*parts)
 
 
 def _format_due_short(card: Mapping[str, Any]) -> str:
@@ -258,6 +313,9 @@ class DetailScreen(ModalScreen[None]):
 
     BINDINGS: ClassVar[list[Binding]] = [Binding("escape", "app.pop_screen", "Close")]
 
+    # The panel is the scroll container and sizes to its content, so a short
+    # card is a short box. Its background matches the screen: a different fill
+    # would show as a square rim around the rounded border.
     DEFAULT_CSS = """
         DetailScreen {
             align: center middle;
@@ -265,43 +323,35 @@ class DetailScreen(ModalScreen[None]):
         }
         DetailScreen #detail-panel {
             width: 80%;
+            min-width: 48;
             max-width: 100;
-            height: 80%;
-            background: $surface;
-            border: round $border;
+            height: auto;
+            max-height: 90%;
+            background: $background;
+            border: round $primary;
+            border-title-color: $primary;
+            border-title-style: bold;
+            border-subtitle-color: $text-muted;
             padding: 1 2;
-        }
-        DetailScreen #detail-title {
-            height: auto;
-            color: $accent;
-            text-style: bold;
-            padding-bottom: 1;
-        }
-        DetailScreen #detail-body {
-            height: 1fr;
-        }
-        DetailScreen #detail-body Static {
-            color: $foreground;
-        }
-        DetailScreen #detail-hint {
-            height: auto;
-            color: $text-muted;
-            padding-top: 1;
-            text-align: right;
+            scrollbar-size: 1 1;
+            scrollbar-color: $border;
+            scrollbar-background: $background;
         }
     """
 
-    def __init__(self, title: str, body: str | Text) -> None:
+    def __init__(self, title: str, body: RenderableType) -> None:
         super().__init__()
         self._title = title
         self._body = body
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="detail-panel"):
-            yield Static(self._title, id="detail-title")
-            with VerticalScroll(id="detail-body"):
-                yield Static(self._body)
-            yield Static("esc to close", id="detail-hint")
+        with VerticalScroll(id="detail-panel"):
+            yield Static(self._body)
+
+    def on_mount(self) -> None:
+        panel = self.query_one("#detail-panel")
+        panel.border_title = self._title
+        panel.border_subtitle = "esc to close"
 
 
 class BrowseApp(ThemedApp):

@@ -366,6 +366,14 @@ def test_enter_opens_the_detail_modal_and_escape_closes_it(
             await pilot.press("enter")
             await pilot.pause()
             assert isinstance(app.screen, DetailScreen)
+            panel = app.screen.query_one("#detail-panel")
+            # Titled on the border, sized to its content, and readable.
+            assert panel.border_title == "Card 1000"
+            assert panel.border_subtitle == "esc to close"
+            assert panel.region.height < 38 - 4
+            shown = " ".join(strip.text for strip in app.screen._compositor.render_strips())
+            assert "Front" in shown and "The capital of France" in shown
+            assert "{'kind'" not in shown
             await pilot.press("escape")
             await pilot.pause()
             assert not isinstance(app.screen, DetailScreen)

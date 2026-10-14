@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import io
+import re
 from typing import Any
 
 import pytest
 
 pytest.importorskip("textual")
 
+from rich.console import Console
+
 import anki_cli.tui._utils as utils_mod
 import anki_cli.tui.browse_app as browse_mod
 
 pytestmark = pytest.mark.tui
+
+
+def _render(renderable: Any, width: int = 100) -> str:
+    """Plain text of a Rich renderable, as the detail modal would lay it out."""
+    console = Console(width=width, record=True, color_system=None, file=io.StringIO())
+    console.print(renderable)
+    return console.export_text()
 
 
 def test_strip_html_basic_br_becomes_space() -> None:
@@ -54,30 +65,81 @@ def test_format_card_detail_includes_all_info() -> None:
         "ord": 0,
         "type": 1,
         "queue": 0,
-        "due_info": "new",
+        "due_info": {"kind": "new_position", "raw": 7},
         "interval": 0,
         "factor": 2500,
         "reps": 0,
         "lapses": 0,
         "flags": 0,
         "fields": ["<b>Q</b>", "A"],
+        "field_names": ["Front", "Back"],
         "tags": ["tag1", "tag2"],
     }
-    detail = browse_mod._format_card_detail(card)
-    assert "Card ID:    42" in detail
-    assert "Note ID:    100" in detail
-    assert "Deck:       Test" in detail
-    assert "Queue:      New (0)" in detail
-    assert "[0] Q" in detail
-    assert "[1] A" in detail
-    assert "Tags: tag1, tag2" in detail
+    text = _render(browse_mod._format_card_detail(card))
+    assert re.search(r"Deck\s+Test", text)
+    assert re.search(r"Notetype\s+Basic", text)
+    assert re.search(r"Queue\s+New", text)
+    assert re.search(r"Due\s+new card #7", text)
+    assert re.search(r"Ease\s+250%", text)
+    # Fields are shown by name, markup stripped.
+    assert re.search(r"Front\s+Q\b", text)
+    assert re.search(r"Back\s+A\b", text)
+    assert re.search(r"Tags\s+tag1, tag2", text)
+    assert "card 42" in text and "note 100" in text
+    # Internals and raw dicts are not dumped on the user.
+    for noise in ("Ord", "{'kind'", "Flags"):
+        assert noise not in text
 
 
 def test_format_card_detail_no_tags_or_fields() -> None:
     card: dict[str, Any] = {"cardId": 1, "queue": 2}
-    detail = browse_mod._format_card_detail(card)
-    assert "Card ID:    1" in detail
-    assert "Tags:" not in detail
+    text = _render(browse_mod._format_card_detail(card))
+    assert "card 1" in text
+    assert "Tags" not in text
+    assert "FIELDS" not in text
+
+
+def test_format_card_detail_wraps_long_fields_under_the_value_column() -> None:
+    card = {"cardId": 1, "queue": 2, "fields": ["word " * 30], "field_names": ["Front"]}
+    lines = _render(browse_mod._format_card_detail(card), width=50).splitlines()
+    field_lines = [ln for ln in lines if "word" in ln]
+    assert len(field_lines) > 1
+    # Continuation lines hang under the value, not back at the label column.
+    first_col = field_lines[0].index("word")
+    assert all(ln.index("word") == first_col for ln in field_lines)
+
+
+def test_format_card_detail_shows_flags_only_when_set() -> None:
+    assert "Flags" not in _render(browse_mod._format_card_detail({"cardId": 1, "flags": 0}))
+    assert re.search(
+        r"Flags\s+3", _render(browse_mod._format_card_detail({"cardId": 1, "flags": 3}))
+    )
+
+
+@pytest.mark.parametrize(
+    ("days", "expected"),
+    [
+        (0, "today"),
+        (1, "tomorrow"),
+        (-1, "yesterday"),
+        (5, "in 5 days"),
+        (-354, "354 days overdue"),
+    ],
+)
+def test_format_due_long_review_days(days: int, expected: str) -> None:
+    card = {
+        "queue": 2,
+        "due_info": {"kind": "review_day_index", "days_from_today": days, "epoch_secs": 1761345000},
+    }
+    out = browse_mod._format_due_long(card)
+    assert out.endswith(expected)
+    assert re.match(r"\d{4}-\d{2}-\d{2} · ", out)
+
+
+def test_format_due_long_special_queues() -> None:
+    assert browse_mod._format_due_long({"queue": -1}) == "suspended"
+    assert browse_mod._format_due_long({"queue": -2}) == "buried"
+    assert browse_mod._format_due_long({"queue": 2, "due_info": None}) == "-"
 
 
 def test_browse_app_constructor() -> None:
@@ -175,9 +237,9 @@ def test_format_card_detail_renders_mapping_fields() -> None:
         },
     }
 
-    detail = browse_mod._format_card_detail(card)
-    assert "[0] Q" in detail
-    assert "[1] A" in detail
+    text = _render(browse_mod._format_card_detail(card))
+    assert re.search(r"\[0\]\s+Q\b", text)
+    assert re.search(r"\[1\]\s+A\b", text)
 
 
 def test_format_due_short_handles_day_learn_like_review(monkeypatch: pytest.MonkeyPatch) -> None:
