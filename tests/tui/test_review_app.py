@@ -330,7 +330,7 @@ def test_action_rate_requires_answer_first_then_answers() -> None:
     assert app._show_answer is True
     assert backend.calls == []
     assert calls["render"] == 1
-    assert statuses[-1] == "Answer shown. Press 1-4 to rate."
+    assert statuses == []  # the rating buttons appearing is the feedback
 
     # Second press submits answer.
     app.action_rate(3)
@@ -365,48 +365,47 @@ def test_action_rate_reports_backend_failure() -> None:
     assert calls["load_next"] == 0
 
 
-def test_refresh_rate_buttons_use_real_newlines() -> None:
-    app = review_mod.ReviewApp(backend=object(), deck=None)
-    seen: dict[str, Any] = {}
-    app._ui_update = lambda sel, val: seen.__setitem__(sel, val)  # type: ignore[method-assign]
-
-    app._refresh_rate_buttons()
-
-    for sel in ("#rate-1", "#rate-2", "#rate-3", "#rate-4"):
-        value = seen[sel]
-        assert "\\n" not in value
-        assert "\n" in value
-
-
-def test_hint_bar_lists_only_actual_bindings() -> None:
-    app = review_mod.ReviewApp(backend=object(), deck=None)
-    seen: dict[str, Any] = {}
-    app._ui_update = lambda sel, val: seen.__setitem__(sel, val)  # type: ignore[method-assign]
-
-    app._render_hint_bar()
-    text = seen["#hintbar"].plain
-
-    # Exact text so key/label swaps, dropped separators and hidden bindings
-    # leaking in all fail.
-    assert text == (
-        " Space  Show/Hide answer"
-        "    1  Again    2  Hard    3  Good    4  Easy"
-        "    u  Undo    p  Preview    n  Next    :  Command    q  Quit"
-    )
-
-    # Phantom keys previously advertised must be gone.
+def test_bindings_the_footer_advertises_are_real() -> None:
+    """The Footer legend comes from BINDINGS, so it can only list real keys."""
+    shown = {
+        (b.key_display or b.key): b.description for b in review_mod.ReviewApp.BINDINGS if b.show
+    }
+    assert shown == {
+        "Space": "Flip",
+        "u": "Undo",
+        "p": "Preview",
+        "n": "Next",
+        ":": "Command",
+        "?": "Help",
+        "q": "Quit",
+    }
+    # 1-4 stay bound (they are labelled on the buttons) but are not in the legend.
+    keys = {b.key for b in review_mod.ReviewApp.BINDINGS}
+    assert {"1", "2", "3", "4"} <= keys
     for phantom in ("edit", "mark", "suspend"):
-        assert phantom not in text
+        assert phantom not in " ".join(shown.values()).lower()
 
 
-def test_shortcuts_block_omits_unbound_edit_key() -> None:
+def test_set_status_severity_follows_the_message() -> None:
     app = review_mod.ReviewApp(backend=object(), deck=None)
-    seen: dict[str, Any] = {}
-    app._ui_update = lambda sel, val: seen.__setitem__(sel, val)  # type: ignore[method-assign]
+    seen: list[tuple[str, str]] = []
+    app._toast = lambda msg, *, severity="information": seen.append((msg, severity))  # type: ignore[method-assign]
 
-    app._render_shortcuts()
+    for msg in (
+        "answer failed: boom",
+        "undo empty",
+        "unknown command: x (try :help)",
+        "undone",
+    ):
+        app._set_status(msg)
 
-    assert "edit" not in seen["#shortcuts-block"].plain
+    assert [sev for _, sev in seen] == ["error", "warning", "warning", "information"]
+
+
+def test_rating_hints_fall_back_without_scheduler_introspection() -> None:
+    app = review_mod.ReviewApp(backend=object(), deck=None)
+    app._card_id = 1
+    assert app._rating_hints() == {1: "<10m", 2: "-", 3: "-", 4: "-"}
 
 
 def test_action_rate_failed_answer_leaves_no_undo_entry(tmp_path) -> None:
