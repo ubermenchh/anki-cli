@@ -7,7 +7,7 @@ import shlex
 import threading
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 
 from rich.text import Text
 from textual import on, work
@@ -20,8 +20,7 @@ from textual.worker import get_current_worker
 
 from anki_cli import __version__
 from anki_cli.core.render import extract_note_id, extract_ord, pick_template, render_card
-from anki_cli.core.scheduler import pick_next_due_card_id
-from anki_cli.core.undo import UndoItem, UndoStore, now_epoch_ms
+from anki_cli.core.review_session import ReviewSession
 from anki_cli.tui._utils import due_day_label, relative_eta, to_int
 from anki_cli.tui.theming import PALETTE_CSS, ThemedApp, command
 
@@ -407,12 +406,13 @@ class ReviewApp(ThemedApp):
         self._backend = backend
         # Undo, preview and the scheduler-ordered picker need scheduler state
         # only the direct backend exposes (AnkiBackend.supports_scheduler_introspection).
-        self._introspects = bool(getattr(backend, "supports_scheduler_introspection", False))
-        self._deck = deck
+        # Next-card choice, the answer + undo flow, undo and previews live in the
+        # shared session (#36); this app only decides how to show them.
+        self._session = ReviewSession(backend, deck)
+        self._introspects = self._session.introspects
         self._card_id: int | None = None
         self._kind: str = "none"
         self._show_answer = False
-        self._undo = UndoStore()
 
         self._current_card: dict[str, Any] | None = None
         # (card id, question, answer) rendered once per card; flipping the
@@ -425,6 +425,14 @@ class ReviewApp(ThemedApp):
         self._session_total = 0
         self._answered = 0
         self._rating_counts: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
+
+    @property
+    def _deck(self) -> str | None:
+        return self._session.deck
+
+    @_deck.setter
+    def _deck(self, value: str | None) -> None:
+        self._session.deck = value
 
     def compose(self) -> ComposeResult:
         with Vertical(id="page"), Vertical(id="column"):
@@ -499,41 +507,16 @@ class ReviewApp(ThemedApp):
             self._render_current()
             return
 
-        # Save undo snapshot (direct backend only). The snapshot must capture
-        # pre-answer state, but it is pushed only after answer_card succeeds so
-        # a failed answer cannot leave a stale undo entry.
-        snapshot: dict[str, Any] | None = None
-        collection = ""
         try:
-            if self._introspects:
-                col = getattr(self._backend, "collection_path", None)
-                collection = str(col) if col is not None else ""
-                snapshot = cast(
-                    dict[str, Any], self._backend.snapshot_card_state(int(self._card_id))
-                )
-            result = self._backend.answer_card(card_id=int(self._card_id), ease=int(ease))
+            outcome = self._session.answer(int(self._card_id), int(ease))
         except Exception as exc:
             # A locked collection or a vanished card surfaces here, not as a
             # Textual traceback that exits 0 (#83).
             self._set_status(f"answer failed: {exc}")
             return
 
-        if snapshot is not None:
-            # Carry the id of the revlog row this answer wrote so undo can
-            # delete exactly that row instead of a time window.
-            revlog_id = result.get("revlog_id") if isinstance(result, Mapping) else None
-            undo_item = UndoItem(
-                collection=collection,
-                card_id=int(self._card_id),
-                snapshot={**snapshot, "revlog_id": revlog_id},
-                created_at_epoch_ms=now_epoch_ms(),
-            )
-            # Best-effort: the answer is already committed, so a failed undo
-            # write must not escape this action.
-            try:
-                self._undo.push(undo_item)
-            except OSError as exc:
-                self._set_status(f"answered; undo not saved: {exc}")
+        if outcome.undo_error:
+            self._set_status(f"answered; undo not saved: {outcome.undo_error}")
 
         self._answered += 1
         self._rating_counts[int(ease)] = self._rating_counts.get(int(ease), 0) + 1
@@ -544,21 +527,13 @@ class ReviewApp(ThemedApp):
             self._set_status("undo is supported only for direct backend")
             return
 
-        col = getattr(self._backend, "collection_path", None)
-        collection = str(col) if col is not None else ""
         try:
-            item = self._undo.pop(collection=collection)
+            outcome = self._session.undo()
         except Exception as exc:
             self._set_status(f"undo failed: {exc}")
             return
-        if item is None:
+        if outcome is None:
             self._set_status("undo empty")
-            return
-
-        try:
-            self._backend.restore_card_state(item.snapshot)
-        except Exception as exc:
-            self._set_status(f"undo failed: {exc}")
             return
 
         if self._answered > 0:
@@ -566,7 +541,7 @@ class ReviewApp(ThemedApp):
 
         self._set_status("undone")
         # The restored card's state changed, so it is re-fetched and re-rendered.
-        self._load_next(card_id=int(item.card_id), kind="undo")
+        self._load_next(card_id=int(outcome.item.card_id), kind="undo")
 
     def action_preview(self) -> None:
         if self._card_id is None:
@@ -749,17 +724,9 @@ class ReviewApp(ThemedApp):
         try:
             if card_id is not None:
                 loaded.card_id, loaded.kind = int(card_id), kind
-            elif self._introspects:
-                # The scheduler's own ordering when the backend exposes it; the
-                # query-based picker is the approximation otherwise.
-                picked = self._backend.get_next_due_card(self._deck)
-                cid = picked.get("card_id") if isinstance(picked, dict) else None
-                loaded.kind = (
-                    str(picked.get("kind", "none")) if isinstance(picked, dict) else "none"
-                )
-                loaded.card_id = int(cid) if isinstance(cid, int) else None
             else:
-                loaded.card_id, loaded.kind = pick_next_due_card_id(self._backend, deck=self._deck)
+                picked = self._session.next()
+                loaded.card_id, loaded.kind = picked.card_id, picked.kind
         except Exception as exc:
             loaded.card_id, loaded.kind = None, "error"
             loaded.error = f"failed to pick next card: {exc}"

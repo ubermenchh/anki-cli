@@ -11,6 +11,7 @@ from click.testing import CliRunner
 
 import anki_cli.backends.factory as factory_mod
 import anki_cli.cli.commands.review as review_cmd_mod
+import anki_cli.core.review_session as review_session_mod
 from anki_cli.backends.ankiconnect import AnkiConnectProtocolError
 from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.backends.protocol import BackendUnsupportedError
@@ -24,6 +25,7 @@ from anki_cli.cli.commands.review import (
     review_undo_cmd,
 )
 from anki_cli.cli.dispatcher import get_command
+from anki_cli.core.undo import UndoItem
 from tests.cli.conftest import base_obj as _base_obj
 from tests.cli.conftest import error_payload as _error_payload
 from tests.cli.conftest import patch_session as _patch_session
@@ -141,7 +143,7 @@ def test_review_next_falls_back_to_scheduler_for_non_direct(monkeypatch) -> None
         calls["deck"] = deck
         return 55, "review_due"
 
-    monkeypatch.setattr(review_cmd_mod, "pick_next_due_card_id", fake_pick)
+    monkeypatch.setattr(review_session_mod, "pick_next_due_card_id", fake_pick)
     monkeypatch.setattr(
         review_cmd_mod,
         "_render_card",
@@ -188,10 +190,10 @@ def test_review_show_no_card(monkeypatch) -> None:
         name = "direct"
         supports_scheduler_introspection = True
 
+        def get_next_due_card(self, deck: str | None = None) -> dict[str, Any]:
+            return {"card_id": None, "kind": "none"}
+
     _patch_session(monkeypatch, Backend())
-    monkeypatch.setattr(
-        review_cmd_mod, "pick_next_due_card_id", lambda backend, deck=None: (None, "none")
-    )
 
     runner = CliRunner()
     result = runner.invoke(review_show_cmd, [], obj=_base_obj())
@@ -201,14 +203,17 @@ def test_review_show_no_card(monkeypatch) -> None:
 
 
 def test_review_show_success(monkeypatch) -> None:
+    picked: dict[str, Any] = {}
+
     class Backend:
         name = "direct"
         supports_scheduler_introspection = True
 
+        def get_next_due_card(self, deck: str | None = None) -> dict[str, Any]:
+            picked["deck"] = deck
+            return {"card_id": 9, "kind": "new"}
+
     _patch_session(monkeypatch, Backend())
-    monkeypatch.setattr(
-        review_cmd_mod, "pick_next_due_card_id", lambda backend, deck=None: (9, "new")
-    )
     monkeypatch.setattr(
         review_cmd_mod,
         "_render_card",
@@ -218,6 +223,8 @@ def test_review_show_success(monkeypatch) -> None:
     runner = CliRunner()
     result = runner.invoke(review_show_cmd, ["--deck", "DeckA"], obj=_base_obj())
     payload = _success_payload(result)
+    # The same scheduler-ordered pick review:next uses (it used to bypass it).
+    assert picked["deck"] == "DeckA"
 
     assert payload["data"] == {
         "deck": "DeckA",
@@ -329,7 +336,7 @@ def test_review_undo_success(monkeypatch) -> None:
     class FakeUndoStore:
         def pop(self, *, collection: str):
             calls["collection"] = collection
-            return review_cmd_mod.UndoItem(
+            return UndoItem(
                 collection=collection,
                 card_id=123,
                 snapshot={"id": 123, "queue": 2},
@@ -411,7 +418,7 @@ def test_review_answer_direct_pushes_undo_snapshot(monkeypatch) -> None:
 
     _patch_session(monkeypatch, Backend())
     monkeypatch.setattr(review_cmd_mod, "UndoStore", FakeUndoStore)
-    monkeypatch.setattr(review_cmd_mod, "now_epoch_ms", lambda: 123456)
+    monkeypatch.setattr(review_session_mod, "now_epoch_ms", lambda: 123456)
 
     runner = CliRunner()
     result = runner.invoke(review_answer_cmd, ["--id", "9", "--rating", "easy"], obj=_base_obj())
