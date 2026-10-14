@@ -30,12 +30,13 @@ from .colors import (
     RED,
     SELECTION_BG,
     TEXT,
+    TOKYO_NIGHT,
     TOOLBAR_BG,
     YELLOW,
 )
 
-PURPLE = "#a29bfe"
-ORANGE = "#ff9f43"
+PURPLE = "#bb9af7"
+ORANGE = "#ff9e64"
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _BR_RE = re.compile(r"(?i)<br\s*/?>")
@@ -492,6 +493,8 @@ class BrowseApp(App[None]):
 
     def __init__(self, *, backend: Any, query: str = "") -> None:
         super().__init__()
+        self.register_theme(TOKYO_NIGHT)
+        self.theme = TOKYO_NIGHT.name
         self._backend = backend
         self._query = query
         self._cards: list[dict[str, Any]] = []
