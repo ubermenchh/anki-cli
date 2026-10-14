@@ -64,6 +64,8 @@ class FakeBackend:
 
     def find_cards(self, query: str) -> list[int]:
         self._rec("find_cards", query)
+        if query.startswith("nid:"):
+            return [c["cardId"] for c in self.cards if c["note"] == int(query[4:])]
         return [c["cardId"] for c in self.cards]
 
     def get_card(self, card_id: int) -> dict[str, Any]:
@@ -115,6 +117,29 @@ class FakeBackend:
     def unsuspend_cards(self, card_ids: list[int]) -> dict[str, Any]:
         self._rec("unsuspend_cards", tuple(card_ids))
         return {"unsuspended": len(card_ids)}
+
+    def bury_cards(self, card_ids: list[int]) -> dict[str, Any]:
+        self._rec("bury_cards", tuple(card_ids))
+        for card in self.cards:
+            if card["cardId"] in card_ids:
+                card["queue"] = -2
+        return {"buried": len(card_ids)}
+
+    def unbury_cards(
+        self, deck: str | None = None, *, card_ids: list[int] | None = None
+    ) -> dict[str, Any]:
+        self._rec("unbury_cards", tuple(card_ids or ()))
+        for card in self.cards:
+            if card["cardId"] in (card_ids or ()) and card["queue"] in (-2, -3):
+                card["queue"] = 2
+        return {"unburied": len(card_ids or ())}
+
+    def set_card_flag(self, card_ids: list[int], flag: int) -> dict[str, Any]:
+        self._rec("set_card_flag", tuple(card_ids), flag)
+        for card in self.cards:
+            if card["cardId"] in card_ids:
+                card["flags"] = flag
+        return {"updated": len(card_ids), "flag": flag}
 
     def delete_notes(self, note_ids: list[int]) -> dict[str, Any]:
         self._rec("delete_notes", tuple(note_ids))

@@ -14,7 +14,7 @@ from rich.text import Text
 from textual.widgets import DataTable, Input, Static
 
 from anki_cli.tui.browse_app import BrowseApp
-from tests.tui.fake_backend import FakeBackend
+from tests.tui.fake_backend import FakeBackend, make_card
 
 pytestmark = pytest.mark.tui
 
@@ -237,17 +237,25 @@ def test_suspend_runs_off_the_ui_thread_and_reloads(
     assert seen == [False]
 
 
-def test_delete_needs_a_second_press_and_runs_in_a_worker(
+def test_delete_asks_for_confirmation_then_runs_in_a_worker(
     fake_backend: FakeBackend, run_async: Any
 ) -> None:
+    from anki_cli.tui.browse_app import ConfirmScreen
+
     async def scenario() -> None:
         app = BrowseApp(backend=fake_backend, query="")
         async with app.run_test(size=(130, 38)) as pilot:
             table = await _mounted(pilot, app)
             await pilot.press("d")
-            await pilot.pause(0.1)
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmScreen)
+            # The question says what goes with the note.
+            shown = " ".join(strip.text for strip in app.screen._compositor.render_strips())
+            assert "Delete note 5000 and 1 card?" in shown
             assert _calls(fake_backend, "delete_notes") == []
-            await pilot.press("d")
+
+            await pilot.press("y")
             for _ in range(20):
                 await pilot.pause(0.05)
                 if _calls(fake_backend, "delete_notes"):
@@ -258,6 +266,129 @@ def test_delete_needs_a_second_press_and_runs_in_a_worker(
                 if table.row_count == 5:
                     break
             assert table.row_count == 5
+
+    run_async(scenario())
+
+
+def test_delete_confirmation_defaults_to_cancel(fake_backend: FakeBackend, run_async: Any) -> None:
+    """Enter, n and Esc all back out; nothing is deleted."""
+    from anki_cli.tui.browse_app import ConfirmScreen
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            for key in ("enter", "n", "escape"):
+                await pilot.press("d")
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+                assert isinstance(app.screen, ConfirmScreen)
+                await pilot.press(key)
+                await pilot.pause()
+                assert not isinstance(app.screen, ConfirmScreen), key
+            assert _calls(fake_backend, "delete_notes") == []
+
+    run_async(scenario())
+
+
+def test_b_buries_and_unburies_the_highlighted_card(run_async: Any) -> None:
+    buried = make_card(0)
+    buried["queue"] = -2
+    backend = FakeBackend(cards=[make_card(0), buried_card_two(buried)])
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("b")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert _calls(backend, "bury_cards") == [((1000,),)]
+            assert any("buried" in n.message for n in app._notifications)
+
+            await pilot.press("down", "b")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert _calls(backend, "unbury_cards") == [((1001,),)]
+
+    run_async(scenario())
+
+
+def buried_card_two(card: dict[str, Any]) -> dict[str, Any]:
+    two = dict(card)
+    two["cardId"], two["note"], two["queue"] = 1001, 5001, -2
+    return two
+
+
+def test_f_opens_the_flag_picker_and_sets_the_flag(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    from anki_cli.tui.browse_app import FlagScreen
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            table = await _mounted(pilot, app)
+            await pilot.press("f")
+            await pilot.pause()
+            assert isinstance(app.screen, FlagScreen)
+
+            # Esc leaves the card alone.
+            await pilot.press("escape")
+            await pilot.pause()
+            assert _calls(fake_backend, "set_card_flag") == []
+
+            await pilot.press("f", "3")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert _calls(fake_backend, "set_card_flag") == [((1000,), 3)]
+            # The reloaded row now carries the flag marker.
+            first = table.get_row_at(0)[0]
+            assert isinstance(first, Text) and first.plain.startswith("\u2691")
+
+    run_async(scenario())
+
+
+def test_row_actions_are_unavailable_without_a_selected_card(run_async: Any) -> None:
+    backend = FakeBackend(cards=[])
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            for action in ("suspend_selected", "bury_selected", "flag_selected", "delete_selected"):
+                assert app.check_action(action, ()) is False, action
+            await pilot.press("s", "b", "f", "d")
+            await pilot.pause()
+            for name in ("suspend_cards", "bury_cards", "set_card_flag", "delete_notes"):
+                assert _calls(backend, name) == [], name
+
+    run_async(scenario())
+
+
+def test_preview_shows_the_full_deck_path(fake_backend: FakeBackend, run_async: Any) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            meta = app.query_one("#preview-meta", Static).content
+            assert "Languages::Japanese::Core 2k" in meta.plain
+
+    run_async(scenario())
+
+
+def test_z_zooms_the_focused_pane(fake_backend: FakeBackend, run_async: Any) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("z")
+            await pilot.pause()
+            assert app.screen.maximized is not None
+            await pilot.press("z")
+            await pilot.pause()
+            assert app.screen.maximized is None
 
     run_async(scenario())
 
@@ -346,10 +477,11 @@ def test_action_results_are_toasts_not_a_status_line(
         async with app.run_test(size=(130, 38)) as pilot:
             await _mounted(pilot, app)
             assert not app.query("#statusbar")
-            await pilot.press("d")
+            await pilot.press("s")
+            await app.workers.wait_for_complete()
             await pilot.pause()
             messages = [n.message for n in app._notifications]
-            assert any("Press d again to delete note 5000" in m for m in messages)
+            assert any("Card 1000 suspended" in m for m in messages), messages
 
     run_async(scenario())
 

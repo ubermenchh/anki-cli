@@ -487,3 +487,28 @@ def test_move_cards_into_a_filtered_deck_is_refused(
     Collection(db_path).assert_untouched()
 
     assert _card_row(db_path, 1)["did"] == 10
+
+
+def test_unbury_by_card_ids_touches_only_those_cards(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store, db_path = _make_store(tmp_path)
+    monkeypatch.setattr(store, "_ensure_write_safe", lambda: None)
+    monkeypatch.setattr(time, "time", lambda: 1_000_000)
+
+    _insert_card(db_path, card_id=201, card_type=2, queue=-2)
+    _insert_card(db_path, card_id=202, card_type=0, queue=-3)
+    _insert_card(db_path, card_id=203, card_type=2, queue=2)  # not buried: untouched
+
+    result = store.unbury_cards(card_ids=[201, 203, 999])
+    assert result == {"unburied": 1, "card_ids": [201, 203, 999]}
+
+    assert _card_row(db_path, 201)["queue"] == 2
+    assert _card_row(db_path, 202)["queue"] == -3  # still buried
+    assert _card_row(db_path, 203)["queue"] == 2
+    Collection(db_path).assert_synced("cards", 201)
+
+    assert store.unbury_cards(card_ids=[]) == {"unburied": 0, "card_ids": []}
+    with pytest.raises(ValueError, match="either deck or card_ids"):
+        store.unbury_cards(deck="Lang", card_ids=[201])

@@ -919,7 +919,9 @@ class AnkiConnectBackend(AnkiBackend):
         # were always "unsupported action".
         raise self._unsupported("bury_cards")
 
-    def unbury_cards(self, deck: str | None = None) -> dict[str, JSONValue]:
+    def unbury_cards(
+        self, deck: str | None = None, *, card_ids: list[int] | None = None
+    ) -> dict[str, JSONValue]:
         raise self._unsupported("unbury_cards")
 
     def reschedule_cards(self, card_ids: list[int], days: int) -> dict[str, JSONValue]:

@@ -300,9 +300,28 @@ class CardsMixin(DeckLookupMixin):
             ).rowcount
         return {"buried": int(updated), "card_ids": ids}
 
-    def unbury_cards(self, deck: str | None = None) -> dict[str, JSONValue]:
+    def unbury_cards(
+        self, deck: str | None = None, *, card_ids: list[int] | None = None
+    ) -> dict[str, JSONValue]:
+        if card_ids is not None and deck is not None:
+            raise ValueError("pass either deck or card_ids, not both")
         with self._connect_write() as conn:
             now_sec = int(time.time())
+            if card_ids is not None:
+                ids = sorted({int(cid) for cid in card_ids if int(cid) > 0})
+                if not ids:
+                    return {"unburied": 0, "card_ids": []}
+                placeholders = ", ".join(["?"] * len(ids))
+                updated = conn.execute(
+                    f"""
+                    UPDATE cards
+                    SET queue = {queue_from_type_sql()},
+                    mod = ?, usn = -1
+                    WHERE queue IN (-2, -3) AND id IN ({placeholders})
+                    """,
+                    (now_sec, *ids),
+                ).rowcount
+                return {"unburied": int(updated), "card_ids": ids}
             if deck is None:
                 updated = conn.execute(
                     f"""
