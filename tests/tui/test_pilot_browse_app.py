@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 from typing import Any
 
 import pytest
@@ -50,11 +51,10 @@ def test_top_bars_do_not_overlap(fake_backend: FakeBackend, run_async: Any) -> N
         app = BrowseApp(backend=fake_backend, query="deck:x")
         async with app.run_test(size=(130, 38)) as pilot:
             await pilot.pause()
-            title = app.query_one("#titlebar").region
-            toolbar = app.query_one("#toolbar").region
-            assert title.y != toolbar.y
-            assert title.y + title.height <= toolbar.y
-            assert app.query_one("#table").region.y >= toolbar.y + toolbar.height
+            rows = [app.query_one(sel).region for sel in ("#header", "#search-wrap", "#filters")]
+            for above, below in itertools.pairwise(rows):
+                assert above.y + above.height <= below.y, rows
+            assert app.query_one("#table").region.y >= rows[-1].y + rows[-1].height
 
     run_async(scenario())
 
@@ -77,10 +77,15 @@ def test_all_columns_fit_without_horizontal_scroll(
                 table.region,
             )
             preview = app.query_one("#preview")
-            if size[0] >= 110:
-                assert preview.display and 30 <= preview.region.width <= 60
+            assert preview.display
+            if size[0] >= 100:
+                # Wide: beside the table.
+                assert 30 <= preview.region.width <= 60
+                assert preview.region.x >= table.region.x + table.region.width
             else:
-                assert not preview.display
+                # Narrow: a strip under the table, full width.
+                assert preview.region.y >= table.region.y + table.region.height
+                assert preview.region.width >= table.region.width
 
     run_async(scenario())
 
@@ -137,17 +142,17 @@ def test_escape_from_search_returns_to_table_instead_of_quitting(
     run_async(scenario())
 
 
-def test_status_shows_raw_query_not_markup(fake_backend: FakeBackend, run_async: Any) -> None:
-    """#82: the status line echoed the user's query through markup parsing."""
+def test_header_shows_raw_query_not_markup(fake_backend: FakeBackend, run_async: Any) -> None:
+    """#82: the query was echoed through markup parsing."""
 
     async def scenario() -> None:
         app = BrowseApp(backend=fake_backend, query="tag:[x] deck:[b]ig")
         async with app.run_test(size=(130, 38)) as pilot:
             await _mounted(pilot, app)
             await pilot.pause()
-            content = app.query_one("#statusbar-text", Static).content
+            content = app.query_one("#header-text", Static).content
             assert isinstance(content, Text)
-            assert content.plain == "tag:[x] deck:[b]ig"
+            assert content.plain.endswith("tag:[x] deck:[b]ig")
 
     run_async(scenario())
 
@@ -193,11 +198,11 @@ def test_preview_follows_the_cursor_without_polling(
         async with app.run_test(size=(130, 38)) as pilot:
             await _mounted(pilot, app)
             assert not app._timers  # no set_interval poll left
-            title = app.query_one("#preview-title", Static)
-            assert "1000" in str(title.render())
+            preview = app.query_one("#preview")
+            assert "1000" in str(preview.border_title)
             await pilot.press("down")
             await pilot.pause(0.05)
-            assert "1001" in str(title.render())
+            assert "1001" in str(preview.border_title)
 
     run_async(scenario())
 
@@ -253,5 +258,116 @@ def test_delete_needs_a_second_press_and_runs_in_a_worker(
                 if table.row_count == 5:
                     break
             assert table.row_count == 5
+
+    run_async(scenario())
+
+
+# --- #84: Footer + help, Tabs, panes, toasts -----------------------------------------
+
+
+def test_footer_shows_the_key_legend_and_question_mark_opens_help(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    from textual.widgets import Footer, HelpPanel
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            footer = app.query_one(Footer)
+            assert footer.region.height >= 1
+            assert footer.region.y + footer.region.height == app.size.height
+            assert not app.query(HelpPanel)
+            await pilot.press("question_mark")
+            await pilot.pause()
+            assert app.query(HelpPanel)
+
+    run_async(scenario())
+
+
+def test_filter_tabs_filter_the_table_from_keys_and_tab_clicks(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    from textual.widgets import Tabs
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            table = await _mounted(pilot, app)
+            tabs = app.query_one("#filters", Tabs)
+            assert tabs.active == "ftab-all"
+            assert table.row_count == 6
+
+            await pilot.press("right_square_bracket")  # All -> New (queue 0)
+            await pilot.pause()
+            assert tabs.active == "ftab-new"
+            assert table.row_count == sum(1 for c in fake_backend.cards if c["queue"] == 0)
+
+            await pilot.press("left_square_bracket")
+            await pilot.pause()
+            assert tabs.active == "ftab-all"
+            assert table.row_count == 6
+
+            tabs.active = "ftab-suspended"  # what a click does
+            await pilot.pause()
+            assert table.row_count == sum(1 for c in fake_backend.cards if c["queue"] == -1)
+
+    run_async(scenario())
+
+
+def test_digits_focus_panes_and_p_toggles_the_preview(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("2")
+            assert app.focused is not None and app.focused.id == "preview-scroll"
+            await pilot.press("1")
+            assert isinstance(app.focused, DataTable)
+
+            preview = app.query_one("#preview")
+            await pilot.press("p")
+            await pilot.pause()
+            assert not preview.display
+            await pilot.press("p")
+            await pilot.pause()
+            assert preview.display
+
+    run_async(scenario())
+
+
+def test_action_results_are_toasts_not_a_status_line(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            assert not app.query("#statusbar")
+            await pilot.press("d")
+            await pilot.pause()
+            messages = [n.message for n in app._notifications]
+            assert any("Press d again to delete note 5000" in m for m in messages)
+
+    run_async(scenario())
+
+
+def test_enter_opens_the_detail_modal_and_escape_closes_it(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    from anki_cli.tui.browse_app import DetailScreen
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, DetailScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, DetailScreen)
 
     run_async(scenario())

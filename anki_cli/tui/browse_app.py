@@ -14,7 +14,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Input, Static
+from textual.widgets import DataTable, Footer, Input, Static, Tab, Tabs
 from textual.worker import get_current_worker
 
 from anki_cli import __version__
@@ -30,12 +30,13 @@ from .colors import (
     RED,
     SELECTION_BG,
     TEXT,
+    TOKYO_NIGHT,
     TOOLBAR_BG,
     YELLOW,
 )
 
-PURPLE = "#a29bfe"
-ORANGE = "#ff9f43"
+PURPLE = "#bb9af7"
+ORANGE = "#ff9e64"
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _BR_RE = re.compile(r"(?i)<br\s*/?>")
@@ -257,6 +258,12 @@ class CardTable(DataTable[Text | str]):
     class Resized(Message):
         pass
 
+    # The table owns Enter (RowSelected opens the detail view), so the legend
+    # entry lives here, where Footer looks for the focused widget's bindings.
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("enter", "select_cursor", "Detail", key_display="Enter", show=True),
+    ]
+
     def on_resize(self, event: events.Resize) -> None:
         self.post_message(self.Resized())
 
@@ -322,58 +329,48 @@ class BrowseApp(App[None]):
     # query instead of acting (#81).
     AUTO_FOCUS = None
 
-    # Below 110 columns the fixed preview pane left the table too narrow for
-    # its own columns (#79). The pane hides and Enter -> Detail covers it;
-    # stacking it under the table is the redesign's job (#84).
-    HORIZONTAL_BREAKPOINTS: ClassVar[list[tuple[int, str]]] = [(0, "-narrow"), (110, "-wide")]
+    # Wide terminals put the preview beside the table; narrow ones stack it
+    # under the table as a short strip. CSS keys off the class Textual puts on
+    # the Screen, so there is no resize handler for the layout (#84).
+    HORIZONTAL_BREAKPOINTS: ClassVar[list[tuple[int, str]]] = [(0, "-narrow"), (100, "-wide")]
 
     CSS = f"""
     Screen {{
         background: {TOOLBAR_BG};
     }}
-
     /* One docked container per edge: docking two widgets to the same edge
        makes them overlap (#78), so the bars live inside #top in normal flow. */
     #top {{
         dock: top;
         height: auto;
     }}
-    #titlebar {{
-        height: 2;
+    #header {{
+        height: 1;
         background: {MENU_BG};
-        border-bottom: solid {BORDER};
         padding: 0 1;
     }}
-    #titlebar-text {{
-        width: auto;
+    #header-text {{
+        width: 1fr;
         color: {BLUE};
         text-style: bold;
     }}
-    #titlebar-keys {{
-        width: 1fr;
-        text-align: right;
+    #header-count {{
+        width: auto;
         color: {DIM};
     }}
-
-    #toolbar {{
-        height: 3;
-        background: {TOOLBAR_BG};
-        border-bottom: solid {BORDER};
-        padding: 0 1;
-    }}
     #search-wrap {{
-        width: 1fr;
-        height: 3;
-        padding-right: 1;
+        height: 1;
+        background: {TOOLBAR_BG};
+        padding: 0 1;
     }}
     #search-prefix {{
         width: 2;
-        content-align: left middle;
         color: {CYAN};
         text-style: bold;
     }}
     #search {{
-        height: 3;
+        height: 1;
+        padding: 0;
         border: none;
         background: {TOOLBAR_BG};
         color: {TEXT};
@@ -382,50 +379,29 @@ class BrowseApp(App[None]):
         border: none;
         background: {MENU_BG};
     }}
-    #filter-tabs {{
-        width: auto;
-        height: 3;
-        content-align: left middle;
-        padding-right: 1;
+    #filters {{
+        height: 2;
+        background: {TOOLBAR_BG};
     }}
-    .filter-chip {{
-        min-width: 0;
-        width: auto;
-        height: 1;
-        border: none;
-        background: transparent;
-        color: {DIM};
-        padding: 0 1 0 1;
-        margin: 0 1 0 0;
-    }}
-    .filter-chip:hover {{
-        background: {SELECTION_BG};
-        color: {TEXT};
-    }}
-    .filter-chip.-active {{
-        background: {SELECTION_BG};
-        color: {BLUE};
-        text-style: bold;
-    }}
-    #toolbar-count {{
-        width: 24;
-        text-align: right;
-        color: {DIM};
-        content-align: right middle;
-    }}
-
     #main {{
         height: 1fr;
+        layout: horizontal;
     }}
-
-    DataTable {{
-        width: 2fr;
+    #table {{
+        width: 3fr;
         height: 1fr;
         background: {TOOLBAR_BG};
+        border: round {BORDER};
+        border-title-color: {DIM};
         scrollbar-size: 1 1;
         scrollbar-color: {BORDER};
         scrollbar-color-hover: {DIM};
         scrollbar-background: {TOOLBAR_BG};
+    }}
+    #table:focus {{
+        background-tint: transparent;
+        border: round {BLUE};
+        border-title-color: {BLUE};
     }}
     DataTable > .datatable--header {{
         background: {MENU_BG};
@@ -442,24 +418,38 @@ class BrowseApp(App[None]):
     DataTable > .datatable--odd-row {{
         background: {MENU_BG};
     }}
-
-    /* 2fr:1fr split with the table, preview clamped 30..50 (#79). */
     #preview {{
-        width: 1fr;
+        width: 2fr;
         min-width: 30;
-        max-width: 50;
-        background: {MENU_BG};
-        border-left: solid {BORDER};
-        padding: 1;
+        max-width: 60;
+        height: 1fr;
+        background: {TOOLBAR_BG};
+        border: round {BORDER};
+        border-title-color: {DIM};
+        padding: 0 1;
     }}
-    Screen.-narrow #preview {{
+    #preview:focus-within {{
+        border: round {BLUE};
+        border-title-color: {BLUE};
+    }}
+    #preview.-hidden {{
         display: none;
     }}
-    #preview-title {{
-        height: auto;
-        color: {DIM};
-        text-style: bold;
-        padding-bottom: 1;
+    /* Fixed columns + a 12-col Question + border need 68; the preview takes the rest. */
+    Screen.-wide #table {{
+        min-width: 68;
+    }}
+    /* Narrow: the preview is a strip under the table, not a column. */
+    Screen.-narrow #main {{
+        layout: vertical;
+    }}
+    Screen.-narrow #table {{
+        width: 1fr;
+    }}
+    Screen.-narrow #preview {{
+        width: 1fr;
+        max-width: 100%;
+        height: 8;
     }}
     #preview-scroll {{
         height: 1fr;
@@ -467,57 +457,28 @@ class BrowseApp(App[None]):
     #preview-body {{
         height: auto;
         color: {TEXT};
-        padding-bottom: 1;
     }}
     #preview-meta {{
         height: auto;
         color: {DIM};
         padding-top: 1;
     }}
-    #preview-actions {{
-        height: auto;
-        color: {DIM};
-        padding-top: 1;
-        border-top: solid {BORDER};
-    }}
-
-    #statusbar {{
-        height: 1;
-        background: {MENU_BG};
-        border-top: solid {BORDER};
-        padding: 0 1;
-    }}
-    #statusbar-text {{
-        width: 1fr;
-        color: {DIM};
-    }}
-    #statusbar-count {{
-        width: 24;
-        text-align: right;
-        color: {DIM};
-    }}
-
-    #hintbar {{
-        height: auto;
-        background: {TOOLBAR_BG};
-        border-top: solid {BORDER};
-        color: {DIM};
-        padding: 0 1;
-    }}
     """
 
+    # Footer renders the ``show=True`` entries for the focused widget, so this
+    # list is also the on-screen key legend. ``?`` opens the full list (#7).
     BINDINGS: ClassVar[list[Binding]] = [
-        Binding("slash", "focus_search", "Search", key_display="/", show=True),
-        Binding("tab", "cycle_filter", "Cycle filter", key_display="Tab", show=True),
-        Binding("1", "filter_all", "All", show=False),
-        Binding("2", "filter_new", "New", show=False),
-        Binding("3", "filter_review", "Review", show=False),
-        Binding("4", "filter_learn", "Learn", show=False),
-        Binding("5", "filter_suspended", "Suspended", show=False),
-        Binding("enter", "show_detail", "Detail", key_display="Enter", show=True),
-        Binding("d", "delete_selected", "Delete", show=True),
+        Binding("slash", "focus_search", "Filter", key_display="/", show=True),
         Binding("s", "suspend_selected", "Suspend", show=True),
-        Binding("r", "refresh", "Refresh", show=True),
+        Binding("d", "delete_selected", "Delete", show=True),
+        Binding("r", "refresh", "Refresh", show=False),
+        Binding("left_square_bracket", "prev_filter", "Prev tab", key_display="[", show=False),
+        Binding("right_square_bracket", "next_filter", "Next tab", key_display="]", show=False),
+        Binding("1", "focus_pane('table')", "Cards", show=False),
+        Binding("2", "focus_pane('preview-scroll')", "Preview", show=False),
+        Binding("p", "toggle_preview", "Preview on/off", show=False),
+        Binding("f", "toggle_zoom", "Zoom pane", show=False),
+        Binding("question_mark", "show_help_panel", "Help", key_display="?", show=True),
         Binding("q", "quit", "Quit", show=True),
         Binding("escape", "escape", "Back / Quit", show=False),
     ]
@@ -533,6 +494,8 @@ class BrowseApp(App[None]):
 
     def __init__(self, *, backend: Any, query: str = "") -> None:
         super().__init__()
+        self.register_theme(TOKYO_NIGHT)
+        self.theme = TOKYO_NIGHT.name
         self._backend = backend
         self._query = query
         self._cards: list[dict[str, Any]] = []
@@ -544,49 +507,32 @@ class BrowseApp(App[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="top"):
-            with Horizontal(id="titlebar"):
-                yield Static(f"anki-cli {__version__} — browse", id="titlebar-text")
-                yield Static("", id="titlebar-keys")
-
-            with Horizontal(id="toolbar"):
-                with Horizontal(id="search-wrap"):
-                    yield Static("⌕ ", id="search-prefix")
-                    yield Input(placeholder="search query...", id="search")
-                with Horizontal(id="filter-tabs"):
-                    for idx, key in enumerate(self._FILTER_ORDER, start=1):
-                        label = self._FILTER_LABELS[key]
-                        yield Button(
-                            f"[{idx}] {label}",
-                            id=f"fchip-{key}",
-                            classes="filter-chip",
-                        )
-                yield Static("", id="toolbar-count")
-
+            with Horizontal(id="header"):
+                yield Static(f"anki-cli {__version__} · browse", id="header-text")
+                yield Static("", id="header-count")
+            with Horizontal(id="search-wrap"):
+                yield Static("⌕ ", id="search-prefix")
+                yield Input(placeholder="search query...", id="search")
+            yield Tabs(
+                *(Tab(self._FILTER_LABELS[key], id=f"ftab-{key}") for key in self._FILTER_ORDER),
+                id="filters",
+            )
         with Horizontal(id="main"):
             yield CardTable(id="table", cursor_type="row", zebra_stripes=True)
-
-            with Vertical(id="preview"):
-                yield Static("Preview", id="preview-title")
-                with VerticalScroll(id="preview-scroll"):
-                    yield Static("", id="preview-body")
-                    yield Static("", id="preview-meta")
-                yield Static("", id="preview-actions")
-
-        with Horizontal(id="statusbar"):
-            yield Static("", id="statusbar-text")
-            yield Static("", id="statusbar-count")
-
-        yield Static("", id="hintbar")
+            with Vertical(id="preview"), VerticalScroll(id="preview-scroll"):
+                yield Static("", id="preview-body")
+                yield Static("", id="preview-meta")
+        yield Footer(compact=True)
 
     def on_mount(self) -> None:
         self._add_columns()
+        self.query_one("#table").border_title = "1 Cards"
+        self.query_one("#preview").border_title = "2 Preview"
 
         search = self.query_one("#search", Input)
         search.value = self._query
 
-        self._render_filter_tabs()
-        self._render_toolbar_count()
-        self._render_hint_bar()
+        self._render_header(self._query or "*", "")
         self._render_preview_empty()
 
         self.query_one("#table", DataTable).focus()
@@ -632,26 +578,34 @@ class BrowseApp(App[None]):
     def action_refresh(self) -> None:
         self._load_cards(self._current_query())
 
-    def action_cycle_filter(self) -> None:
-        current = self._active_filter
-        idx = self._FILTER_ORDER.index(current)
-        next_filter = self._FILTER_ORDER[(idx + 1) % len(self._FILTER_ORDER)]
-        self._set_filter(next_filter)
+    def action_prev_filter(self) -> None:
+        self._step_filter(-1)
 
-    def action_filter_all(self) -> None:
-        self._set_filter("all")
+    def action_next_filter(self) -> None:
+        self._step_filter(1)
 
-    def action_filter_new(self) -> None:
-        self._set_filter("new")
+    def _step_filter(self, delta: int) -> None:
+        idx = self._FILTER_ORDER.index(self._active_filter)
+        self._set_filter(self._FILTER_ORDER[(idx + delta) % len(self._FILTER_ORDER)])
 
-    def action_filter_review(self) -> None:
-        self._set_filter("review")
+    def action_focus_pane(self, widget_id: str) -> None:
+        preview = self.query_one("#preview")
+        if widget_id == "preview-scroll" and not preview.display:
+            return
+        self.query_one(f"#{widget_id}").focus()
 
-    def action_filter_learn(self) -> None:
-        self._set_filter("learn")
+    def action_toggle_preview(self) -> None:
+        preview = self.query_one("#preview")
+        preview.toggle_class("-hidden")
+        if preview.has_class("-hidden"):
+            self.query_one("#table").focus()
 
-    def action_filter_suspended(self) -> None:
-        self._set_filter("suspended")
+    def action_toggle_zoom(self) -> None:
+        screen = self.screen
+        if screen.maximized is not None:
+            screen.minimize()
+        elif self.focused is not None and not isinstance(self.focused, Input):
+            screen.maximize(self.focused)
 
     def action_show_detail(self) -> None:
         row_idx = self._selected_row_index()
@@ -661,12 +615,12 @@ class BrowseApp(App[None]):
     def action_suspend_selected(self) -> None:
         card = self._selected_card()
         if card is None:
-            self._set_status("no card selected", self._count_label())
+            self._toast("No card selected", severity="warning")
             return
 
         card_id = to_int(card.get("cardId"), 0)
         if card_id <= 0:
-            self._set_status("selected row has no card id", self._count_label())
+            self._toast("Selected row has no card id", severity="error")
             return
 
         self._suspend_card(card_id, to_int(card.get("queue"), 0))
@@ -682,29 +636,26 @@ class BrowseApp(App[None]):
                 self._backend.suspend_cards([card_id])
                 action = "suspended"
         except Exception as exc:
-            self._set_status(f"suspend failed: {exc}", self._count_label())
+            self._toast(f"Suspend failed: {exc}", severity="error")
             return
 
-        self._set_status(f"{action} card {card_id}", self._count_label())
+        self._toast(f"Card {card_id} {action}")
         self._load_cards(self._current_query())
 
     def action_delete_selected(self) -> None:
         card = self._selected_card()
         if card is None:
-            self._set_status("no card selected", self._count_label())
+            self._toast("No card selected", severity="warning")
             return
 
         note_id = _extract_note_id_from_card(card)
         if note_id is None:
-            self._set_status("selected card has no note id", self._count_label())
+            self._toast("Selected card has no note id", severity="error")
             return
 
         if self._delete_arm_note_id != note_id:
             self._delete_arm_note_id = note_id
-            self._set_status(
-                f"press d again to delete note {note_id}",
-                self._count_label(),
-            )
+            self._toast(f"Press d again to delete note {note_id}", severity="warning")
             return
 
         self._delete_arm_note_id = None
@@ -715,7 +666,7 @@ class BrowseApp(App[None]):
         try:
             result = self._backend.delete_notes([note_id])
         except Exception as exc:
-            self._set_status(f"delete failed: {exc}", self._count_label())
+            self._toast(f"Delete failed: {exc}", severity="error")
             return
 
         deleted_notes = 0
@@ -725,9 +676,9 @@ class BrowseApp(App[None]):
                 deleted_notes = to_int(result.get("deleted"), 0)
 
         if deleted_notes > 0:
-            self._set_status(f"deleted note {note_id}", self._count_label())
+            self._toast(f"Deleted note {note_id}")
         else:
-            self._set_status(f"note {note_id} not deleted", self._count_label())
+            self._toast(f"Note {note_id} was not deleted", severity="warning")
 
         self._load_cards(self._current_query())
 
@@ -742,12 +693,11 @@ class BrowseApp(App[None]):
         if row_idx is not None:
             self._show_detail_for_row(row_idx)
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        btn_id = event.button.id or ""
-        if btn_id.startswith("fchip-"):
-            filter_key = btn_id[6:]
-            if filter_key in self._FILTER_ORDER:
-                self._set_filter(filter_key)
+    @on(Tabs.TabActivated, "#filters")
+    def _on_filter_tab(self, event: Tabs.TabActivated) -> None:
+        tab_id = event.tab.id or ""
+        if tab_id.startswith("ftab-"):
+            self._set_filter(tab_id[5:])
 
     def _current_query(self) -> str:
         with contextlib.suppress(Exception):
@@ -780,14 +730,13 @@ class BrowseApp(App[None]):
         self.push_screen(DetailScreen(f"Card {card.get('cardId', '')}", detail))
 
     def _set_filter(self, filter_key: str) -> None:
-        if filter_key not in self._FILTER_ORDER:
+        if filter_key not in self._FILTER_ORDER or filter_key == self._active_filter:
             return
         self._active_filter = filter_key
         self._delete_arm_note_id = None
         self._visible_cards = [card for card in self._cards if self._matches_filter(card)]
         self._populate_table(reset_cursor=True)
         self._render_filter_tabs()
-        self._render_toolbar_count()
         self._sync_preview_cursor(force=True)
         self._set_status(self._current_query() or "*", self._count_label())
 
@@ -811,34 +760,29 @@ class BrowseApp(App[None]):
         return f"{len(self._visible_cards)}/{len(self._cards)} cards"
 
     def _render_filter_tabs(self) -> None:
-        for key in self._FILTER_ORDER:
+        # Keep the Tabs strip in step when the filter changed from the keyboard.
+        with contextlib.suppress(Exception):
+            tabs = self.query_one("#filters", Tabs)
+            if tabs.active != f"ftab-{self._active_filter}":
+                tabs.active = f"ftab-{self._active_filter}"
+
+    def _render_header(self, left: str, right: str) -> None:
+        # Text(): ``left`` is often the raw user query, which must not be
+        # parsed as markup (#82).
+        title = Text(f"anki-cli {__version__} · browse · ")
+        title.append(left, style=f"bold {TEXT}")
+        with contextlib.suppress(Exception):
+            self.query_one("#header-text", Static).update(title)
+        with contextlib.suppress(Exception):
+            self.query_one("#header-count", Static).update(Text(right, style=DIM))
+
+    def _toast(self, message: str, *, severity: str = "information") -> None:
+        """Transient result of an action; replaces the old persistent status line."""
+        if threading.current_thread() is threading.main_thread():
+            self.notify(Text(message).plain, severity=severity)  # type: ignore[arg-type]
+        else:
             with contextlib.suppress(Exception):
-                btn = self.query_one(f"#fchip-{key}", Button)
-                if key == self._active_filter:
-                    btn.add_class("-active")
-                else:
-                    btn.remove_class("-active")
-
-    def _render_toolbar_count(self) -> None:
-        count = Text()
-        count.append(str(len(self._visible_cards)), style=TEXT)
-        count.append(" cards", style=DIM)
-        self.query_one("#toolbar-count", Static).update(count)
-
-    def _render_hint_bar(self) -> None:
-        # Derive the bar from BINDINGS so it can only advertise keys that
-        # actually do something.
-        hint = Text()
-        first = True
-        for binding in self.BINDINGS:
-            if not binding.show:
-                continue
-            if not first:
-                hint.append("   ")
-            hint.append(f" {binding.key_display or binding.key} ", style=f"bold {BLUE}")
-            hint.append(f" {binding.description}", style=DIM)
-            first = False
-        self.query_one("#hintbar", Static).update(hint)
+                self.call_from_thread(self.notify, message, severity=severity)
 
     @on(DataTable.RowHighlighted, "#table")
     def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -854,14 +798,9 @@ class BrowseApp(App[None]):
                 self._update_preview_for_row(row)
 
     def _render_preview_empty(self) -> None:
-        self.query_one("#preview-title", Static).update("Preview")
+        self.query_one("#preview").border_title = "2 Preview"
         self.query_one("#preview-body", Static).update("No card selected.")
         self.query_one("#preview-meta", Static).update("")
-        actions = Text()
-        for key, label in [("d", "Delete"), ("s", "Suspend"), ("Enter", "Detail")]:
-            actions.append(f" {key} ", style=f"bold {BLUE}")
-            actions.append(f" {label}  ", style=DIM)
-        self.query_one("#preview-actions", Static).update(actions)
 
     def _update_preview_for_row(self, row_idx: int) -> None:
         if not (0 <= row_idx < len(self._visible_cards)):
@@ -876,10 +815,7 @@ class BrowseApp(App[None]):
         queue_label = _queue_label(queue)
         queue_color = _queue_color(queue)
 
-        title = Text()
-        title.append("PREVIEW — CARD ", style=DIM)
-        title.append(card_id, style=CYAN)
-        self.query_one("#preview-title", Static).update(title)
+        self.query_one("#preview").border_title = f"2 Preview · card {card_id}"
 
         body = Text()
         body.append("FRONT\n", style=f"bold {DIM}")
@@ -916,35 +852,19 @@ class BrowseApp(App[None]):
         meta.append(tags, style=CYAN)
         self.query_one("#preview-meta", Static).update(meta)
 
-        suspend_label = "Unsuspend" if to_int(card.get("queue"), 0) == -1 else "Suspend"
-        actions = Text()
-        action_items = [("d", "Delete"), ("s", suspend_label), ("Enter", "Detail")]
-        for key, label in action_items:
-            actions.append(f" {key} ", style=f"bold {BLUE}")
-            actions.append(f" {label}  ", style=DIM)
-        self.query_one("#preview-actions", Static).update(actions)
-
     def _set_status(self, left: str, right: str) -> None:
+        """Header state (query + count, or loading progress)."""
         if threading.current_thread() is threading.main_thread():
-            self._update_status_widget(left, right)
+            self._render_header(left, right)
         else:
             with contextlib.suppress(Exception):
-                self.call_from_thread(self._update_status_widget, left, right)
-
-    def _update_status_widget(self, left: str, right: str) -> None:
-        # Text(): the left side is often the raw user query, which must not be
-        # parsed as markup (#82).
-        with contextlib.suppress(Exception):
-            self.query_one("#statusbar-text", Static).update(Text(left))
-        with contextlib.suppress(Exception):
-            self.query_one("#statusbar-count", Static).update(Text(right))
+                self.call_from_thread(self._render_header, left, right)
 
     def _on_cards_loaded(self, cards: list[dict[str, Any]], query: str) -> None:
         self._cards = cards
         self._visible_cards = [card for card in self._cards if self._matches_filter(card)]
         self._populate_table(reset_cursor=True)
         self._render_filter_tabs()
-        self._render_toolbar_count()
         self._sync_preview_cursor(force=True)
         self._set_status(query or "*", self._count_label())
         if self.focused is None:
@@ -989,4 +909,5 @@ class BrowseApp(App[None]):
                 return
             self.call_from_thread(self._on_cards_loaded, cards, query)
         except Exception as exc:
-            self._set_status(f"error: {exc}", "0 cards")
+            self._toast(f"Load failed: {exc}", severity="error")
+            self._set_status("error", "0 cards")
