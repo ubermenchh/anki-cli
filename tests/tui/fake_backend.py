@@ -69,6 +69,11 @@ class FakeBackend:
     def get_card(self, card_id: int) -> dict[str, Any]:
         return next(c for c in self.cards if c["cardId"] == card_id)
 
+    def get_cards(self, card_ids: list[int]) -> list[dict[str, Any]]:
+        self._rec("get_cards", tuple(card_ids))
+        by_id = {c["cardId"]: c for c in self.cards}
+        return [by_id[i] for i in card_ids if i in by_id]
+
     def get_note_fields(self, note_id: int, fields: list[str] | None = None) -> dict[str, str]:
         card = next(c for c in self.cards if c["note"] == note_id)
         return dict(zip(card["field_names"], card["fields"], strict=True))
@@ -110,3 +115,8 @@ class FakeBackend:
     def unsuspend_cards(self, card_ids: list[int]) -> dict[str, Any]:
         self._rec("unsuspend_cards", tuple(card_ids))
         return {"unsuspended": len(card_ids)}
+
+    def delete_notes(self, note_ids: list[int]) -> dict[str, Any]:
+        self._rec("delete_notes", tuple(note_ids))
+        self.cards = [c for c in self.cards if c["note"] not in note_ids]
+        return {"deleted": len(note_ids)}

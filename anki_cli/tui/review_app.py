@@ -348,6 +348,10 @@ class ReviewApp(App[None]):
         self._undo = UndoStore()
 
         self._current_card: dict[str, Any] | None = None
+        # (card id, question, answer) rendered once per card; flipping the
+        # answer repaints from this instead of re-fetching card, note and
+        # notetype on every keypress (#35).
+        self._rendered: tuple[int, str, str] | None = None
         self._session_total = 0
         self._answered = 0
         self._rating_counts: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
@@ -492,6 +496,7 @@ class ReviewApp(App[None]):
         self._card_id = int(item.card_id)
         self._kind = "undo"
         self._show_answer = False
+        self._rendered = None  # the restored card's state changed
         self._render_current()
         self._set_status("undone")
 
@@ -705,6 +710,7 @@ class ReviewApp(App[None]):
             return
 
         self._show_answer = False
+        self._rendered = None
 
         if self._card_id is None:
             deck = self._deck or "(all)"
@@ -728,23 +734,34 @@ class ReviewApp(App[None]):
 
     def _render_current(self) -> None:
         assert self._card_id is not None
-        try:
-            rendered = self._render_card(self._card_id, reveal_answer=self._show_answer)
-        except Exception as exc:
-            self._ui_update("#question", f"render failed: {exc}")
-            self._ui_update("#answer", "")
-            self._refresh_rate_buttons()
-            self._refresh_chrome()
-            return
+        fresh = self._rendered is None or self._rendered[0] != self._card_id
+        if fresh:
+            try:
+                rendered = self._render_card(self._card_id, reveal_answer=True)
+            except Exception as exc:
+                self._ui_update("#question", f"render failed: {exc}")
+                self._ui_update("#answer", "")
+                self._refresh_rate_buttons()
+                self._refresh_chrome()
+                return
+            self._rendered = (
+                self._card_id,
+                _strip_html_basic(str(rendered.get("question") or "")),
+                _strip_html_basic(str(rendered.get("answer") or "")),
+            )
 
-        question = _strip_html_basic(str(rendered.get("question") or ""))
-        answer = _strip_html_basic(str(rendered.get("answer") or ""))
+        assert self._rendered is not None
+        _, question, answer = self._rendered
 
         self._ui_update("#question", question or "(empty question)")
         if self._show_answer:
             self._ui_update("#answer", answer or "(empty answer)")
         else:
             self._ui_update("#answer", "[space] show answer")
+
+        if not fresh:
+            # Flipping the answer changes nothing else on screen.
+            return
 
         deck_badge = self._deck
         if not deck_badge and isinstance(self._current_card, Mapping):

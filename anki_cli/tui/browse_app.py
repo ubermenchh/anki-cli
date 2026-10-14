@@ -15,6 +15,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, Static
+from textual.worker import get_current_worker
 
 from anki_cli import __version__
 
@@ -60,6 +61,9 @@ _QUEUE_COLORS: dict[str, str] = {
 # Question first: it is what the user scans, and it is the one column that
 # absorbs whatever width is left. The short columns are fixed so Due and Ivl
 # are always on screen (#79: they used to sit past the right edge at any width).
+# Cards fetched per backend call while loading; also the progress granularity.
+_LOAD_BATCH = 200
+
 _BROWSE_COLUMNS = ("Question", "Deck", "Due", "Ivl", "Type")
 _FIXED_COLUMN_WIDTHS: dict[str, int] = {"Deck": 18, "Due": 11, "Ivl": 5, "Type": 8}
 _MIN_QUESTION_WIDTH = 12
@@ -586,7 +590,6 @@ class BrowseApp(App[None]):
         self._render_preview_empty()
 
         self.query_one("#table", DataTable).focus()
-        self.set_interval(0.12, self._sync_preview_cursor)
         self._load_cards(self._query)
 
     @on(CardTable.Resized)
@@ -666,7 +669,11 @@ class BrowseApp(App[None]):
             self._set_status("selected row has no card id", self._count_label())
             return
 
-        queue = to_int(card.get("queue"), 0)
+        self._suspend_card(card_id, to_int(card.get("queue"), 0))
+
+    @work(thread=True, group="mutate")
+    def _suspend_card(self, card_id: int, queue: int) -> None:
+        # Off the UI thread: the backend call opens/locks the collection.
         try:
             if queue == -1:
                 self._backend.unsuspend_cards([card_id])
@@ -701,6 +708,10 @@ class BrowseApp(App[None]):
             return
 
         self._delete_arm_note_id = None
+        self._delete_note(note_id)
+
+    @work(thread=True, group="mutate")
+    def _delete_note(self, note_id: int) -> None:
         try:
             result = self._backend.delete_notes([note_id])
         except Exception as exc:
@@ -829,6 +840,10 @@ class BrowseApp(App[None]):
             first = False
         self.query_one("#hintbar", Static).update(hint)
 
+    @on(DataTable.RowHighlighted, "#table")
+    def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._sync_preview_cursor()
+
     def _sync_preview_cursor(self, force: bool = False) -> None:
         with contextlib.suppress(Exception):
             table = self.query_one("#table", DataTable)
@@ -951,25 +966,27 @@ class BrowseApp(App[None]):
         else:
             self._last_cursor_row = -999
 
-    @work(thread=True)
+    @work(thread=True, exclusive=True, group="load")
     def _load_cards(self, query: str) -> None:
         self._set_status("loading...", "")
         try:
             card_ids = self._backend.find_cards(query=query)
-            cards: list[dict[str, Any]] = []
             total = len(card_ids)
+            cards: list[dict[str, Any]] = []
 
-            for i, cid in enumerate(card_ids):
-                try:
-                    card = self._backend.get_card(cid)
-                    if isinstance(card, dict):
-                        cards.append(card)
-                except Exception:
-                    pass
+            for lo in range(0, total, _LOAD_BATCH):
+                if get_current_worker().is_cancelled:
+                    return
+                cards.extend(
+                    card
+                    for card in self._backend.get_cards(card_ids[lo : lo + _LOAD_BATCH])
+                    if isinstance(card, dict)
+                )
+                if lo + _LOAD_BATCH < total:
+                    self._set_status(f"loading {len(cards)}/{total}...", "")
 
-                if total > 0 and (i + 1) % 50 == 0:
-                    self._set_status(f"loading {i + 1}/{total}...", "")
-
+            if get_current_worker().is_cancelled:
+                return
             self.call_from_thread(self._on_cards_loaded, cards, query)
         except Exception as exc:
             self._set_status(f"error: {exc}", "0 cards")

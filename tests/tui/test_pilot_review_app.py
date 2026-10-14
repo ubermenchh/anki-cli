@@ -181,3 +181,50 @@ def test_snapshot_failure_is_reported_not_raised(fake_backend: FakeBackend, run_
         assert not app.return_code
 
     run_async(scenario())
+
+
+def test_flipping_the_answer_does_not_touch_the_backend(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    """#35: every keypress used to re-fetch the card, note, notetype, rating
+    previews and due counts. A card is rendered once; flipping repaints."""
+
+    class Counting:
+        """Delegates to the fake and counts every backend call by name."""
+
+        def __init__(self, inner: FakeBackend) -> None:
+            self._inner = inner
+            self.counts: dict[str, int] = {}
+
+        def __getattr__(self, name: str) -> Any:
+            attr = getattr(self._inner, name)
+            if not callable(attr):
+                return attr
+
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                self.counts[name] = self.counts.get(name, 0) + 1
+                return attr(*args, **kwargs)
+
+            return wrapper
+
+    backend = Counting(fake_backend)
+
+    async def scenario() -> None:
+        app = ReviewApp(backend=backend, deck=None)
+        async with app.run_test(size=(120, 36)) as pilot:
+            await pilot.pause()
+            before = dict(backend.counts)
+            assert "[space]" in _plain(app, "#answer")
+
+            await pilot.press("space")
+            await pilot.pause()
+            assert "Paris" in _plain(app, "#answer")
+            await pilot.press("space")
+            await pilot.pause()
+            assert "[space]" in _plain(app, "#answer")
+            await pilot.press("space")
+            await pilot.pause()
+
+            assert backend.counts == before
+
+    run_async(scenario())
