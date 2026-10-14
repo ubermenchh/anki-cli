@@ -614,7 +614,10 @@ class ReviewScreen(Screen[None]):
         cmd.cursor_position = len(cmd.value)
 
     async def action_blur_command(self) -> None:
-        await self._close_command()
+        if self.query("#cmd"):
+            await self._close_command()
+        elif self._single_card:
+            self._leave()  # Esc goes back to the table that opened this card
 
     async def _close_command(self) -> None:
         for cmd in self.query("#cmd"):
@@ -737,14 +740,15 @@ class ReviewScreen(Screen[None]):
             pct = 100 if remaining_total == 0 else 0
         pct = max(0, min(100, pct))
 
-        deck_name = self._deck or "all decks"
+        where = f"card {self._single_card_id}" if self._single_card else (self._deck or "all decks")
         title = Text()
-        title.append(f"anki-cli {__version__} · study · {deck_name}")
+        title.append(f"anki-cli {__version__} · study · {where}")
         self._ui_update("#header-title", title)
 
         pal = self.palette
         stats = Text()
-        stats.append(f"{done}/{self._session_total} · {pct}%   ", style=pal.muted)
+        if not self._single_card:  # session progress means nothing for one card
+            stats.append(f"{done}/{self._session_total} · {pct}%   ", style=pal.muted)
         stats.append(f"new {counts['new']}", style=f"bold {pal.primary}")
         stats.append("  ")
         stats.append(f"learn {counts['learn']}", style=f"bold {pal.warning}")

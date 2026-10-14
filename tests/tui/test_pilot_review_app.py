@@ -348,3 +348,17 @@ def test_keys_are_ignored_while_the_next_card_loads(
             assert len(answered) == 1, answered
 
     run_async(scenario())
+
+
+def test_q_quits_the_standalone_review_app(fake_backend: FakeBackend, run_async: Any) -> None:
+    """As the host of the screen, `q` exits the app (pushed from browse it goes back)."""
+
+    async def scenario() -> None:
+        app = ReviewApp(backend=fake_backend, deck=None)
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _settle(pilot)
+            await pilot.press("q")
+            await pilot.pause()
+            assert app._exit is True
+
+    run_async(scenario())

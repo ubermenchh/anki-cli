@@ -908,3 +908,169 @@ def test_escape_leaves_the_search_box_without_quitting(
             assert app._exit is False
 
     run_async(scenario())
+
+
+# --- #86: open the highlighted card in review (`o`) ---------------------------------
+
+
+async def _open_review(pilot: Any, app: BrowseApp, *keys: str) -> Any:
+    from anki_cli.tui.review_app import ReviewScreen
+
+    await pilot.press(*keys, "o")
+    await _settle(pilot, app)
+    assert isinstance(app.screen, ReviewScreen), type(app.screen).__name__
+    return app.screen
+
+
+def test_o_reviews_the_highlighted_card_and_returns_to_browse(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    from anki_cli.tui.review_app import ReviewScreen
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            table = await _mounted(pilot, app)
+            review = await _open_review(pilot, app, "down", "down")
+            assert review._card_id == 1002  # the card under the cursor, not the next due
+            assert "capital of France" in _plain_text(review, "#question")
+            # The header names the card, not a session ("0/62" would be meaningless).
+            assert "card 1002" in _plain_text(review, "#header-title")
+            assert "/" not in _plain_text(review, "#header-stats")
+
+            loads_before = len(_calls(fake_backend, "find_cards"))
+            await pilot.press("space", "3")
+            await _settle(pilot, app)
+
+            assert _calls(fake_backend, "answer_card") == [(1002, 3)]
+            assert not isinstance(app.screen, ReviewScreen)  # back on the table
+            # The table reloads (the card changed) and the cursor stays on it.
+            assert len(_calls(fake_backend, "find_cards")) > loads_before
+            assert table.cursor_row == 2
+
+    run_async(scenario())
+
+
+def _plain_text(screen: Any, selector: str) -> str:
+    content = screen.query_one(selector, Static).content
+    return content.plain if isinstance(content, Text) else str(content)
+
+
+def test_escape_and_q_leave_review_without_answering(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    from anki_cli.tui.review_app import ReviewScreen
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            for key in ("escape", "q"):
+                await _open_review(pilot, app)
+                await pilot.press(key)
+                await _settle(pilot, app)
+                assert not isinstance(app.screen, ReviewScreen), key
+                assert app._exit is False  # q left the review, not the app
+            assert _calls(fake_backend, "answer_card") == []
+
+    run_async(scenario())
+
+
+def test_browse_keys_do_nothing_while_the_review_is_open(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    """Browse's keys are app-level bindings, which a pushed screen still sees:
+    `d` in review must not offer to delete the card in the table underneath."""
+    from anki_cli.tui.browse_app import ConfirmScreen, FlagScreen
+    from anki_cli.tui.prompts import PromptScreen
+    from anki_cli.tui.review_app import ReviewScreen
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await _open_review(pilot, app)
+            await pilot.press("d", "s", "b", "f", "m", "t", "R", "a", "z", "o")
+            await _settle(pilot, app)
+            assert isinstance(app.screen, ReviewScreen)  # no modal, no second review
+            assert not isinstance(app.screen, (ConfirmScreen, FlagScreen, PromptScreen))
+            for name in ("delete_notes", "suspend_cards", "bury_cards", "set_card_flag"):
+                assert _calls(fake_backend, name) == [], name
+
+    run_async(scenario())
+
+
+def test_next_card_is_not_offered_for_a_single_card_review(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            review = await _open_review(pilot, app, "down")
+            assert review.check_action("next", ()) is False
+            await pilot.press("n")
+            await _settle(pilot, app)
+            assert review._card_id == 1001  # still the card we opened
+
+    run_async(scenario())
+
+
+def test_o_needs_the_direct_backend(run_async: Any) -> None:
+    from anki_cli.tui.review_app import ReviewScreen
+
+    class PlainFake(FakeBackend):
+        supports_scheduler_introspection = False
+
+    backend = PlainFake()
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("o")
+            await _settle(pilot, app)
+            assert not isinstance(app.screen, ReviewScreen)
+            assert any("direct backend" in n.message for n in app._notifications)
+
+    run_async(scenario())
+
+
+def test_o_does_nothing_without_a_card(run_async: Any) -> None:
+    from anki_cli.tui.review_app import ReviewScreen
+
+    backend = FakeBackend(cards=[])
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            assert app.check_action("open_in_review", ()) is False
+            await pilot.press("o")
+            await pilot.pause()
+            assert not isinstance(app.screen, ReviewScreen)
+
+    run_async(scenario())
+
+
+def test_the_palette_offers_review_commands_while_reviewing(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    """Over browse, the palette must list the review screen's commands, not
+    browse's (which would act on the table underneath)."""
+
+    def titles(app: BrowseApp) -> set[str]:
+        return {c.title for c in app.get_system_commands(app.screen)}
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            assert any(t.startswith("Review this card") for t in titles(app))
+            await _open_review(pilot, app)
+            over = titles(app)
+            assert any(t.startswith("Flip card") for t in over)
+            assert not any(t.startswith(("Open card details", "Delete note")) for t in over)
+
+    run_async(scenario())
