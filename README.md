@@ -3,6 +3,15 @@
 Hybrid Anki CLI for humans and agents.
 
 <p align="center">
+  <a href="https://github.com/ubermenchh/anki-cli/actions/workflows/ci.yml"><img src="https://github.com/ubermenchh/anki-cli/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://pypi.org/project/anki-cli/"><img src="https://img.shields.io/pypi/v/anki-cli" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/anki-cli/"><img src="https://img.shields.io/pypi/pyversions/anki-cli" alt="Python versions"></a>
+  <a href="https://pypi.org/project/anki-cli/"><img src="https://img.shields.io/pypi/dm/anki-cli" alt="PyPI downloads per month"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/pypi/l/anki-cli" alt="License: MIT"></a>
+  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
+</p>
+
+<p align="center">
   <img src="assets/anki-cli.png" alt="anki-cli interactive REPL showing due card counts, keyboard shortcuts, and command autocomplete" width="700">
 </p>
 
@@ -11,7 +20,7 @@ Hybrid Anki CLI for humans and agents.
 - AnkiConnect backend (use a running Anki Desktop instance)
 - Direct SQLite backend (operate directly on collection files)
 
-Current release: `0.1.5` (alpha).
+Alpha software: see the PyPI badge above for the current release.
 
 ## Install
 
