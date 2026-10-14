@@ -71,7 +71,9 @@ select = ["E", "F", "I", "B", "UP", "SIM", "C4", "RUF", "W"]
 python-version = "3.13"
 
 [tool.ty.src]
-exclude = ["anki_cli/proto/**"]
+# tests/ is left out on purpose: CI checks anki_cli only, and the fixtures build
+# schema rows with loose types that ty cannot follow.
+exclude = ["anki_cli/proto/**", "tests/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

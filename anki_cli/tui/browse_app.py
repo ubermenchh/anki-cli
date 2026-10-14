@@ -357,10 +357,34 @@ class CardTable(DataTable[Text | str]):
     # entry lives here, where Footer looks for the focused widget's bindings.
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("enter", "select_cursor", "Detail", key_display="Enter", show=True),
+        # vi motions (#8): j/k move a row, g/G jump to the first/last, ctrl+d/u page.
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+        Binding("g", "first_row", "First row", show=False),
+        Binding("G", "last_row", "Last row", show=False),
+        Binding("ctrl+d", "page_down", "Page down", show=False),
+        Binding("ctrl+u", "page_up", "Page up", show=False),
     ]
+
+    def action_first_row(self) -> None:
+        if self.row_count:
+            self.move_cursor(row=0)
+
+    def action_last_row(self) -> None:
+        if self.row_count:
+            self.move_cursor(row=self.row_count - 1)
 
     def on_resize(self, event: events.Resize) -> None:
         self.post_message(self.Resized())
+
+
+class PreviewScroll(VerticalScroll):
+    """The preview pane's scroller, with vi's j/k (#8)."""
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("j", "scroll_down", "Scroll down", show=False),
+        Binding("k", "scroll_up", "Scroll up", show=False),
+    ]
 
 
 class ConfirmScreen(ModalScreen[bool]):
@@ -810,7 +834,7 @@ class BrowseApp(ThemedApp):
             )
         with Horizontal(id="main"):
             yield CardTable(id="table", cursor_type="row", zebra_stripes=True)
-            with Vertical(id="preview"), VerticalScroll(id="preview-scroll"):
+            with Vertical(id="preview"), PreviewScroll(id="preview-scroll"):
                 yield Static("", id="preview-body")
                 yield Static("", id="preview-meta")
         yield Footer(compact=True)
