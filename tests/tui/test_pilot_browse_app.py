@@ -796,3 +796,115 @@ def test_new_row_actions_are_unavailable_without_a_card(run_async: Any) -> None:
             assert type(app.screen).__name__ == "Screen"
 
     run_async(scenario())
+
+
+# --- #8: vi motions ----------------------------------------------------------------
+
+
+def test_j_and_k_move_the_cursor_like_the_arrow_keys(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            table = await _mounted(pilot, app)
+            await pilot.press("j", "j", "j")
+            assert table.cursor_row == 3
+            await pilot.press("k")
+            assert table.cursor_row == 2
+            # The preview follows the cursor, as it does for the arrow keys.
+            assert "card 1002" in app.query_one("#preview").border_title
+
+    run_async(scenario())
+
+
+def test_g_and_capital_g_jump_to_the_ends(fake_backend: FakeBackend, run_async: Any) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            table = await _mounted(pilot, app)
+            await pilot.press("G")
+            assert table.cursor_row == table.row_count - 1
+            await pilot.press("g")
+            assert table.cursor_row == 0
+
+    run_async(scenario())
+
+
+def test_vi_keys_type_normally_in_the_search_box(fake_backend: FakeBackend, run_async: Any) -> None:
+    """j/k/g are table bindings, so they must not steal letters from the query."""
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            table = await _mounted(pilot, app)
+            await pilot.press("slash", "j", "k", "g", "G")
+            assert app.query_one("#search", Input).value == "jkgG"
+            assert table.cursor_row == 0
+
+    run_async(scenario())
+
+
+def test_j_and_k_scroll_the_focused_preview(fake_backend: FakeBackend, run_async: Any) -> None:
+    from anki_cli.tui.browse_app import PreviewScroll
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("2")
+            await pilot.pause()
+            scroller = app.query_one("#preview-scroll", PreviewScroll)
+            assert app.focused is scroller
+            keys = {b.key for b in PreviewScroll.BINDINGS}
+            assert keys == {"j", "k"}
+
+    run_async(scenario())
+
+
+# --- #6: Esc while the cards are still loading -------------------------------------
+
+
+def test_escape_quits_even_while_cards_are_still_loading(run_async: Any) -> None:
+    """#6: Esc did nothing until every card had appeared, then quit. Loading runs
+    on a worker, so the keypress must be handled immediately."""
+    import threading
+
+    gate = threading.Event()
+    backend = FakeBackend()
+    original = backend.find_cards
+
+    def slow_find(query: str) -> list[int]:
+        gate.wait(5)
+        return original(query)
+
+    backend.find_cards = slow_find  # type: ignore[method-assign]
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await pilot.pause()
+            assert app.query_one("#table", DataTable).row_count == 0  # still loading
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app._exit is True
+            gate.set()
+
+    run_async(scenario())
+
+
+def test_escape_leaves_the_search_box_without_quitting(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("slash")
+            assert isinstance(app.focused, Input)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.focused is app.query_one("#table")
+            assert app._exit is False
+
+    run_async(scenario())
