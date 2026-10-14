@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from typing import Any
 
 from anki_cli.core.due import LEARN_DUE_EPOCH_THRESHOLD
+from anki_cli.db.connection import SQL_IN_CHUNK
 from anki_cli.db.deck_lookup import DeckLookupMixin
 from anki_cli.db.deck_names import deck_native_to_human
 from anki_cli.db.search_sql import compile_card_query
@@ -71,32 +73,49 @@ class CardsMixin(DeckLookupMixin):
             rows = conn.execute(sql, compiled.params).fetchall()
         return [int(row["id"]) for row in rows]
 
+    _CARD_SELECT = """
+        SELECT
+            c.id, c.nid, c.did, c.ord, c.mod, c.usn, c.type, c.queue, c.due,
+            c.ivl, c.factor, c.reps, c.lapses, c.left, c.odue, c.odid,
+            c.flags, c.data,
+            n.mid AS note_mid,
+            nt.name AS notetype_name,
+            n.flds AS note_fields, n.tags AS note_tags,
+            d.name AS deck_name
+        FROM cards AS c
+        JOIN notes AS n ON n.id = c.nid
+        LEFT JOIN notetypes AS nt ON nt.id = n.mid
+        LEFT JOIN decks AS d ON d.id = c.did
+    """
+
     def get_card(self, card_id: int) -> dict[str, JSONValue]:
-        with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT
-                    c.id, c.nid, c.did, c.ord, c.mod, c.usn, c.type, c.queue, c.due,
-                    c.ivl, c.factor, c.reps, c.lapses, c.left, c.odue, c.odid,
-                    c.flags, c.data,
-                    n.mid AS note_mid,
-                    nt.name AS notetype_name,
-                    n.flds AS note_fields, n.tags AS note_tags,
-                    d.name AS deck_name
-                FROM cards AS c
-                JOIN notes AS n ON n.id = c.nid
-                LEFT JOIN notetypes AS nt ON nt.id = n.mid
-                LEFT JOIN decks AS d ON d.id = c.did
-                WHERE c.id = ?
-                """,
-                (card_id,),
-            ).fetchone()
-
-            timing = self._timing(conn, int(time.time())) if row is not None else None
-
-        if row is None:
+        cards = self.get_cards([card_id])
+        if not cards:
             raise LookupError(f"Card not found: {card_id}")
+        return cards[0]
 
+    def get_cards(self, card_ids: list[int]) -> list[dict[str, JSONValue]]:
+        """Fetch many cards over one connection, in ``card_ids`` order.
+
+        Ids that do not exist are skipped (a card can vanish between a search
+        and this call); duplicates are returned once.
+        """
+        ids = list(dict.fromkeys(int(i) for i in card_ids))
+        if not ids:
+            return []
+
+        rows: dict[int, sqlite3.Row] = {}
+        with self._connect() as conn:
+            for lo in range(0, len(ids), SQL_IN_CHUNK):
+                chunk = ids[lo : lo + SQL_IN_CHUNK]
+                marks = ",".join("?" * len(chunk))
+                for row in conn.execute(f"{self._CARD_SELECT} WHERE c.id IN ({marks})", chunk):
+                    rows[int(row["id"])] = row
+            timing = self._timing(conn, int(time.time())) if rows else None
+
+        return [self._card_dict(rows[i], timing) for i in ids if i in rows]
+
+    def _card_dict(self, row: sqlite3.Row, timing: Any) -> dict[str, JSONValue]:
         card_type = int(row["type"])
         queue = int(row["queue"])
         due_raw = int(row["due"])

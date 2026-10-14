@@ -6,6 +6,7 @@ import click
 
 from anki_cli.backends.ankiconnect import AnkiConnectAPIError
 from anki_cli.cli.command import CommandContext, ErrorMap, anki_command, id_or_query
+from anki_cli.cli.paging import offset_option, paginate
 from anki_cli.core.render import extract_note_id, extract_ord, pick_template, render_card
 from anki_cli.models.output import JSONValue
 
@@ -27,11 +28,16 @@ def _bounded_limit(value: int) -> int:
 
 @anki_command("cards:ids")
 @click.option("--query", default="", help="Anki search query")
-def cards_ids_cmd(cmd: CommandContext, query: str) -> JSONValue:
+@click.option(
+    "--limit", type=int, default=0, help="Max ids to return (0 = all); `total` has the full count"
+)
+@offset_option
+def cards_ids_cmd(cmd: CommandContext, query: str, limit: int, offset: int) -> JSONValue:
     """List card IDs matching a query."""
     with cmd.query_errors(query):
-        ids = cmd.backend.find_cards(query=query)
-    return {"query": query, "count": len(ids), "ids": ids}
+        found = cmd.backend.find_cards(query=query)
+    ids = paginate(found, limit=limit, offset=offset)
+    return {"query": query, "count": len(ids), "total": len(found), "ids": ids}
 
 
 _NOT_FOUND: ErrorMap = {

@@ -756,16 +756,28 @@ class AnkiConnectBackend(AnkiBackend):
         return self._as_int_list(result, "findNotes")
 
     def get_note(self, note_id: int) -> dict[str, JSONValue]:
-        result = self._invoke("notesInfo", notes=[note_id])
-        if not isinstance(result, list) or not result:
-            raise AnkiConnectProtocolError("notesInfo returned no rows.")
-        first = self._as_json_object(result[0], "notesInfo row")
-        if "noteId" not in first:
+        notes = self.get_notes([note_id])
+        if not notes:
             # AnkiConnect answers an unknown id with {} rather than an error, so
             # the request/response lists line up. Report it like the direct
             # backend does instead of normalising an empty row into a note.
             raise LookupError(f"Note not found: {note_id}")
-        return normalize_note(first)
+        return notes[0]
+
+    def get_notes(self, note_ids: list[int]) -> list[dict[str, JSONValue]]:
+        ids = self._normalize_ids(note_ids)
+        if not ids:
+            return []
+        result = self._invoke("notesInfo", notes=ids)
+        # One row per requested id ({} for an unknown one), so a short reply is
+        # a malformed one.
+        if not isinstance(result, list) or len(result) != len(ids):
+            raise AnkiConnectProtocolError("notesInfo returned no rows.")
+        rows = (self._as_json_object(row, "notesInfo row") for row in result)
+        by_id = {
+            self._as_int(row["noteId"], "notesInfo.noteId"): row for row in rows if "noteId" in row
+        }
+        return [normalize_note(by_id[i]) for i in ids if i in by_id]
 
     def get_note_fields(self, note_id: int, fields: list[str] | None = None) -> dict[str, str]:
         note = self.get_note(note_id)
@@ -792,13 +804,23 @@ class AnkiConnectBackend(AnkiBackend):
         return self._as_int_list(result, "findCards")
 
     def get_card(self, card_id: int) -> dict[str, JSONValue]:
-        result = self._invoke("cardsInfo", cards=[card_id])
-        if not isinstance(result, list) or not result:
-            raise AnkiConnectProtocolError("cardsInfo returned no rows.")
-        first = self._as_json_object(result[0], "cardsInfo row")
-        if "cardId" not in first:
+        cards = self.get_cards([card_id])
+        if not cards:
             raise LookupError(f"Card not found: {card_id}")  # see get_note
-        return normalize_card(first)
+        return cards[0]
+
+    def get_cards(self, card_ids: list[int]) -> list[dict[str, JSONValue]]:
+        ids = self._normalize_ids(card_ids)
+        if not ids:
+            return []
+        result = self._invoke("cardsInfo", cards=ids)
+        if not isinstance(result, list) or len(result) != len(ids):
+            raise AnkiConnectProtocolError("cardsInfo returned no rows.")
+        rows = (self._as_json_object(row, "cardsInfo row") for row in result)
+        by_id = {
+            self._as_int(row["cardId"], "cardsInfo.cardId"): row for row in rows if "cardId" in row
+        }
+        return [normalize_card(by_id[i]) for i in ids if i in by_id]
 
     def answer_card(self, card_id: int, ease: int) -> dict[str, JSONValue]:
         if ease not in {1, 2, 3, 4}:

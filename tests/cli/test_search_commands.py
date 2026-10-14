@@ -24,8 +24,8 @@ def test_search_cmd_success(monkeypatch) -> None:
             calls["query"] = query
             return [101, 102]
 
-        def get_card(self, card_id: int) -> dict[str, Any]:
-            return {"id": card_id, "queue": 2}
+        def get_cards(self, card_ids: list[int]) -> list[dict[str, Any]]:
+            return [{"id": cid, "queue": 2} for cid in card_ids]
 
     _patch_session(monkeypatch, Backend())
 
@@ -111,8 +111,8 @@ def test_cards_cmd_is_the_detail_lister_and_search_is_an_alias(monkeypatch) -> N
         def find_cards(self, query: str) -> list[int]:
             return [1, 2]
 
-        def get_card(self, cid: int) -> dict[str, Any]:
-            return {"cardId": cid}
+        def get_cards(self, card_ids: list[int]) -> list[dict[str, Any]]:
+            return [{"cardId": cid} for cid in card_ids]
 
     _patch_session(monkeypatch, Backend())
     runner = CliRunner()
@@ -168,9 +168,9 @@ def test_cards_cmd_limits_detail_fetches_and_reports_total(monkeypatch) -> None:
         def find_cards(self, query: str) -> list[int]:
             return list(range(1, 6))
 
-        def get_card(self, cid: int) -> dict[str, Any]:
-            fetched.append(cid)
-            return {"cardId": cid}
+        def get_cards(self, card_ids: list[int]) -> list[dict[str, Any]]:
+            fetched.extend(card_ids)
+            return [{"cardId": cid} for cid in card_ids]
 
     _patch_session(monkeypatch, Backend())
     runner = CliRunner()
@@ -179,10 +179,53 @@ def test_cards_cmd_limits_detail_fetches_and_reports_total(monkeypatch) -> None:
     assert payload["data"]["count"] == 2
     assert payload["data"]["total"] == 5
     assert fetched == [1, 2]
-    assert any("showing the first 2" in w for w in payload["meta"]["warnings"])
+    assert any("showing 2 from offset 0" in w for w in payload["meta"]["warnings"])
 
     fetched.clear()
     payload = _success_payload(runner.invoke(cards_cmd, ["--limit", "0"], obj=_base_obj()))
     assert payload["data"]["count"] == 5
     assert fetched == [1, 2, 3, 4, 5]
     assert payload["meta"]["warnings"] == []
+
+
+def test_cards_cmd_pages_with_offset_and_fetches_one_batch(monkeypatch) -> None:
+    from anki_cli.cli.commands.search import cards_cmd
+
+    batches: list[list[int]] = []
+
+    class Backend:
+        def find_cards(self, query: str) -> list[int]:
+            return list(range(1, 8))
+
+        def get_cards(self, card_ids: list[int]) -> list[dict[str, Any]]:
+            batches.append(list(card_ids))
+            return [{"cardId": cid} for cid in card_ids]
+
+    _patch_session(monkeypatch, Backend())
+    result = CliRunner().invoke(cards_cmd, ["--limit", "3", "--offset", "2"], obj=_base_obj())
+    payload = _success_payload(result)
+
+    assert batches == [[3, 4, 5]]
+    assert payload["data"]["count"] == 3
+    assert payload["data"]["total"] == 7
+    assert [c["cardId"] for c in payload["data"]["items"]] == [3, 4, 5]
+    assert any("showing 3 from offset 2" in w for w in payload["meta"]["warnings"])
+
+
+def test_cards_ids_cmd_limit_and_offset(monkeypatch) -> None:
+    from anki_cli.cli.commands.cards import cards_ids_cmd
+
+    class Backend:
+        def find_cards(self, query: str) -> list[int]:
+            return [1, 2, 3, 4, 5]
+
+    _patch_session(monkeypatch, Backend())
+    runner = CliRunner()
+
+    payload = _success_payload(
+        runner.invoke(cards_ids_cmd, ["--limit", "2", "--offset", "1"], obj=_base_obj())
+    )
+    assert payload["data"] == {"query": "", "count": 2, "total": 5, "ids": [2, 3]}
+
+    payload = _success_payload(runner.invoke(cards_ids_cmd, [], obj=_base_obj()))
+    assert payload["data"]["ids"] == [1, 2, 3, 4, 5]

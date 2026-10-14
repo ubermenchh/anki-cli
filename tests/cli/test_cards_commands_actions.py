@@ -40,7 +40,7 @@ def test_cards_ids_cmd_success(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = _success_payload(result)
 
     assert payload["meta"]["command"] == "cards:ids"
-    assert payload["data"] == {"query": "deck:Default", "count": 2, "ids": [1, 2]}
+    assert payload["data"] == {"query": "deck:Default", "count": 2, "total": 2, "ids": [1, 2]}
 
 
 def test_cards_ids_cmd_backend_unavailable_exit_7(monkeypatch: pytest.MonkeyPatch) -> None:
