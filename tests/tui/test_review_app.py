@@ -8,6 +8,7 @@ import pytest
 pytest.importorskip("textual")
 
 import anki_cli.tui.review_app as review_mod
+from anki_cli.core.undo import UndoStore
 
 pytestmark = pytest.mark.tui
 
@@ -423,7 +424,7 @@ def test_action_rate_failed_answer_leaves_no_undo_entry(tmp_path) -> None:
     app = review_mod.ReviewApp(backend=Backend(), deck=None)
     app._card_id = 5
     app._show_answer = True
-    app._undo = review_mod.UndoStore(path=tmp_path / "undo.json")
+    app._session.undo_store = UndoStore(path=tmp_path / "undo.json")
     app._set_status = lambda msg: None  # type: ignore[method-assign]
 
     calls = {"load_next": 0}
@@ -431,7 +432,7 @@ def test_action_rate_failed_answer_leaves_no_undo_entry(tmp_path) -> None:
 
     app.action_rate(3)
 
-    assert app._undo.pop(collection="") is None
+    assert app._session.undo_store.pop(collection="") is None
     assert app._answered == 0
     assert calls["load_next"] == 0
 
@@ -457,13 +458,13 @@ def test_action_rate_successful_answer_pushes_undo(tmp_path) -> None:
     app = review_mod.ReviewApp(backend=Backend(), deck=None)
     app._card_id = 5
     app._show_answer = True
-    app._undo = review_mod.UndoStore(path=tmp_path / "undo.json")
+    app._session.undo_store = UndoStore(path=tmp_path / "undo.json")
     app._set_status = lambda msg: None  # type: ignore[method-assign]
     app._load_next = lambda: None  # type: ignore[method-assign]
 
     app.action_rate(3)
 
-    item = app._undo.pop(collection="")
+    item = app._session.undo_store.pop(collection="")
     assert item is not None
     assert item.card_id == 5
     # Snapshot holds the pre-answer state plus the revlog id the answer wrote.
@@ -490,7 +491,7 @@ def test_action_rate_undo_push_failure_still_counts_answer(tmp_path) -> None:
     app = review_mod.ReviewApp(backend=Backend(), deck=None)
     app._card_id = 5
     app._show_answer = True
-    app._undo = FailingUndoStore()  # type: ignore[assignment]
+    app._session.undo_store = FailingUndoStore()  # type: ignore[assignment]
 
     statuses: list[str] = []
     app._set_status = lambda msg: statuses.append(msg)  # type: ignore[method-assign]
