@@ -177,9 +177,21 @@ class ReviewApp(App[None]):
     Screen {{
         background: {TOOLBAR_BG};
     }}
+    /* Header, card, buttons and footer all live in one centred column, so they
+       share the same edges and the same background. */
+    #page {{
+        width: 100%;
+        height: 1fr;
+        align-horizontal: center;
+    }}
+    #column {{
+        width: 100%;
+        max-width: 90;
+        height: 1fr;
+    }}
     #header {{
         height: 1;
-        background: {MENU_BG};
+        margin-bottom: 1;
         padding: 0 1;
     }}
     #header-title {{
@@ -192,18 +204,15 @@ class ReviewApp(App[None]):
         text-align: right;
         color: {DIM};
     }}
-
-    /* The card is a centred column: wide terminals get a readable measure
-       instead of a card stretched edge to edge. */
-    #study {{
-        height: 1fr;
-        align-horizontal: center;
-        padding: 1 2;
+    #column > Footer {{
+        dock: none;
+        height: 1;
+        margin-top: 1;
+        padding: 0 1;
+        background: {TOOLBAR_BG};
     }}
-    #column {{
-        width: 100%;
-        max-width: 90;
-        height: 1fr;
+    #column > Footer FooterKey {{
+        background: {TOOLBAR_BG};
     }}
     .card-panel {{
         height: 1fr;
@@ -293,8 +302,11 @@ class ReviewApp(App[None]):
         padding: 0 1;
     }}
 
-    Screen.-short #study {{
-        padding: 0 1;
+    Screen.-short #header {{
+        margin-bottom: 0;
+    }}
+    Screen.-short #column > Footer {{
+        margin-top: 0;
     }}
     Screen.-short .card-panel {{
         padding: 0 1;
@@ -385,11 +397,11 @@ class ReviewApp(App[None]):
         self._rating_counts: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
 
     def compose(self) -> ComposeResult:
-        with Horizontal(id="header"):
-            yield Static(Text(f"anki-cli {__version__} · study"), id="header-title")
-            yield Static("", id="header-stats")
+        with Vertical(id="page"), Vertical(id="column"):
+            with Horizontal(id="header"):
+                yield Static(Text(f"anki-cli {__version__} · study"), id="header-title")
+                yield Static("", id="header-stats")
 
-        with Vertical(id="study"), Vertical(id="column"):
             with VerticalScroll(id="question-panel", classes="card-panel"):
                 yield Static("", id="question")
             with VerticalScroll(id="answer-panel", classes="card-panel"):
@@ -402,9 +414,9 @@ class ReviewApp(App[None]):
                     yield Button("3 Good", id="rate-3", classes="rate-btn", variant="success")
                     yield Button("4 Easy", id="rate-4", classes="rate-btn", variant="primary")
 
-        # Mounted by ":" and removed again, so it is not a permanent bottom bar.
-        yield Vertical(id="cmd-slot")
-        yield Footer(compact=True)
+            # Mounted by ":" and removed again, so it is not a permanent bottom bar.
+            yield Vertical(id="cmd-slot")
+            yield Footer(compact=True)
 
     def on_mount(self) -> None:
         self.query_one("#question-panel").border_title = "Question"

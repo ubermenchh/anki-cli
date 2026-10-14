@@ -159,6 +159,10 @@ def test_layout_fits_at_every_size(
             for sel in ("#question-panel", "#answer-panel"):
                 assert app.query_one(sel).region.height >= 3, (size, sel)
             column = app.query_one("#column").region
+            # Header and footer share the card's edges instead of spanning the screen.
+            for sel in ("#header", "Footer"):
+                region = app.query_one(sel).region
+                assert (region.x, region.right) == (column.x, column.right), (size, sel, region)
             assert column.width <= 90, (size, column)
             if width > 94:
                 # Centred: equal gutters either side.
