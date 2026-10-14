@@ -43,6 +43,7 @@ from anki_cli.backends.ankiconnect import AnkiConnectAPIError
 from anki_cli.backends.factory import BackendFactoryError
 from anki_cli.cli import formatter as formatter_mod
 from anki_cli.cli.dispatcher import register_command
+from anki_cli.config_runtime import tui_options
 from anki_cli.db.search_sql import SearchParseError
 from anki_cli.models.output import JSONValue
 
@@ -114,6 +115,10 @@ class CommandContext:
         self, message: str, *, details: Mapping[str, JSONValue] | None = None
     ) -> CommandExit:
         return self.fail("INVALID_INPUT", message, exit_code=2, details=details)
+
+    def tui_options(self) -> dict[str, Any]:
+        """Keyword arguments every TUI app takes (theme, --no-color, save hook)."""
+        return tui_options(self.obj)
 
     def run_tui(self, app: Any) -> None:
         """``app.run()`` for a Textual app, then honour its exit status.

@@ -566,7 +566,8 @@ def test_review_start_unsupported_backend_exit_2(monkeypatch) -> None:
     module = types.ModuleType("anki_cli.tui.review_app")
 
     class FakeReviewApp:
-        def __init__(self, *, backend: Any, deck: str | None) -> None:
+        def __init__(self, *, backend: Any, deck: str | None, **options: Any) -> None:
+            self.options = options
             pass
 
         def run(self) -> None:
@@ -596,7 +597,8 @@ def test_review_start_success_direct_runs_app(monkeypatch) -> None:
     module = types.ModuleType("anki_cli.tui.review_app")
 
     class FakeReviewApp:
-        def __init__(self, *, backend: Any, deck: str | None) -> None:
+        def __init__(self, *, backend: Any, deck: str | None, **options: Any) -> None:
+            self.options = options
             calls["backend"] = backend
             calls["deck"] = deck
 
@@ -626,7 +628,8 @@ def test_review_start_backend_unavailable_exit_7(monkeypatch) -> None:
     module = types.ModuleType("anki_cli.tui.review_app")
 
     class FakeReviewApp:
-        def __init__(self, *, backend: Any, deck: str | None) -> None:
+        def __init__(self, *, backend: Any, deck: str | None, **options: Any) -> None:
+            self.options = options
             pass
 
         def run(self) -> None:

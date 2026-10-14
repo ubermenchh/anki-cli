@@ -28,10 +28,6 @@ TOKYO_NIGHT = Theme(
     panel=SELECTION_BG,
     dark=True,
     variables={
-        "footer-background": MENU_BG,
-        "footer-key-foreground": BLUE,
-        "footer-description-foreground": DIM,
-        "footer-item-background": MENU_BG,
         "block-cursor-background": SELECTION_BG,
         "block-cursor-foreground": FG,
         "border": BORDER,

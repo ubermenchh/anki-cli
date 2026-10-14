@@ -4,12 +4,15 @@ import contextlib
 import html as _html
 import re
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
+from datetime import datetime
 from typing import Any, ClassVar
 
+from rich.console import Group, RenderableType
+from rich.table import Table
 from rich.text import Text
 from textual import events, on, work
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
@@ -20,23 +23,7 @@ from textual.worker import get_current_worker
 from anki_cli import __version__
 
 from ._utils import due_day_label, relative_eta, to_int
-from .colors import (
-    BLUE,
-    BORDER,
-    CYAN,
-    DIM,
-    GREEN,
-    MENU_BG,
-    RED,
-    SELECTION_BG,
-    TEXT,
-    TOKYO_NIGHT,
-    TOOLBAR_BG,
-    YELLOW,
-)
-
-PURPLE = "#bb9af7"
-ORANGE = "#ff9e64"
+from .theming import DEFAULT_PALETTE, PALETTE_CSS, Palette, ThemedApp, command
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _BR_RE = re.compile(r"(?i)<br\s*/?>")
@@ -51,12 +38,13 @@ QUEUE_LABELS: dict[int, str] = {
     -3: "Buried",
 }
 
-_QUEUE_COLORS: dict[str, str] = {
-    "New": BLUE,
-    "Learn": YELLOW,
-    "Review": GREEN,
-    "Suspended": RED,
-    "Buried": DIM,
+# Queue label -> Palette role, so the colours follow the active theme.
+_QUEUE_ROLES: dict[str, str] = {
+    "New": "primary",
+    "Learn": "warning",
+    "Review": "success",
+    "Suspended": "error",
+    "Buried": "muted",
 }
 
 # Question first: it is what the user scans, and it is the one column that
@@ -91,8 +79,8 @@ def _queue_label(queue: Any) -> str:
     return QUEUE_LABELS.get(to_int(queue), str(queue))
 
 
-def _queue_color(queue: Any) -> str:
-    return _QUEUE_COLORS.get(_queue_label(queue), DIM)
+def _queue_color(queue: Any, pal: Palette = DEFAULT_PALETTE) -> str:
+    return str(getattr(pal, _QUEUE_ROLES.get(_queue_label(queue), "muted")))
 
 
 def _strip_html_basic(value: str) -> str:
@@ -108,54 +96,106 @@ def _truncate(text: str, length: int = 80) -> str:
     return text[: length - 1] + "\u2026"
 
 
-def _format_card_detail(card: Mapping[str, Any]) -> Text:
-    """Format full card details for the detail modal."""
-    t = Text()
+def _format_due_long(card: Mapping[str, Any]) -> str:
+    """Human due line for the detail modal, e.g. ``2026-10-20 · in 5 days``."""
+    queue = to_int(card.get("queue"), 0)
+    due_info = card.get("due_info")
 
-    def _row(label: str, value: str, value_style: str = TEXT) -> None:
-        t.append(f"{label:<12}", style=DIM)
-        t.append(str(value), style=value_style)
-        t.append("\n")
+    if queue == -1:
+        return "suspended"
+    if queue in (-2, -3):
+        return "buried"
+    if not isinstance(due_info, Mapping):
+        return "-" if due_info in ("", None) else str(due_info)
 
-    _row("Card ID:", str(card.get("cardId", "")))
-    _row("Note ID:", str(card.get("note", "")))
-    _row("Deck:", str(card.get("deckName", "")), CYAN)
-    _row("Notetype:", str(card.get("notetype_name", "")))
-    _row("Ord:", str(card.get("ord", "")))
-    _row("Type:", str(card.get("type", "")))
+    kind = str(due_info.get("kind") or "")
+    if kind == "new_position":
+        raw = due_info.get("raw")
+        return f"new card #{raw}" if raw is not None else "new"
+
+    epoch = to_int(due_info.get("epoch_secs"), 0)
+    if kind == "learn_epoch_secs":
+        when = datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M") if epoch else ""
+        return f"{when} · {relative_eta(epoch)}" if when else relative_eta(epoch)
+
+    if kind in ("review_day_index", "learn_day_index"):
+        days = due_info.get("days_from_today")
+        if isinstance(days, int):
+            if days == 0:
+                rel = "today"
+            elif days == 1:
+                rel = "tomorrow"
+            elif days == -1:
+                rel = "yesterday"
+            elif days > 1:
+                rel = f"in {days} days"
+            else:
+                rel = f"{-days} days overdue"
+        else:
+            rel = due_day_label(due_info)
+        date = datetime.fromtimestamp(epoch).strftime("%Y-%m-%d") if epoch else ""
+        return f"{date} · {rel}" if date else rel
+
+    raw = due_info.get("raw")
+    return str(raw) if raw is not None else "-"
+
+
+def _format_card_detail(card: Mapping[str, Any], pal: Palette = DEFAULT_PALETTE) -> Group:
+    """The detail modal body: a summary, the fields by name, tags, then the ids."""
+
+    def grid(label_width: int) -> Table:
+        t = Table.grid(padding=(0, 2))
+        t.add_column(width=label_width, no_wrap=True)
+        t.add_column(ratio=1, overflow="fold")
+        return t
+
+    def label(text: str) -> Text:
+        return Text(text, style=pal.muted)
+
+    def value(text: Any, style: str | None = None) -> Text:
+        return Text(str(text), style=style or pal.text)
 
     queue_int = card.get("queue")
-    queue_label = QUEUE_LABELS.get(int(queue_int), str(queue_int)) if queue_int is not None else ""
-    queue_color = _QUEUE_COLORS.get(queue_label, DIM)
-    _row("Queue:", f"{queue_label} ({queue_int})", queue_color)
+    queue_label = _queue_label(queue_int)
+    interval = to_int(card.get("interval"), 0)
+    factor = to_int(card.get("factor"), 0)
+    lapses = to_int(card.get("lapses"), 0)
+    flags = to_int(card.get("flags"), 0)
 
-    _row("Due:", str(card.get("due_info", "")))
-    _row("Interval:", str(card.get("interval", "")))
-    _row("Factor:", str(card.get("factor", "")))
-    _row("Reps:", str(card.get("reps", "")))
+    summary = grid(10)
+    summary.add_row(label("Deck"), value(card.get("deckName", ""), pal.accent))
+    if card.get("notetype_name"):
+        summary.add_row(label("Notetype"), value(card.get("notetype_name")))
+    summary.add_row(label("Queue"), value(queue_label or "-", _queue_color(queue_int, pal)))
+    summary.add_row(label("Due"), value(_format_due_long(card)))
+    summary.add_row(label("Interval"), value(f"{interval}d" if interval > 0 else "-"))
+    summary.add_row(label("Ease"), value(f"{factor // 10}%" if factor > 0 else "-"))
+    summary.add_row(label("Reps"), value(card.get("reps", 0)))
+    summary.add_row(label("Lapses"), value(lapses, pal.error if lapses > 3 else pal.text))
+    if flags:
+        summary.add_row(label("Flags"), value(flags, pal.warning))
 
-    lapses_val = card.get("lapses", "")
-    lapses_int = int(lapses_val) if isinstance(lapses_val, int) else 0
-    _row("Lapses:", str(lapses_val), RED if lapses_int > 3 else TEXT)
-    _row("Flags:", str(card.get("flags", "")))
+    parts: list[Any] = [summary]
 
     values = _extract_field_values(card)
     if values:
-        t.append("\n")
-        t.append("--- Fields ---\n", style=f"bold {YELLOW}")
-        for i, value in enumerate(values):
-            text = _strip_html_basic(value)
-            t.append(f"  [{i}] ", style=DIM)
-            t.append(f"{text}\n", style=TEXT)
+        names = card.get("field_names")
+        fields = grid(10)
+        for i, raw in enumerate(values):
+            name = str(names[i]) if isinstance(names, (list, tuple)) and i < len(names) else ""
+            fields.add_row(label(name or f"[{i}]"), value(_strip_html_basic(raw) or "(empty)"))
+        parts += [Text(""), Text("FIELDS", style=f"bold {pal.warning}"), fields]
 
     tags = card.get("tags")
     if isinstance(tags, (list, tuple)) and tags:
-        t.append("\n")
-        t.append("Tags: ", style=DIM)
-        t.append(", ".join(str(tag) for tag in tags), style=CYAN)
-        t.append("\n")
+        tag_grid = grid(10)
+        tag_grid.add_row(label("Tags"), value(", ".join(str(tag) for tag in tags), pal.accent))
+        parts += [Text(""), tag_grid]
 
-    return t
+    ids = Text(style=pal.muted)
+    ids.append(f"card {card.get('cardId', '')}  ·  note {card.get('note', '')}")
+    parts += [Text(""), ids]
+    return Group(*parts)
 
 
 def _format_due_short(card: Mapping[str, Any]) -> str:
@@ -221,31 +261,31 @@ def _extract_note_id_from_card(card: Mapping[str, Any]) -> int | None:
 
 
 def _format_browser_row(
-    card: Mapping[str, Any], *, question_width: int = 56
+    card: Mapping[str, Any], *, question_width: int = 56, pal: Palette = DEFAULT_PALETTE
 ) -> tuple[Text | str, ...]:
     """One table row in ``_BROWSE_COLUMNS`` order: Question, Deck, Due, Ivl, Type."""
     front, _ = _extract_front_back(card)
     question_text = " ".join(front.split())
-    question = Text(_truncate(question_text, question_width), style=TEXT)
+    question = Text(_truncate(question_text, question_width), style=pal.text)
 
     deck_name = str(card.get("deckName", ""))
-    deck = Text(_truncate(_deck_leaf(deck_name), _FIXED_COLUMN_WIDTHS["Deck"]), style=CYAN)
+    deck = Text(_truncate(_deck_leaf(deck_name), _FIXED_COLUMN_WIDTHS["Deck"]), style=pal.accent)
 
     due_label = _format_due_short(card)
-    qcolor = _queue_color(card.get("queue"))
+    qcolor = _queue_color(card.get("queue"), pal)
     due = Text()
     due.append("● ", style=qcolor)
     due.append(_truncate(due_label, _FIXED_COLUMN_WIDTHS["Due"] - 2), style=qcolor)
 
-    ivl = Text(_format_interval_short(card), style=DIM)
+    ivl = Text(_format_interval_short(card), style=pal.muted)
 
     notetype = _truncate(str(card.get("notetype_name") or "-"), _FIXED_COLUMN_WIDTHS["Type"])
     if "cloze" in notetype.lower():
-        type_style = PURPLE
+        type_style = pal.secondary
     elif notetype == "-":
-        type_style = DIM
+        type_style = pal.muted
     else:
-        type_style = GREEN
+        type_style = pal.success
     notetype_text = Text(notetype, style=type_style)
 
     return (question, deck, due, ivl, notetype_text)
@@ -273,53 +313,48 @@ class DetailScreen(ModalScreen[None]):
 
     BINDINGS: ClassVar[list[Binding]] = [Binding("escape", "app.pop_screen", "Close")]
 
-    DEFAULT_CSS = f"""
-        DetailScreen {{
+    # The panel is the scroll container and sizes to its content, so a short
+    # card is a short box. Its background matches the screen: a different fill
+    # would show as a square rim around the rounded border.
+    DEFAULT_CSS = """
+        DetailScreen {
             align: center middle;
-            background: rgba(0, 0, 0, 0.65);
-        }}
-        DetailScreen #detail-panel {{
+            background: $background 70%;
+        }
+        DetailScreen #detail-panel {
             width: 80%;
+            min-width: 48;
             max-width: 100;
-            height: 80%;
-            background: {MENU_BG};
-            border: round {BORDER};
+            height: auto;
+            max-height: 90%;
+            background: $background;
+            border: round $primary;
+            border-title-color: $primary;
+            border-title-style: bold;
+            border-subtitle-color: $text-muted;
             padding: 1 2;
-        }}
-        DetailScreen #detail-title {{
-            height: auto;
-            color: {CYAN};
-            text-style: bold;
-            padding-bottom: 1;
-        }}
-        DetailScreen #detail-body {{
-            height: 1fr;
-        }}
-        DetailScreen #detail-body Static {{
-            color: {TEXT};
-        }}
-        DetailScreen #detail-hint {{
-            height: auto;
-            color: {DIM};
-            padding-top: 1;
-            text-align: right;
-        }}
+            scrollbar-size: 1 1;
+            scrollbar-color: $border;
+            scrollbar-background: $background;
+        }
     """
 
-    def __init__(self, title: str, body: str | Text) -> None:
+    def __init__(self, title: str, body: RenderableType) -> None:
         super().__init__()
         self._title = title
         self._body = body
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="detail-panel"):
-            yield Static(self._title, id="detail-title")
-            with VerticalScroll(id="detail-body"):
-                yield Static(self._body)
-            yield Static("esc to close", id="detail-hint")
+        with VerticalScroll(id="detail-panel"):
+            yield Static(self._body)
+
+    def on_mount(self) -> None:
+        panel = self.query_one("#detail-panel")
+        panel.border_title = self._title
+        panel.border_subtitle = "esc to close"
 
 
-class BrowseApp(App[None]):
+class BrowseApp(ThemedApp):
     """Interactive card browser with split table + preview pane."""
 
     TITLE = "anki-cli browse"
@@ -334,136 +369,162 @@ class BrowseApp(App[None]):
     # the Screen, so there is no resize handler for the layout (#84).
     HORIZONTAL_BREAKPOINTS: ClassVar[list[tuple[int, str]]] = [(0, "-narrow"), (100, "-wide")]
 
-    CSS = f"""
-    Screen {{
-        background: {TOOLBAR_BG};
-    }}
+    CSS = (
+        PALETTE_CSS
+        + """
+    Screen {
+        background: $background;
+    }
     /* One docked container per edge: docking two widgets to the same edge
        makes them overlap (#78), so the bars live inside #top in normal flow. */
-    #top {{
+    /* Footer colours are set here, not left to the theme's footer-* variables,
+       which assume a footer on a $primary background. */
+    Footer {
+        background: $background;
+        padding: 0 1;
+    }
+    Footer FooterKey, Footer .footer-key--key, Footer .footer-key--description {
+        background: transparent;
+    }
+    Footer .footer-key--key {
+        color: $primary;
+    }
+    Footer .footer-key--description {
+        color: $text-muted;
+    }
+    /* --no-color: "auto" contrast colours do not resolve against the terminal's
+       own background, so use its plain foreground. */
+    .-no-color Footer .footer-key--description {
+        color: $foreground;
+    }
+    #top {
         dock: top;
         height: auto;
-    }}
-    #header {{
+    }
+    #header {
         height: 1;
-        background: {MENU_BG};
+        background: $background;
         padding: 0 1;
-    }}
-    #header-text {{
+    }
+    #header-text {
         width: 1fr;
-        color: {BLUE};
+        color: $primary;
         text-style: bold;
-    }}
-    #header-count {{
+    }
+    #header-count {
         width: auto;
-        color: {DIM};
-    }}
-    #search-wrap {{
+        color: $text-muted;
+    }
+    #search-wrap {
         height: 1;
-        background: {TOOLBAR_BG};
+        background: $background;
         padding: 0 1;
-    }}
-    #search-prefix {{
+    }
+    #search-prefix {
         width: 2;
-        color: {CYAN};
+        color: $accent;
         text-style: bold;
-    }}
-    #search {{
+    }
+    #search {
         height: 1;
         padding: 0;
         border: none;
-        background: {TOOLBAR_BG};
-        color: {TEXT};
-    }}
-    #search:focus {{
+        background: $background;
+        color: $foreground;
+    }
+    #search:focus {
         border: none;
-        background: {MENU_BG};
-    }}
-    #filters {{
+        background: $surface;
+    }
+    #filters {
         height: 2;
-        background: {TOOLBAR_BG};
-    }}
-    #main {{
+        background: $background;
+    }
+    #main {
         height: 1fr;
         layout: horizontal;
-    }}
-    #table {{
+    }
+    #table {
         width: 3fr;
         height: 1fr;
-        background: {TOOLBAR_BG};
-        border: round {BORDER};
-        border-title-color: {DIM};
+        background: $background;
+        border: round $border;
+        border-title-color: $text-muted;
         scrollbar-size: 1 1;
-        scrollbar-color: {BORDER};
-        scrollbar-color-hover: {DIM};
-        scrollbar-background: {TOOLBAR_BG};
-    }}
-    #table:focus {{
+        scrollbar-color: $border;
+        scrollbar-color-hover: $text-muted;
+        scrollbar-background: $background;
+    }
+    #table:focus {
         background-tint: transparent;
-        border: round {BLUE};
-        border-title-color: {BLUE};
-    }}
-    DataTable > .datatable--header {{
-        background: {MENU_BG};
-        color: {BLUE};
+        border: round $primary;
+        border-title-color: $primary;
+    }
+    /* One background for the whole table: a filled header and zebra rows read
+       as stripes against the flat panes around it. The cursor row is the only
+       highlight. */
+    DataTable > .datatable--header {
+        background: $background;
+        color: $primary;
         text-style: bold;
-    }}
-    DataTable > .datatable--cursor {{
-        background: {SELECTION_BG};
-        color: {TEXT};
-    }}
-    DataTable > .datatable--even-row {{
-        background: {TOOLBAR_BG};
-    }}
-    DataTable > .datatable--odd-row {{
-        background: {MENU_BG};
-    }}
-    #preview {{
+    }
+    DataTable > .datatable--cursor {
+        background: $panel;
+        color: $foreground;
+    }
+    DataTable > .datatable--even-row {
+        background: $background;
+    }
+    DataTable > .datatable--odd-row {
+        background: $background;
+    }
+    #preview {
         width: 2fr;
         min-width: 30;
         max-width: 60;
         height: 1fr;
-        background: {TOOLBAR_BG};
-        border: round {BORDER};
-        border-title-color: {DIM};
+        background: $background;
+        border: round $border;
+        border-title-color: $text-muted;
         padding: 0 1;
-    }}
-    #preview:focus-within {{
-        border: round {BLUE};
-        border-title-color: {BLUE};
-    }}
-    #preview.-hidden {{
+    }
+    #preview:focus-within {
+        border: round $primary;
+        border-title-color: $primary;
+    }
+    #preview.-hidden {
         display: none;
-    }}
+    }
     /* Fixed columns + a 12-col Question + border need 68; the preview takes the rest. */
-    Screen.-wide #table {{
+    Screen.-wide #table {
         min-width: 68;
-    }}
+    }
     /* Narrow: the preview is a strip under the table, not a column. */
-    Screen.-narrow #main {{
+    Screen.-narrow #main {
         layout: vertical;
-    }}
-    Screen.-narrow #table {{
+    }
+    Screen.-narrow #table {
         width: 1fr;
-    }}
-    Screen.-narrow #preview {{
+    }
+    Screen.-narrow #preview {
         width: 1fr;
         max-width: 100%;
         height: 8;
-    }}
-    #preview-scroll {{
+    }
+    #preview-scroll {
         height: 1fr;
-    }}
-    #preview-body {{
+    }
+    #preview-body {
         height: auto;
-        color: {TEXT};
-    }}
-    #preview-meta {{
+        color: $foreground;
+    }
+    #preview-meta {
         height: auto;
-        color: {DIM};
+        color: $text-muted;
         padding-top: 1;
-    }}
+    }
     """
+    )
 
     # Footer renders the ``show=True`` entries for the focused widget, so this
     # list is also the on-screen key legend. ``?`` opens the full list (#7).
@@ -492,10 +553,17 @@ class BrowseApp(App[None]):
         "suspended": "Suspended",
     }
 
-    def __init__(self, *, backend: Any, query: str = "") -> None:
-        super().__init__()
-        self.register_theme(TOKYO_NIGHT)
-        self.theme = TOKYO_NIGHT.name
+    def __init__(
+        self,
+        *,
+        backend: Any,
+        query: str = "",
+        theme: str | None = None,
+        no_color: bool = False,
+        persist_theme: Callable[[str], None] | None = None,
+    ) -> None:
+        super().__init__(theme=theme, no_color=no_color, persist_theme=persist_theme)
+        self._header_state: tuple[str, str] = ("", "")
         self._backend = backend
         self._query = query
         self._cards: list[dict[str, Any]] = []
@@ -524,7 +592,32 @@ class BrowseApp(App[None]):
                 yield Static("", id="preview-meta")
         yield Footer(compact=True)
 
+    def app_commands(self) -> Iterable[SystemCommand]:
+        yield command("Open card details", "Enter", self.action_show_detail)
+        yield command("Search cards", "/", self.action_focus_search)
+        yield command("Suspend / unsuspend card", "s", self.action_suspend_selected)
+        yield command("Delete note", "d, twice", self.action_delete_selected)
+        yield command("Toggle preview", "p", self.action_toggle_preview)
+        # Found by typing; keeps the opening list short.
+        for key in self._FILTER_ORDER:
+            yield command(
+                f"Filter: {self._FILTER_LABELS[key]}",
+                None,
+                lambda key=key: self._set_filter(key),
+                common=False,
+            )
+        yield command("Zoom pane", "f", self.action_toggle_zoom, common=False)
+        yield command("Reload cards", "r", self.action_refresh, common=False)
+
+    def on_palette_changed(self) -> None:
+        """Rich text bakes colours in, so rebuild it for the new theme."""
+        self._render_header(*self._header_state)
+        if self._visible_cards:
+            self._populate_table(reset_cursor=False)
+        self._sync_preview_cursor(force=True)
+
     def on_mount(self) -> None:
+        self._theme_ready()
         self._add_columns()
         self.query_one("#table").border_title = "1 Cards"
         self.query_one("#preview").border_title = "2 Preview"
@@ -726,7 +819,7 @@ class BrowseApp(App[None]):
         if not (0 <= row_idx < len(self._visible_cards)):
             return
         card = self._visible_cards[row_idx]
-        detail = _format_card_detail(card)
+        detail = _format_card_detail(card, self.palette)
         self.push_screen(DetailScreen(f"Card {card.get('cardId', '')}", detail))
 
     def _set_filter(self, filter_key: str) -> None:
@@ -769,12 +862,14 @@ class BrowseApp(App[None]):
     def _render_header(self, left: str, right: str) -> None:
         # Text(): ``left`` is often the raw user query, which must not be
         # parsed as markup (#82).
+        self._header_state = (left, right)
+        pal = self.palette
         title = Text(f"anki-cli {__version__} · browse · ")
-        title.append(left, style=f"bold {TEXT}")
+        title.append(left, style=f"bold {pal.text}")
         with contextlib.suppress(Exception):
             self.query_one("#header-text", Static).update(title)
         with contextlib.suppress(Exception):
-            self.query_one("#header-count", Static).update(Text(right, style=DIM))
+            self.query_one("#header-count", Static).update(Text(right, style=pal.muted))
 
     def _toast(self, message: str, *, severity: str = "information") -> None:
         """Transient result of an action; replaces the old persistent status line."""
@@ -813,17 +908,18 @@ class BrowseApp(App[None]):
         card_id = str(card.get("cardId", ""))
         queue = card.get("queue")
         queue_label = _queue_label(queue)
-        queue_color = _queue_color(queue)
+        pal = self.palette
+        queue_color = _queue_color(queue, pal)
 
         self.query_one("#preview").border_title = f"2 Preview · card {card_id}"
 
         body = Text()
-        body.append("FRONT\n", style=f"bold {DIM}")
-        body.append(front or "(empty)", style=f"bold {TEXT}")
+        body.append("FRONT\n", style=f"bold {pal.muted}")
+        body.append(front or "(empty)", style=f"bold {pal.text}")
         body.append("\n\n")
-        body.append("─" * 14 + " answer " + "─" * 14, style=DIM)
+        body.append("─" * 14 + " answer " + "─" * 14, style=pal.muted)
         body.append("\n\n")
-        body.append(back or "(empty)", style=TEXT)
+        body.append(back or "(empty)", style=pal.text)
         self.query_one("#preview-body", Static).update(body)
 
         reps = to_int(card.get("reps"), 0)
@@ -838,18 +934,18 @@ class BrowseApp(App[None]):
             tags = "-"
 
         meta = Text()
-        meta.append(" Queue    ", style=DIM)
+        meta.append(" Queue    ", style=pal.muted)
         meta.append(f"{queue_label or '-':<10}", style=f"bold {queue_color}")
-        meta.append(" Interval ", style=DIM)
-        meta.append(f"{ivl_text}\n", style=f"bold {BLUE}")
-        meta.append(" Reps     ", style=DIM)
-        meta.append(f"{reps!s:<10}", style=TEXT)
-        meta.append(" Lapses   ", style=DIM)
-        meta.append(f"{lapses!s}\n", style=RED if lapses > 3 else TEXT)
-        meta.append(" Factor   ", style=DIM)
-        meta.append(f"{factor!s:<10}", style=f"bold {ORANGE}")
-        meta.append(" Tags     ", style=DIM)
-        meta.append(tags, style=CYAN)
+        meta.append(" Interval ", style=pal.muted)
+        meta.append(f"{ivl_text}\n", style=f"bold {pal.primary}")
+        meta.append(" Reps     ", style=pal.muted)
+        meta.append(f"{reps!s:<10}", style=pal.text)
+        meta.append(" Lapses   ", style=pal.muted)
+        meta.append(f"{lapses!s}\n", style=pal.error if lapses > 3 else pal.text)
+        meta.append(" Factor   ", style=pal.muted)
+        meta.append(f"{factor!s:<10}", style=f"bold {pal.warning}")
+        meta.append(" Tags     ", style=pal.muted)
+        meta.append(tags, style=pal.accent)
         self.query_one("#preview-meta", Static).update(meta)
 
     def _set_status(self, left: str, right: str) -> None:
@@ -875,8 +971,11 @@ class BrowseApp(App[None]):
         table = self.query_one("#table", DataTable)
         table.clear(columns=True)
         self._add_columns()
+        pal = self.palette
         for card in self._visible_cards:
-            table.add_row(*_format_browser_row(card, question_width=self._current_question_width))
+            table.add_row(
+                *_format_browser_row(card, question_width=self._current_question_width, pal=pal)
+            )
 
         if self._visible_cards:
             current_row = to_int(getattr(table, "cursor_row", -1), -1)

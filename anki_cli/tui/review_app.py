@@ -5,13 +5,13 @@ import html as _html
 import re
 import shlex
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, cast
 
 from rich.text import Text
 from textual import on, work
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
@@ -23,19 +23,7 @@ from anki_cli.core.render import extract_note_id, extract_ord, pick_template, re
 from anki_cli.core.scheduler import pick_next_due_card_id
 from anki_cli.core.undo import UndoItem, UndoStore, now_epoch_ms
 from anki_cli.tui._utils import due_day_label, relative_eta, to_int
-from anki_cli.tui.colors import (
-    BLUE,
-    BORDER,
-    CYAN,
-    DIM,
-    GREEN,
-    MENU_BG,
-    RED,
-    TEXT,
-    TOKYO_NIGHT,
-    TOOLBAR_BG,
-    YELLOW,
-)
+from anki_cli.tui.theming import PALETTE_CSS, ThemedApp, command
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _BR_RE = re.compile(r"(?i)<br\s*/?>")
@@ -91,47 +79,47 @@ class PreviewScreen(ModalScreen[None]):
         Binding("q", "app.pop_screen", "Close", show=False),
     ]
 
-    DEFAULT_CSS = f"""
-    PreviewScreen {{
+    DEFAULT_CSS = """
+    PreviewScreen {
         align: center middle;
-        background: rgba(0, 0, 0, 0.65);
-    }}
+        background: $background 70%;
+    }
 
-    PreviewScreen #preview-panel {{
+    PreviewScreen #preview-panel {
         width: 84%;
         max-width: 120;
         height: 80%;
-        background: {MENU_BG};
-        border: round {BORDER};
+        background: $surface;
+        border: round $border;
         padding: 1 2;
-    }}
+    }
 
-    PreviewScreen #preview-title {{
+    PreviewScreen #preview-title {
         height: auto;
-        color: {CYAN};
+        color: $accent;
         text-style: bold;
         padding-bottom: 1;
-        border-bottom: solid {BORDER};
-    }}
+        border-bottom: solid $border;
+    }
 
-    PreviewScreen #preview-body {{
+    PreviewScreen #preview-body {
         height: 1fr;
         margin-top: 1;
-        background: {TOOLBAR_BG};
-        border: round {BORDER};
+        background: $background;
+        border: round $border;
         padding: 1;
-    }}
+    }
 
-    PreviewScreen #preview-content {{
-        color: {TEXT};
-    }}
+    PreviewScreen #preview-content {
+        color: $foreground;
+    }
 
-    PreviewScreen #preview-hint {{
+    PreviewScreen #preview-hint {
         height: auto;
-        color: {DIM};
+        color: $text-muted;
         text-align: right;
         padding-top: 1;
-    }}
+    }
     """
 
     def __init__(self, title: str, body: str) -> None:
@@ -164,7 +152,7 @@ _RATINGS: tuple[tuple[int, str], ...] = ((1, "Again"), (2, "Hard"), (3, "Good"),
 _DEFAULT_HINTS: dict[int, str] = {1: "<10m", 2: "-", 3: "-", 4: "-"}
 
 
-class ReviewApp(App[None]):
+class ReviewApp(ThemedApp):
     # Textual's default AUTO_FOCUS="*" would focus the first Button on mount, so
     # Space / 1-4 / q still work only because the app owns them; leaving focus
     # unset keeps Enter from pressing a rating by accident (#81).
@@ -173,97 +161,110 @@ class ReviewApp(App[None]):
     # Under 30 rows the buttons drop to one row and the card padding goes.
     VERTICAL_BREAKPOINTS: ClassVar[list[tuple[int, str]]] = [(0, "-short"), (30, "-tall")]
 
-    CSS = f"""
-    Screen {{
-        background: {TOOLBAR_BG};
-    }}
+    CSS = (
+        PALETTE_CSS
+        + """
+    Screen {
+        background: $background;
+    }
     /* Header, card, buttons and footer all live in one centred column, so they
        share the same edges and the same background. */
-    #page {{
+    #page {
         width: 100%;
         height: 1fr;
         align-horizontal: center;
-    }}
-    #column {{
+    }
+    #column {
         width: 100%;
         max-width: 90;
         height: 1fr;
-    }}
-    #header {{
+    }
+    #header {
         height: 1;
         margin-bottom: 1;
         padding: 0 1;
-    }}
-    #header-title {{
+    }
+    #header-title {
         width: auto;
-        color: {BLUE};
+        color: $primary;
         text-style: bold;
-    }}
-    #header-stats {{
+    }
+    #header-stats {
         width: 1fr;
         text-align: right;
-        color: {DIM};
-    }}
-    #column > Footer {{
+        color: $text-muted;
+    }
+    #column > Footer {
         dock: none;
         height: 1;
         margin-top: 1;
         padding: 0 1;
-        background: {TOOLBAR_BG};
-    }}
-    #column > Footer FooterKey {{
-        background: {TOOLBAR_BG};
-    }}
-    .card-panel {{
+        background: $background;
+    }
+    #column > Footer FooterKey,
+    #column > Footer .footer-key--key,
+    #column > Footer .footer-key--description {
+        background: transparent;
+    }
+    #column > Footer .footer-key--key {
+        color: $primary;
+    }
+    #column > Footer .footer-key--description {
+        color: $text-muted;
+    }
+    .-no-color #column > Footer .footer-key--description {
+        color: $foreground;
+    }
+    .card-panel {
         height: 1fr;
         min-height: 5;
-        background: {TOOLBAR_BG};
-        border: round {BORDER};
-        border-title-color: {DIM};
+        background: $background;
+        border: round $border;
+        border-title-color: $text-muted;
         padding: 1 2;
         scrollbar-size: 1 1;
-        scrollbar-color: {BORDER};
-        scrollbar-background: {TOOLBAR_BG};
-    }}
-    .card-panel:focus {{
-        border: round {BLUE};
-        border-title-color: {BLUE};
+        scrollbar-color: $border;
+        scrollbar-background: $background;
+    }
+    .card-panel:focus {
+        border: round $primary;
+        border-title-color: $primary;
         background-tint: transparent;
-    }}
-    #answer-panel {{
+    }
+    #answer-panel {
         display: none;
-    }}
-    #column.-revealed #answer-panel {{
+    }
+    #column.-revealed #answer-panel {
         display: block;
-    }}
-    #question, #answer {{
-        color: {TEXT};
-    }}
+    }
+    #question, #answer {
+        color: $foreground;
+    }
 
     /* One action row that morphs: "Show answer" until the answer is up, then
        the four ratings. */
-    #actions {{
+    #actions {
         height: 3;
         margin-top: 1;
-    }}
+    }
     /* Outlined, rounded buttons to match the panels; the variant colour is the
        outline and the text. A fill would paint a square block behind the
        rounded corners, so hover / focus brighten and underline the label. */
-    #actions Button {{
+    #actions Button {
         height: 3;
         width: 1fr;
         margin: 0 1 0 0;
         min-width: 8;
-        border: round {BORDER};
-        background: {TOOLBAR_BG};
-        color: {TEXT};
+        border: round $border;
+        background: $background;
+        color: $foreground;
         text-style: bold;
         tint: transparent;
-    }}
-    #actions #show-answer {{
-        border: round {BLUE};
-        color: {BLUE};
-    }}
+    }
+    #actions #show-answer {
+        border: round $primary;
+        color: $primary;
+    }
     #actions #show-answer:hover,
     #actions #show-answer:focus,
     #actions #rate-1:hover,
@@ -273,92 +274,92 @@ class ReviewApp(App[None]):
     #actions #rate-3:hover,
     #actions #rate-3:focus,
     #actions #rate-4:hover,
-    #actions #rate-4:focus {{
-        color: {TEXT};
+    #actions #rate-4:focus {
+        color: $foreground;
         text-style: bold underline;
-        background: {TOOLBAR_BG};
+        background: $background;
         background-tint: transparent;
-    }}
-    #actions #rate-1 {{ border: round {RED}; color: {RED}; }}
-    #actions #rate-2 {{ border: round {YELLOW}; color: {YELLOW}; }}
-    #actions #rate-3 {{ border: round {GREEN}; color: {GREEN}; }}
-    #actions #rate-4 {{ border: round {BLUE}; color: {BLUE}; }}
-    #rate-row {{
+    }
+    #actions #rate-1 { border: round $error; color: $error; }
+    #actions #rate-2 { border: round $warning; color: $warning; }
+    #actions #rate-3 { border: round $success; color: $success; }
+    #actions #rate-4 { border: round $primary; color: $primary; }
+    #rate-row {
         display: none;
         height: 3;
-    }}
-    #rate-row Button:last-of-type {{
+    }
+    #rate-row Button:last-of-type {
         margin-right: 0;
-    }}
-    #column.-revealed #rate-row {{
+    }
+    #column.-revealed #rate-row {
         display: block;
-    }}
-    #column.-revealed #show-answer {{
+    }
+    #column.-revealed #show-answer {
         display: none;
-    }}
-    #show-answer {{
+    }
+    #show-answer {
         margin-right: 0;
-    }}
+    }
 
-    #cmd-slot {{
+    #cmd-slot {
         height: auto;
-    }}
-    #cmd {{
+    }
+    #cmd {
         height: 1;
         border: none;
-        background: {MENU_BG};
-        color: {TEXT};
+        background: $surface;
+        color: $foreground;
         padding: 0 1;
-    }}
+    }
 
-    Screen.-short #header {{
+    Screen.-short #header {
         margin-bottom: 0;
-    }}
-    Screen.-short #column > Footer {{
+    }
+    Screen.-short #column > Footer {
         margin-top: 0;
-    }}
-    Screen.-short .card-panel {{
+    }
+    Screen.-short .card-panel {
         padding: 0 1;
         min-height: 3;
-    }}
-    Screen.-short #actions, Screen.-short #rate-row {{
+    }
+    Screen.-short #actions, Screen.-short #rate-row {
         height: 1;
         margin-top: 0;
-    }}
-    Screen.-short #actions Button {{
+    }
+    Screen.-short #actions Button {
         height: 1;
         border: none;
-    }}
-    Screen.-short #actions #show-answer {{
+    }
+    Screen.-short #actions #show-answer {
         border: none;
         height: 1;
-        background: {BLUE} 20%;
-        color: {BLUE};
-    }}
-    Screen.-short #actions #rate-1 {{
+        background: $primary 20%;
+        color: $primary;
+    }
+    Screen.-short #actions #rate-1 {
         border: none;
         height: 1;
-        background: {RED} 20%;
-        color: {RED};
-    }}
-    Screen.-short #actions #rate-2 {{
+        background: $error 20%;
+        color: $error;
+    }
+    Screen.-short #actions #rate-2 {
         border: none;
         height: 1;
-        background: {YELLOW} 20%;
-        color: {YELLOW};
-    }}
-    Screen.-short #actions #rate-3 {{
+        background: $warning 20%;
+        color: $warning;
+    }
+    Screen.-short #actions #rate-3 {
         border: none;
         height: 1;
-        background: {GREEN} 20%;
-        color: {GREEN};
-    }}
-    Screen.-short #actions #rate-4 {{
+        background: $success 20%;
+        color: $success;
+    }
+    Screen.-short #actions #rate-4 {
         border: none;
         height: 1;
-        background: {BLUE} 20%;
-        color: {BLUE};
-    }}
+        background: $primary 20%;
+        color: $primary;
+    }
     Screen.-short #actions #show-answer:hover,
     Screen.-short #actions #show-answer:focus,
     Screen.-short #actions #rate-1:hover,
@@ -368,11 +369,12 @@ class ReviewApp(App[None]):
     Screen.-short #actions #rate-3:hover,
     Screen.-short #actions #rate-3:focus,
     Screen.-short #actions #rate-4:hover,
-    Screen.-short #actions #rate-4:focus {{
-        color: {TEXT};
+    Screen.-short #actions #rate-4:focus {
+        color: $foreground;
         text-style: bold underline;
-    }}
+    }
     """
+    )
 
     # Footer renders the ``show=True`` entries, so this list is also the
     # on-screen key legend; ``?`` opens the full list. 1-4 are shown on the
@@ -392,10 +394,16 @@ class ReviewApp(App[None]):
         Binding("q", "quit", "Quit", show=True),
     ]
 
-    def __init__(self, *, backend: Any, deck: str | None) -> None:
-        super().__init__()
-        self.register_theme(TOKYO_NIGHT)
-        self.theme = TOKYO_NIGHT.name
+    def __init__(
+        self,
+        *,
+        backend: Any,
+        deck: str | None,
+        theme: str | None = None,
+        no_color: bool = False,
+        persist_theme: Callable[[str], None] | None = None,
+    ) -> None:
+        super().__init__(theme=theme, no_color=no_color, persist_theme=persist_theme)
         self._backend = backend
         # Undo, preview and the scheduler-ordered picker need scheduler state
         # only the direct backend exposes (AnkiBackend.supports_scheduler_introspection).
@@ -440,7 +448,21 @@ class ReviewApp(App[None]):
             yield Vertical(id="cmd-slot")
             yield Footer(compact=True)
 
+    def app_commands(self) -> Iterable[SystemCommand]:
+        yield command("Flip card", "Space", self.action_toggle_answer)
+        for ease, name in _RATINGS:
+            yield command(f"Answer: {name}", str(ease), lambda ease=ease: self.action_rate(ease))
+        yield command("Undo last answer", "u", self.action_undo)
+        yield command("Preview ratings", "p", self.action_preview)
+        # Found by typing; keeps the opening list short.
+        yield command("Skip to next card", "n", self.action_next, common=False)
+        yield command("Command line", ":", self.action_focus_command, common=False)
+
+    def on_palette_changed(self) -> None:
+        self._refresh_chrome()
+
     def on_mount(self) -> None:
+        self._theme_ready()
         self.query_one("#question-panel").border_title = "Question"
         self.query_one("#answer-panel").border_title = "Answer"
         self._refresh_rate_buttons()
@@ -711,13 +733,14 @@ class ReviewApp(App[None]):
         title.append(f"anki-cli {__version__} · study · {deck_name}")
         self._ui_update("#header-title", title)
 
+        pal = self.palette
         stats = Text()
-        stats.append(f"{done}/{self._session_total} · {pct}%   ", style=DIM)
-        stats.append(f"new {counts['new']}", style=f"bold {BLUE}")
+        stats.append(f"{done}/{self._session_total} · {pct}%   ", style=pal.muted)
+        stats.append(f"new {counts['new']}", style=f"bold {pal.primary}")
         stats.append("  ")
-        stats.append(f"learn {counts['learn']}", style=f"bold {YELLOW}")
+        stats.append(f"learn {counts['learn']}", style=f"bold {pal.warning}")
         stats.append("  ")
-        stats.append(f"review {counts['review']}", style=f"bold {GREEN}")
+        stats.append(f"review {counts['review']}", style=f"bold {pal.success}")
         self._ui_update("#header-stats", stats)
 
     def _fetch_next(self, card_id: int | None, kind: str) -> _Loaded:

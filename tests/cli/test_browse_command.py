@@ -30,7 +30,8 @@ def test_browse_cmd_success_launches_browse_app(monkeypatch: pytest.MonkeyPatch)
     run_called = {"count": 0}
 
     class FakeApp:
-        def __init__(self, *, backend: Any, query: str = "") -> None:
+        def __init__(self, *, backend: Any, query: str = "", **options: Any) -> None:
+            self.options = options
             self.backend = backend
             self.query = query
 
@@ -74,7 +75,8 @@ def test_browse_cmd_import_error_emits_tui_not_available(monkeypatch: pytest.Mon
 
 def test_browse_cmd_backend_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeApp:
-        def __init__(self, *, backend: Any, query: str = "") -> None:
+        def __init__(self, *, backend: Any, query: str = "", **options: Any) -> None:
+            self.options = options
             pass
 
         def run(self) -> None:
@@ -106,7 +108,8 @@ def test_browse_cmd_tui_crash_emits_internal_error_envelope(
         return_code = 1
         _exception = RuntimeError("collection is locked")
 
-        def __init__(self, *, backend: Any, query: str = "") -> None:
+        def __init__(self, *, backend: Any, query: str = "", **options: Any) -> None:
+            self.options = options
             pass
 
         def run(self) -> None:
@@ -134,7 +137,8 @@ def test_browse_cmd_clean_exit_has_no_error(monkeypatch: pytest.MonkeyPatch) -> 
     class CleanApp:
         return_code = 0
 
-        def __init__(self, *, backend: Any, query: str = "") -> None:
+        def __init__(self, *, backend: Any, query: str = "", **options: Any) -> None:
+            self.options = options
             pass
 
         def run(self) -> None:
@@ -149,3 +153,29 @@ def test_browse_cmd_clean_exit_has_no_error(monkeypatch: pytest.MonkeyPatch) -> 
     result = CliRunner().invoke(browse_cmd, ["--query", ""], obj=_base_obj())
     assert result.exit_code == 0
     assert result.output == ""
+
+
+def test_browse_cmd_passes_theme_options_to_the_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#85: the configured theme, --no-color and the save hook reach the app."""
+    from anki_cli.models.config import AppConfig
+
+    seen: dict[str, Any] = {}
+
+    class FakeApp:
+        def __init__(self, *, backend: Any, query: str = "", **options: Any) -> None:
+            seen.update(options)
+
+        def run(self) -> None:
+            return None
+
+    _patch_session(monkeypatch, object())
+    _patch_browse_module(monkeypatch, FakeApp)
+
+    app_config = AppConfig.model_validate({"display": {"theme": "nord"}})
+    obj = {**_base_obj(), "app_config": app_config, "no_color": True}
+    result = CliRunner().invoke(browse_cmd, [], obj=obj)
+
+    assert result.exit_code == 0
+    assert seen["theme"] == "nord"
+    assert seen["no_color"] is True
+    assert callable(seen["persist_theme"])
