@@ -247,7 +247,8 @@ class ReviewApp(App[None]):
         margin-top: 1;
     }}
     /* Outlined, rounded buttons to match the panels; the variant colour is the
-       outline and the text, and the fill only appears on hover / focus. */
+       outline and the text. A fill would paint a square block behind the
+       rounded corners, so hover / focus brighten and underline the label. */
     #actions Button {{
         height: 3;
         width: 1fr;
@@ -263,17 +264,25 @@ class ReviewApp(App[None]):
         border: round {BLUE};
         color: {BLUE};
     }}
-    #actions #show-answer:hover, #actions #show-answer:focus {{
-        background: {BLUE} 20%;
+    #actions #show-answer:hover,
+    #actions #show-answer:focus,
+    #actions #rate-1:hover,
+    #actions #rate-1:focus,
+    #actions #rate-2:hover,
+    #actions #rate-2:focus,
+    #actions #rate-3:hover,
+    #actions #rate-3:focus,
+    #actions #rate-4:hover,
+    #actions #rate-4:focus {{
+        color: {TEXT};
+        text-style: bold underline;
+        background: {TOOLBAR_BG};
+        background-tint: transparent;
     }}
     #actions #rate-1 {{ border: round {RED}; color: {RED}; }}
     #actions #rate-2 {{ border: round {YELLOW}; color: {YELLOW}; }}
     #actions #rate-3 {{ border: round {GREEN}; color: {GREEN}; }}
     #actions #rate-4 {{ border: round {BLUE}; color: {BLUE}; }}
-    #actions #rate-1:hover, #actions #rate-1:focus {{ background: {RED} 20%; }}
-    #actions #rate-2:hover, #actions #rate-2:focus {{ background: {YELLOW} 20%; }}
-    #actions #rate-3:hover, #actions #rate-3:focus {{ background: {GREEN} 20%; }}
-    #actions #rate-4:hover, #actions #rate-4:focus {{ background: {BLUE} 20%; }}
     #rate-row {{
         display: none;
         height: 3;
@@ -349,6 +358,19 @@ class ReviewApp(App[None]):
         height: 1;
         background: {BLUE} 20%;
         color: {BLUE};
+    }}
+    Screen.-short #actions #show-answer:hover,
+    Screen.-short #actions #show-answer:focus,
+    Screen.-short #actions #rate-1:hover,
+    Screen.-short #actions #rate-1:focus,
+    Screen.-short #actions #rate-2:hover,
+    Screen.-short #actions #rate-2:focus,
+    Screen.-short #actions #rate-3:hover,
+    Screen.-short #actions #rate-3:focus,
+    Screen.-short #actions #rate-4:hover,
+    Screen.-short #actions #rate-4:focus {{
+        color: {TEXT};
+        text-style: bold underline;
     }}
     """
 
