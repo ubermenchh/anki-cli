@@ -150,3 +150,108 @@ def test_status_shows_raw_query_not_markup(fake_backend: FakeBackend, run_async:
             assert content.plain == "tag:[x] deck:[b]ig"
 
     run_async(scenario())
+
+
+# --- #35: batched loads, event-driven preview, writes off the UI thread -------------
+
+
+def _calls(backend: FakeBackend, name: str) -> list[tuple[Any, ...]]:
+    return [args for n, args in backend.calls if n == name]
+
+
+def test_load_fetches_cards_in_batches_not_one_by_one(
+    fake_backend: FakeBackend, run_async: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from anki_cli.tui import browse_app
+
+    monkeypatch.setattr(browse_app, "_LOAD_BATCH", 4)
+    fetched: list[int] = []
+    real = fake_backend.get_card
+
+    def spy(card_id: int) -> dict[str, Any]:
+        fetched.append(card_id)
+        return real(card_id)
+
+    fake_backend.get_card = spy  # type: ignore[method-assign]
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            table = await _mounted(pilot, app)
+            assert table.row_count == 6
+
+    run_async(scenario())
+    assert fetched == []
+    assert [len(args[0]) for args in _calls(fake_backend, "get_cards")] == [4, 2]
+
+
+def test_preview_follows_the_cursor_without_polling(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            assert not app._timers  # no set_interval poll left
+            title = app.query_one("#preview-title", Static)
+            assert "1000" in str(title.render())
+            await pilot.press("down")
+            await pilot.pause(0.05)
+            assert "1001" in str(title.render())
+
+    run_async(scenario())
+
+
+def test_suspend_runs_off_the_ui_thread_and_reloads(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    import threading
+
+    seen: list[bool] = []
+    real = fake_backend.suspend_cards
+
+    def spy(ids: list[int]) -> dict[str, Any]:
+        seen.append(threading.current_thread() is threading.main_thread())
+        return real(ids)
+
+    fake_backend.suspend_cards = spy  # type: ignore[method-assign]
+
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            await _mounted(pilot, app)
+            await pilot.press("s")
+            for _ in range(20):
+                await pilot.pause(0.05)
+                if len(_calls(fake_backend, "find_cards")) >= 2:
+                    break
+            assert _calls(fake_backend, "suspend_cards") == [((1000,),)]
+            assert len(_calls(fake_backend, "find_cards")) >= 2
+
+    run_async(scenario())
+    assert seen == [False]
+
+
+def test_delete_needs_a_second_press_and_runs_in_a_worker(
+    fake_backend: FakeBackend, run_async: Any
+) -> None:
+    async def scenario() -> None:
+        app = BrowseApp(backend=fake_backend, query="")
+        async with app.run_test(size=(130, 38)) as pilot:
+            table = await _mounted(pilot, app)
+            await pilot.press("d")
+            await pilot.pause(0.1)
+            assert _calls(fake_backend, "delete_notes") == []
+            await pilot.press("d")
+            for _ in range(20):
+                await pilot.pause(0.05)
+                if _calls(fake_backend, "delete_notes"):
+                    break
+            assert _calls(fake_backend, "delete_notes") == [((5000,),)]
+            for _ in range(20):
+                await pilot.pause(0.05)
+                if table.row_count == 5:
+                    break
+            assert table.row_count == 5
+
+    run_async(scenario())
