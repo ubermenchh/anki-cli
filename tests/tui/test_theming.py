@@ -186,8 +186,9 @@ def test_failing_save_is_a_toast_not_a_crash(run_async: Any) -> None:
     run_async(scenario())
 
 
-def _titles(app: Any) -> list[str]:
-    return [c.title for c in app.get_system_commands(app.screen)]
+def _commands(app: Any) -> dict[str, Any]:
+    """Palette commands by name, with the trailing ``  (key)`` hint stripped."""
+    return {re.sub(r"  \(.*\)$", "", c.title): c for c in app.get_system_commands(app.screen)}
 
 
 def test_browse_command_palette_lists_screen_actions(run_async: Any) -> None:
@@ -195,26 +196,29 @@ def test_browse_command_palette_lists_screen_actions(run_async: Any) -> None:
         app = browse_mod.BrowseApp(backend=FakeBackend())
         async with app.run_test(size=(130, 30)) as pilot:
             await pilot.pause()
-            titles = _titles(app)
+            commands = _commands(app)
             for wanted in (
                 "Open card details",
                 "Search cards",
                 "Filter: New",
                 "Suspend / unsuspend card",
                 "Toggle preview",
-                "Theme",
-                "Keys",
+                "Change theme",
+                "Show keys",
                 "Quit",
             ):
-                assert wanted in titles, (wanted, titles)
+                assert wanted in commands, (wanted, sorted(commands))
             # Textual's generic entries that mean nothing here are hidden.
-            assert not {"Screenshot", "Maximize", "Minimize"} & set(titles)
+            assert not {"Screenshot", "Maximize", "Minimize"} & set(commands)
+            # One line each: the key is in the title and there is no help line.
+            assert all(c.help == "" for c in commands.values())
+            assert commands["Search cards"].title == "Search cards  (/)"
+            # The opening list is short; the rest is found by typing.
+            opening = {name for name, c in commands.items() if c.discover}
+            assert "Filter: New" not in opening and "Zoom pane" not in opening
+            assert len(opening) <= 10
 
-            # A command runs its action.
-            command = next(
-                c for c in app.get_system_commands(app.screen) if c.title == "Filter: New"
-            )
-            command.callback()
+            commands["Filter: New"].callback()
             await pilot.pause()
             assert app._active_filter == "new"
 
@@ -227,19 +231,20 @@ def test_review_command_palette_lists_screen_actions(run_async: Any) -> None:
         async with app.run_test(size=(120, 36)) as pilot:
             await app.workers.wait_for_complete()
             await pilot.pause()
-            titles = _titles(app)
+            commands = _commands(app)
             for wanted in (
                 "Flip card",
                 "Answer: Again",
                 "Answer: Easy",
                 "Undo last answer",
                 "Skip to next card",
-                "Theme",
+                "Change theme",
             ):
-                assert wanted in titles, (wanted, titles)
+                assert wanted in commands, (wanted, sorted(commands))
+            assert commands["Skip to next card"].discover is False
+            assert commands["Flip card"].discover is True
 
-            command = next(c for c in app.get_system_commands(app.screen) if c.title == "Flip card")
-            command.callback()
+            commands["Flip card"].callback()
             await pilot.pause()
             assert app._show_answer is True
 

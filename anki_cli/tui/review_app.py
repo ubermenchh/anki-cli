@@ -23,7 +23,7 @@ from anki_cli.core.render import extract_note_id, extract_ord, pick_template, re
 from anki_cli.core.scheduler import pick_next_due_card_id
 from anki_cli.core.undo import UndoItem, UndoStore, now_epoch_ms
 from anki_cli.tui._utils import due_day_label, relative_eta, to_int
-from anki_cli.tui.theming import PALETTE_CSS, ThemedApp
+from anki_cli.tui.theming import PALETTE_CSS, ThemedApp, command
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _BR_RE = re.compile(r"(?i)<br\s*/?>")
@@ -449,21 +449,14 @@ class ReviewApp(ThemedApp):
             yield Footer(compact=True)
 
     def app_commands(self) -> Iterable[SystemCommand]:
-        yield SystemCommand(
-            "Flip card", "Show or hide the answer (Space)", self.action_toggle_answer
-        )
+        yield command("Flip card", "Space", self.action_toggle_answer)
         for ease, name in _RATINGS:
-            yield SystemCommand(
-                f"Answer: {name}",
-                f"Rate the card {name.lower()}; reveals the answer first if hidden ({ease})",
-                lambda ease=ease: self.action_rate(ease),
-            )
-        yield SystemCommand("Undo last answer", "Restore the previous card (u)", self.action_undo)
-        yield SystemCommand(
-            "Preview ratings", "Show what each rating would schedule (p)", self.action_preview
-        )
-        yield SystemCommand("Skip to next card", "Pick the next due card (n)", self.action_next)
-        yield SystemCommand("Command line", "Type a :command (:)", self.action_focus_command)
+            yield command(f"Answer: {name}", str(ease), lambda ease=ease: self.action_rate(ease))
+        yield command("Undo last answer", "u", self.action_undo)
+        yield command("Preview ratings", "p", self.action_preview)
+        # Found by typing; keeps the opening list short.
+        yield command("Skip to next card", "n", self.action_next, common=False)
+        yield command("Command line", ":", self.action_focus_command, common=False)
 
     def on_palette_changed(self) -> None:
         self._refresh_chrome()

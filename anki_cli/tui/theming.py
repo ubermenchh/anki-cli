@@ -41,6 +41,13 @@ CommandPalette #--input Input {
 }
 CommandPalette SearchIcon {
     color: $primary;
+    margin-top: 0;
+}
+CommandPalette CommandInput,
+CommandPalette CommandInput:focus {
+    border: none;
+    height: 1;
+    padding-left: 1;
 }
 CommandPalette CommandList {
     background: $background;
@@ -77,6 +84,18 @@ CommandPalette > .command-palette--highlight {
 
 # Built-in palette entries that mean nothing in a terminal card reviewer.
 _HIDDEN_SYSTEM_COMMANDS = frozenset({"Screenshot", "Maximize", "Minimize"})
+# The ones we keep, renamed to say what they do and show their key.
+_SYSTEM_COMMAND_TITLES = {"Keys": "Show keys  (?)", "Theme": "Change theme", "Quit": "Quit  (q)"}
+
+
+def command(
+    title: str, key: str | None, callback: Callable[[], Any], *, common: bool = True
+) -> SystemCommand:
+    """A one-line palette entry: the key sits in the title and there is no
+    second line of help. ``common=False`` keeps it out of the empty-search list,
+    so the list opens short and the rest is found by typing."""
+    return SystemCommand(f"{title}  ({key})" if key else title, "", callback, common)
+
 
 DEFAULT_THEME = TOKYO_NIGHT.name
 # Selected by --no-color / display.color = false: the terminal's own palette.
@@ -204,9 +223,11 @@ class ThemedApp(App[None]):
 
     def get_system_commands(self, screen: Screen[Any]) -> Iterable[SystemCommand]:
         yield from self.app_commands()
-        for command in super().get_system_commands(screen):
-            if command.title not in _HIDDEN_SYSTEM_COMMANDS:
-                yield command
+        for builtin in super().get_system_commands(screen):
+            if builtin.title in _HIDDEN_SYSTEM_COMMANDS:
+                continue
+            title = _SYSTEM_COMMAND_TITLES.get(builtin.title, builtin.title)
+            yield builtin._replace(title=title, help="")
 
     def on_palette_changed(self) -> None:
         """Rebuild any Rich text that baked the old colours in."""

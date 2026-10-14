@@ -23,7 +23,7 @@ from textual.worker import get_current_worker
 from anki_cli import __version__
 
 from ._utils import due_day_label, relative_eta, to_int
-from .theming import DEFAULT_PALETTE, PALETTE_CSS, Palette, ThemedApp
+from .theming import DEFAULT_PALETTE, PALETTE_CSS, Palette, ThemedApp, command
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _BR_RE = re.compile(r"(?i)<br\s*/?>")
@@ -593,29 +593,21 @@ class BrowseApp(ThemedApp):
         yield Footer(compact=True)
 
     def app_commands(self) -> Iterable[SystemCommand]:
-        yield SystemCommand(
-            "Open card details", "Show the selected card (Enter)", self.action_show_detail
-        )
-        yield SystemCommand("Search cards", "Edit the search query (/)", self.action_focus_search)
+        yield command("Open card details", "Enter", self.action_show_detail)
+        yield command("Search cards", "/", self.action_focus_search)
+        yield command("Suspend / unsuspend card", "s", self.action_suspend_selected)
+        yield command("Delete note", "d, twice", self.action_delete_selected)
+        yield command("Toggle preview", "p", self.action_toggle_preview)
+        # Found by typing; keeps the opening list short.
         for key in self._FILTER_ORDER:
-            yield SystemCommand(
+            yield command(
                 f"Filter: {self._FILTER_LABELS[key]}",
-                f"Show {self._FILTER_LABELS[key].lower()} cards only",
+                None,
                 lambda key=key: self._set_filter(key),
+                common=False,
             )
-        yield SystemCommand(
-            "Suspend / unsuspend card", "Toggle suspension (s)", self.action_suspend_selected
-        )
-        yield SystemCommand(
-            "Delete note",
-            "Delete the selected card's note; asks you to press d again (d)",
-            self.action_delete_selected,
-        )
-        yield SystemCommand(
-            "Toggle preview", "Show or hide the preview pane (p)", self.action_toggle_preview
-        )
-        yield SystemCommand("Zoom pane", "Maximise the focused pane (f)", self.action_toggle_zoom)
-        yield SystemCommand("Reload cards", "Run the current query again (r)", self.action_refresh)
+        yield command("Zoom pane", "f", self.action_toggle_zoom, common=False)
+        yield command("Reload cards", "r", self.action_refresh, common=False)
 
     def on_palette_changed(self) -> None:
         """Rich text bakes colours in, so rebuild it for the new theme."""
