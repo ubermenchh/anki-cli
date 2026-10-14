@@ -216,57 +216,32 @@ def _capture_updates(app: browse_mod.BrowseApp) -> dict[str, Any]:
     return sink
 
 
-def test_hint_bar_lists_only_actual_bindings() -> None:
-    app = browse_mod.BrowseApp(backend=object())
-    captured = _capture_updates(app)
+def test_footer_legend_lists_only_actual_bindings() -> None:
+    """Footer renders the ``show=True`` bindings, so that set is the legend."""
+    shown = {
+        b.key_display or b.key: b.description
+        for b in (*browse_mod.BrowseApp.BINDINGS, *browse_mod.CardTable.BINDINGS)
+        if b.show
+    }
 
-    app._render_hint_bar()
-    text = captured["#hintbar"].plain
-
-    # Exact text so key/label swaps, dropped separators and hidden bindings
-    # leaking in all fail.
-    assert text == (
-        " /  Search    Tab  Cycle filter    Enter  Detail    d  Delete"
-        "    s  Suspend    r  Refresh    q  Quit"
-    )
-
-    # Phantom keys previously advertised must be gone.
-    for phantom in ("add", "edit"):
-        assert phantom not in text
+    assert shown == {
+        "/": "Filter",
+        "Enter": "Detail",
+        "s": "Suspend",
+        "d": "Delete",
+        "?": "Help",
+        "q": "Quit",
+    }
+    # Every advertised binding resolves to a real action.
+    for binding in browse_mod.BrowseApp.BINDINGS:
+        name = binding.action.split("(")[0]
+        assert hasattr(browse_mod.BrowseApp, f"action_{name}"), binding.action
 
 
 def test_browse_has_no_edit_binding_or_stub_action() -> None:
     actions = {b.action for b in browse_mod.BrowseApp.BINDINGS}
     assert "edit_selected" not in actions
     assert not hasattr(browse_mod.BrowseApp, "action_edit_selected")
-
-
-def test_preview_actions_label_enter_as_detail() -> None:
-    app = browse_mod.BrowseApp(backend=object())
-    captured = _capture_updates(app)
-
-    app._render_preview_empty()
-    actions = captured["#preview-actions"].plain
-
-    assert "Detail" in actions
-    assert "Study" not in actions
-    assert "Edit" not in actions
-
-
-def test_preview_actions_for_card_show_detail_and_unsuspend() -> None:
-    app = browse_mod.BrowseApp(backend=object())
-    app._visible_cards = [
-        {"cardId": 1, "queue": -1, "fields": ["Q", "A"], "tags": []},
-    ]
-    captured = _capture_updates(app)
-
-    app._update_preview_for_row(0)
-    actions = captured["#preview-actions"].plain
-
-    assert "Unsuspend" in actions
-    assert "Detail" in actions
-    assert "Study" not in actions
-    assert "Edit" not in actions
 
 
 def test_format_due_short_epoch_fallback_rounds_up_to_the_due_day(
