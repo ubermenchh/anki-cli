@@ -141,6 +141,31 @@ class FakeBackend:
                 card["flags"] = flag
         return {"updated": len(card_ids), "flag": flag}
 
+    def get_decks(self) -> list[dict[str, Any]]:
+        return [{"name": "Default"}, {"name": "Languages::Japanese::Core 2k"}, {"name": "Maths"}]
+
+    def get_tags(self) -> list[str]:
+        return ["geo", "networking", "verb", "verb-irregular"]
+
+    def move_cards(self, card_ids: list[int], deck: str) -> dict[str, Any]:
+        self._rec("move_cards", tuple(card_ids), deck)
+        for card in self.cards:
+            if card["cardId"] in card_ids:
+                card["deckName"] = deck
+        return {"moved": len(card_ids)}
+
+    def add_tags(self, note_ids: list[int], tags: list[str]) -> dict[str, Any]:
+        self._rec("add_tags", tuple(note_ids), tuple(tags))
+        return {"updated": len(note_ids)}
+
+    def remove_tags(self, note_ids: list[int], tags: list[str]) -> dict[str, Any]:
+        self._rec("remove_tags", tuple(note_ids), tuple(tags))
+        return {"updated": len(note_ids)}
+
+    def reschedule_cards(self, card_ids: list[int], days: int) -> dict[str, Any]:
+        self._rec("reschedule_cards", tuple(card_ids), days)
+        return {"rescheduled": len(card_ids)}
+
     def delete_notes(self, note_ids: list[int]) -> dict[str, Any]:
         self._rec("delete_notes", tuple(note_ids))
         self.cards = [c for c in self.cards if c["note"] not in note_ids]

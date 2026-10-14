@@ -201,8 +201,12 @@ def test_browse_command_palette_lists_screen_actions(run_async: Any) -> None:
                 "Open card details",
                 "Search cards",
                 "Filter: New",
-                "Suspend / unsuspend card",
+                "Suspend / unsuspend",
                 "Toggle preview",
+                "Mark / unmark card",
+                "Move to deck",
+                "Edit tags",
+                "Reschedule",
                 "Change theme",
                 "Show keys",
                 "Quit",
@@ -216,7 +220,7 @@ def test_browse_command_palette_lists_screen_actions(run_async: Any) -> None:
             # The opening list is short; the rest is found by typing.
             opening = {name for name, c in commands.items() if c.discover}
             assert "Filter: New" not in opening and "Zoom pane" not in opening
-            assert len(opening) <= 10
+            assert len(opening) <= 12
 
             commands["Filter: New"].callback()
             await pilot.pause()

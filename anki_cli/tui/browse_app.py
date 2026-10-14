@@ -4,7 +4,7 @@ import contextlib
 import html as _html
 import re
 import threading
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any, ClassVar
 
@@ -15,6 +15,7 @@ from textual import events, on, work
 from textual.app import ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.coordinate import Coordinate
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Input, OptionList, Static, Tab, Tabs
@@ -24,6 +25,7 @@ from textual.worker import get_current_worker
 from anki_cli import __version__
 
 from ._utils import due_day_label, relative_eta, to_int
+from .prompts import PromptScreen, TokenSuggester
 from .theming import DEFAULT_PALETTE, PALETTE_CSS, Palette, ThemedApp, command
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -302,17 +304,24 @@ def _extract_note_id_from_card(card: Mapping[str, Any]) -> int | None:
 
 
 def _format_browser_row(
-    card: Mapping[str, Any], *, question_width: int = 56, pal: Palette = DEFAULT_PALETTE
+    card: Mapping[str, Any],
+    *,
+    question_width: int = 56,
+    pal: Palette = DEFAULT_PALETTE,
+    marked: bool = False,
 ) -> tuple[Text | str, ...]:
     """One table row in ``_BROWSE_COLUMNS`` order: Question, Deck, Due, Ivl, Type."""
     front, _ = _extract_front_back(card)
     question_text = " ".join(front.split())
+    # Marks and flags sit in front of the text, two cells each.
     flag = _flag_of(card)
+    question = Text()
+    if marked:
+        question.append("\u2713 ", style=f"bold {pal.primary}")
     if flag:
-        question = Text("\u2691 ", style=_flag_color(flag, pal))
-        question.append(_truncate(question_text, question_width - 2), style=pal.text)
-    else:
-        question = Text(_truncate(question_text, question_width), style=pal.text)
+        question.append("\u2691 ", style=_flag_color(flag, pal))
+    prefix = 2 * (bool(marked) + bool(flag))
+    question.append(_truncate(question_text, question_width - prefix), style=pal.text)
 
     deck_name = str(card.get("deckName", ""))
     deck = Text(_truncate(_deck_leaf(deck_name), _FIXED_COLUMN_WIDTHS["Deck"]), style=pal.accent)
@@ -733,9 +742,14 @@ class BrowseApp(ThemedApp):
     # list is also the on-screen key legend. ``?`` opens the full list (#7).
     BINDINGS: ClassVar[list[Binding]] = [
         Binding("slash", "focus_search", "Filter", key_display="/", show=True),
+        Binding("space", "toggle_mark", "Mark", key_display="Space", show=True),
+        Binding("a", "mark_all", "Mark all", show=False),
         Binding("s", "suspend_selected", "Suspend", show=True),
-        Binding("b", "bury_selected", "Bury", show=True),
+        Binding("b", "bury_selected", "Bury", show=False),
         Binding("f", "flag_selected", "Flag", show=True),
+        Binding("m", "move_selected", "Move to deck", show=False),
+        Binding("t", "tag_selected", "Edit tags", show=False),
+        Binding("R", "reschedule_selected", "Reschedule", show=False),
         Binding("d", "delete_selected", "Delete", show=True),
         Binding("r", "refresh", "Refresh", show=False),
         Binding("left_square_bracket", "prev_filter", "Prev tab", key_display="[", show=False),
@@ -744,8 +758,9 @@ class BrowseApp(ThemedApp):
         Binding("2", "focus_pane('preview-scroll')", "Preview", show=False),
         Binding("p", "toggle_preview", "Preview on/off", show=False),
         Binding("z", "toggle_zoom", "Zoom pane", show=False),
-        Binding("question_mark", "show_help_panel", "Help", key_display="?", show=True),
+        # Quit before Help: at 80 columns the footer's tail is what gets cut off.
         Binding("q", "quit", "Quit", show=True),
+        Binding("question_mark", "show_help_panel", "Help", key_display="?", show=True),
         Binding("escape", "escape", "Back / Quit", show=False),
     ]
 
@@ -769,6 +784,10 @@ class BrowseApp(ThemedApp):
     ) -> None:
         super().__init__(theme=theme, no_color=no_color, persist_theme=persist_theme)
         self._header_state: tuple[str, str] = ("", "")
+        # Cards ticked with Space; the batch actions apply to these when present.
+        self._marked: set[int] = set()
+        # Highlighted card to put the cursor back on after a mutation reloads.
+        self._keep_card_id: int | None = None
         self._backend = backend
         self._query = query
         self._cards: list[dict[str, Any]] = []
@@ -798,7 +817,17 @@ class BrowseApp(ThemedApp):
 
     # Row actions are pointless (and clutter the footer) with nothing selected.
     _ROW_ACTIONS: ClassVar[frozenset[str]] = frozenset(
-        {"suspend_selected", "bury_selected", "flag_selected", "delete_selected"}
+        {
+            "toggle_mark",
+            "mark_all",
+            "suspend_selected",
+            "bury_selected",
+            "flag_selected",
+            "move_selected",
+            "tag_selected",
+            "reschedule_selected",
+            "delete_selected",
+        }
     )
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -807,11 +836,16 @@ class BrowseApp(ThemedApp):
     def app_commands(self) -> Iterable[SystemCommand]:
         yield command("Open card details", "Enter", self.action_show_detail)
         yield command("Search cards", "/", self.action_focus_search)
-        yield command("Suspend / unsuspend card", "s", self.action_suspend_selected)
-        yield command("Bury / unbury card", "b", self.action_bury_selected)
+        yield command("Mark / unmark card", "Space", self.action_toggle_mark)
+        yield command("Mark all cards", "a", self.action_mark_all, common=False)
+        yield command("Suspend / unsuspend", "s", self.action_suspend_selected)
+        yield command("Bury / unbury", "b", self.action_bury_selected, common=False)
         yield command("Set flag", "f", self.action_flag_selected)
+        yield command("Move to deck", "m", self.action_move_selected)
+        yield command("Edit tags", "t", self.action_tag_selected)
+        yield command("Reschedule", "R", self.action_reschedule_selected, common=False)
         yield command("Delete note", "d", self.action_delete_selected)
-        yield command("Toggle preview", "p", self.action_toggle_preview)
+        yield command("Toggle preview", "p", self.action_toggle_preview, common=False)
         # Found by typing; keeps the opening list short.
         for key in self._FILTER_ORDER:
             yield command(
@@ -877,6 +911,11 @@ class BrowseApp(ThemedApp):
         if isinstance(self.focused, Input):
             self.query_one("#table", DataTable).focus()
             return
+        if self._marked:
+            self._marked.clear()
+            self._populate_table(reset_cursor=False)
+            self._refresh_count()
+            return
         self.exit()
 
     def action_focus_search(self) -> None:
@@ -919,120 +958,329 @@ class BrowseApp(ThemedApp):
         if row_idx >= 0:
             self._show_detail_for_row(row_idx)
 
-    def action_suspend_selected(self) -> None:
+    # -- selection ---------------------------------------------------------------
+
+    @staticmethod
+    def _cid(card: Mapping[str, Any]) -> int:
+        return to_int(card.get("cardId"), 0)
+
+    def _targets(self) -> list[dict[str, Any]]:
+        """The ticked cards (in table order), else the highlighted one."""
+        if self._marked:
+            ticked = [c for c in self._visible_cards if self._cid(c) in self._marked]
+            if ticked:
+                return ticked
         card = self._selected_card()
-        if card is None:
-            self._toast("No card selected", severity="warning")
-            return
+        return [card] if card is not None else []
 
-        card_id = to_int(card.get("cardId"), 0)
-        if card_id <= 0:
-            self._toast("Selected row has no card id", severity="error")
-            return
+    def _target_ids(self) -> list[int]:
+        return [cid for cid in (self._cid(c) for c in self._targets()) if cid > 0]
 
-        self._suspend_card(card_id, to_int(card.get("queue"), 0))
+    def _note_ids(self, cards: Sequence[Mapping[str, Any]]) -> list[int]:
+        seen: dict[int, None] = {}
+        for card in cards:
+            note_id = _extract_note_id_from_card(card)
+            if note_id is not None:
+                seen[note_id] = None
+        return list(seen)
+
+    def action_toggle_mark(self) -> None:
+        card = self._selected_card()
+        if card is None or self._cid(card) <= 0:
+            return
+        cid = self._cid(card)
+        self._marked.symmetric_difference_update({cid})
+        table = self.query_one("#table", DataTable)
+        row = self._selected_row_index()
+        with contextlib.suppress(Exception):
+            cell = _format_browser_row(
+                card,
+                question_width=self._current_question_width,
+                pal=self.palette,
+                marked=cid in self._marked,
+            )[0]
+            table.update_cell_at(Coordinate(row, 0), cell)
+        self._refresh_count()
+        # Tick and move on, so a run of Space presses marks a run of cards.
+        with contextlib.suppress(Exception):
+            table.action_cursor_down()
+
+    def action_mark_all(self) -> None:
+        ids = {self._cid(c) for c in self._visible_cards if self._cid(c) > 0}
+        self._marked = set() if ids and ids <= self._marked else ids
+        self._populate_table(reset_cursor=False)
+        self._refresh_count()
+
+    def _reload(self) -> None:
+        """Reload after a change, keeping the cursor on the same card."""
+        card = self._selected_card()
+        self._keep_card_id = self._cid(card) if card else None
+        self._load_cards(self._current_query())
+
+    def _no_selection(self) -> bool:
+        if self._targets():
+            return False
+        self._toast("No card selected", severity="warning")
+        return True
+
+    @staticmethod
+    def _cards_word(n: int) -> str:
+        return f"{n} card{'s' if n != 1 else ''}"
+
+    # -- suspend / bury / flag ---------------------------------------------------
+
+    def action_suspend_selected(self) -> None:
+        if self._no_selection():
+            return
+        targets = self._targets()
+        # Anki's rule: if everything is already suspended, unsuspend; else suspend.
+        unsuspend = all(to_int(c.get("queue"), 0) == -1 for c in targets)
+        self._suspend_cards(self._target_ids(), unsuspend)
 
     @work(thread=True, group="mutate")
-    def _suspend_card(self, card_id: int, queue: int) -> None:
+    def _suspend_cards(self, card_ids: list[int], unsuspend: bool) -> None:
         # Off the UI thread: the backend call opens/locks the collection.
         try:
-            if queue == -1:
-                self._backend.unsuspend_cards([card_id])
-                action = "unsuspended"
+            if unsuspend:
+                self._backend.unsuspend_cards(card_ids)
             else:
-                self._backend.suspend_cards([card_id])
-                action = "suspended"
+                self._backend.suspend_cards(card_ids)
         except Exception as exc:
             self._toast(f"Suspend failed: {exc}", severity="error")
             return
 
-        self._toast(f"Card {card_id} {action}")
-        self._load_cards(self._current_query())
+        done = "unsuspended" if unsuspend else "suspended"
+        what = f"Card {card_ids[0]}" if len(card_ids) == 1 else self._cards_word(len(card_ids))
+        self._toast(f"{what} {done}")
+        self.call_from_thread(self._reload)
 
     def action_bury_selected(self) -> None:
-        card = self._selected_card()
-        card_id = to_int(card.get("cardId"), 0) if card else 0
-        if card is None or card_id <= 0:
-            self._toast("No card selected", severity="warning")
+        if self._no_selection():
             return
-        self._bury_card(card_id, to_int(card.get("queue"), 0) in (-2, -3))
+        targets = self._targets()
+        unbury = all(to_int(c.get("queue"), 0) in (-2, -3) for c in targets)
+        self._bury_cards(self._target_ids(), unbury)
 
     @work(thread=True, group="mutate")
-    def _bury_card(self, card_id: int, buried: bool) -> None:
+    def _bury_cards(self, card_ids: list[int], unbury: bool) -> None:
         try:
-            if buried:
-                self._backend.unbury_cards(card_ids=[card_id])
+            if unbury:
+                self._backend.unbury_cards(card_ids=card_ids)
             else:
-                self._backend.bury_cards([card_id])
+                self._backend.bury_cards(card_ids)
         except Exception as exc:
-            self._toast(f"{'Unbury' if buried else 'Bury'} failed: {exc}", severity="error")
+            self._toast(f"{'Unbury' if unbury else 'Bury'} failed: {exc}", severity="error")
             return
-        self._toast(f"Card {card_id} {'unburied' if buried else 'buried'}")
-        self._load_cards(self._current_query())
+        done = "unburied" if unbury else "buried"
+        what = f"Card {card_ids[0]}" if len(card_ids) == 1 else self._cards_word(len(card_ids))
+        self._toast(f"{what} {done}")
+        self.call_from_thread(self._reload)
 
     def action_flag_selected(self) -> None:
-        card = self._selected_card()
-        card_id = to_int(card.get("cardId"), 0) if card else 0
-        if card is None or card_id <= 0:
-            self._toast("No card selected", severity="warning")
+        if self._no_selection():
             return
+        ids = self._target_ids()
+        targets = self._targets()
 
         def done(flag: int | None) -> None:
             if flag is not None:
-                self._set_flag(card_id, flag)
+                self._set_flag(ids, flag)
 
-        self.push_screen(FlagScreen(_flag_of(card), self.palette), done)
+        self.push_screen(FlagScreen(_flag_of(targets[0]), self.palette), done)
 
     @work(thread=True, group="mutate")
-    def _set_flag(self, card_id: int, flag: int) -> None:
+    def _set_flag(self, card_ids: list[int], flag: int) -> None:
         try:
-            self._backend.set_card_flag([card_id], flag)
+            self._backend.set_card_flag(card_ids, flag)
         except Exception as exc:
             self._toast(f"Flag failed: {exc}", severity="error")
             return
+        what = f"Card {card_ids[0]}" if len(card_ids) == 1 else self._cards_word(len(card_ids))
         name = _FLAGS[flag][0]
-        self._toast(f"Card {card_id}: {name.lower()}" if flag else f"Card {card_id}: flag cleared")
-        self._load_cards(self._current_query())
+        self._toast(f"{what}: {name.lower()}" if flag else f"{what}: flag cleared")
+        self.call_from_thread(self._reload)
 
-    def action_delete_selected(self) -> None:
-        card = self._selected_card()
-        if card is None:
-            self._toast("No card selected", severity="warning")
+    # -- move / tags / reschedule: typed values ----------------------------------
+
+    def action_move_selected(self) -> None:
+        if self._no_selection():
             return
-
-        note_id = _extract_note_id_from_card(card)
-        if note_id is None:
-            self._toast("Selected card has no note id", severity="error")
-            return
-
-        self._ask_delete(note_id)
+        self._ask_move(self._target_ids())
 
     @work(thread=True, group="mutate")
-    def _ask_delete(self, note_id: int) -> None:
+    def _ask_move(self, card_ids: list[int]) -> None:
+        try:
+            names = [str(d.get("name", "")) for d in self._backend.get_decks() if d.get("name")]
+        except Exception as exc:
+            self._toast(f"Could not list decks: {exc}", severity="error")
+            return
+        self.call_from_thread(self._show_move_prompt, card_ids, names)
+
+    def _show_move_prompt(self, card_ids: list[int], names: list[str]) -> None:
+        by_lower = {n.lower(): n for n in names}
+
+        def validate(text: str) -> str | None:
+            if not text:
+                return "Type a deck name."
+            return None if text.lower() in by_lower else f"No deck called '{text}'."
+
+        def done(text: str | None) -> None:
+            if text:
+                self._move_cards(card_ids, by_lower[text.lower()])
+
+        self.push_screen(
+            PromptScreen(
+                f"Move {self._cards_word(len(card_ids))}",
+                "Deck to move to (the deck must already exist).",
+                placeholder="Deck::Subdeck",
+                suggester=TokenSuggester(names, multi=False),
+                validate=validate,
+            ),
+            done,
+        )
+
+    @work(thread=True, group="mutate")
+    def _move_cards(self, card_ids: list[int], deck: str) -> None:
+        try:
+            self._backend.move_cards(card_ids, deck)
+        except Exception as exc:
+            self._toast(f"Move failed: {exc}", severity="error")
+            return
+        self._toast(f"Moved {self._cards_word(len(card_ids))} to {deck}")
+        self.call_from_thread(self._reload)
+
+    def action_tag_selected(self) -> None:
+        if self._no_selection():
+            return
+        notes = self._note_ids(self._targets())
+        if not notes:
+            self._toast("Selected cards have no note id", severity="error")
+            return
+        self._ask_tags(notes)
+
+    @work(thread=True, group="mutate")
+    def _ask_tags(self, note_ids: list[int]) -> None:
+        try:
+            known = [str(t) for t in self._backend.get_tags()]
+        except Exception:
+            known = []
+        self.call_from_thread(self._show_tag_prompt, note_ids, known)
+
+    def _show_tag_prompt(self, note_ids: list[int], known: list[str]) -> None:
+        def validate(text: str) -> str | None:
+            return None if text else "Type at least one tag."
+
+        def done(text: str | None) -> None:
+            if not text:
+                return
+            words = text.split()
+            add = [w for w in words if not w.startswith("-") and w]
+            remove = [w[1:] for w in words if w.startswith("-") and len(w) > 1]
+            if add or remove:
+                self._apply_tags(note_ids, add, remove)
+
+        notes = f"{len(note_ids)} note{'s' if len(note_ids) != 1 else ''}"
+        self.push_screen(
+            PromptScreen(
+                f"Tags for {notes}",
+                "Tags to add, space separated. Put - in front of one to remove it.",
+                placeholder="verb -old-tag",
+                suggester=TokenSuggester(known),
+                validate=validate,
+            ),
+            done,
+        )
+
+    @work(thread=True, group="mutate")
+    def _apply_tags(self, note_ids: list[int], add: list[str], remove: list[str]) -> None:
+        try:
+            if add:
+                self._backend.add_tags(note_ids, add)
+            if remove:
+                self._backend.remove_tags(note_ids, remove)
+        except Exception as exc:
+            self._toast(f"Tagging failed: {exc}", severity="error")
+            return
+        parts = [f"+{t}" for t in add] + [f"-{t}" for t in remove]
+        notes = f"{len(note_ids)} note{'s' if len(note_ids) != 1 else ''}"
+        self._toast(f"{notes}: {' '.join(parts)}")
+        self.call_from_thread(self._reload)
+
+    def action_reschedule_selected(self) -> None:
+        if self._no_selection():
+            return
+        ids = self._target_ids()
+
+        def validate(text: str) -> str | None:
+            if not text.isdigit():
+                return "Enter a whole number of days (0 or more)."
+            return None
+
+        def done(text: str | None) -> None:
+            if text:
+                self._reschedule_cards(ids, int(text))
+
+        self.push_screen(
+            PromptScreen(
+                f"Reschedule {self._cards_word(len(ids))}",
+                "Days from today until they are next due (0 = due today).",
+                placeholder="7",
+                validate=validate,
+            ),
+            done,
+        )
+
+    @work(thread=True, group="mutate")
+    def _reschedule_cards(self, card_ids: list[int], days: int) -> None:
+        try:
+            self._backend.reschedule_cards(card_ids, days)
+        except Exception as exc:
+            self._toast(f"Reschedule failed: {exc}", severity="error")
+            return
+        when = "today" if days == 0 else f"in {days} day{'s' if days != 1 else ''}"
+        self._toast(f"{self._cards_word(len(card_ids))} due {when}")
+        self.call_from_thread(self._reload)
+
+    # -- delete -----------------------------------------------------------------
+
+    def action_delete_selected(self) -> None:
+        if self._no_selection():
+            return
+        notes = self._note_ids(self._targets())
+        if not notes:
+            self._toast("Selected card has no note id", severity="error")
+            return
+        self._ask_delete(notes)
+
+    @work(thread=True, group="mutate")
+    def _ask_delete(self, note_ids: list[int]) -> None:
         # A note owns every card made from it, so say how many go with it.
         try:
-            count = len(self._backend.find_cards(f"nid:{note_id}"))
+            count = sum(len(self._backend.find_cards(f"nid:{n}")) for n in note_ids)
         except Exception:
-            count = sum(1 for c in self._cards if _extract_note_id_from_card(c) == note_id)
-        self.call_from_thread(self._confirm_delete, note_id, count)
+            wanted = set(note_ids)
+            count = sum(1 for c in self._cards if _extract_note_id_from_card(c) in wanted)
+        self.call_from_thread(self._confirm_delete, note_ids, count)
 
-    def _confirm_delete(self, note_id: int, count: int) -> None:
-        cards = f"{count} card{'s' if count != 1 else ''}" if count else "all its cards"
-        message = (
-            f"Delete note {note_id} and {cards}?\n\n"
-            "Every card made from the note is removed. This can't be undone."
-        )
+    def _confirm_delete(self, note_ids: list[int], count: int) -> None:
+        cards = self._cards_word(count) if count else "all their cards"
+        if len(note_ids) == 1:
+            message = f"Delete note {note_ids[0]} and {cards}?\n\n"
+        else:
+            message = f"Delete {len(note_ids)} notes and {cards}?\n\n"
+        message += "Every card made from them is removed. This can't be undone."
 
         def done(confirmed: bool | None) -> None:
             if confirmed:
-                self._delete_note(note_id)
+                self._delete_notes(note_ids)
 
-        self.push_screen(ConfirmScreen("Delete note", message), done)
+        title = "Delete note" if len(note_ids) == 1 else f"Delete {len(note_ids)} notes"
+        self.push_screen(ConfirmScreen(title, message), done)
 
     @work(thread=True, group="mutate")
-    def _delete_note(self, note_id: int) -> None:
+    def _delete_notes(self, note_ids: list[int]) -> None:
         try:
-            result = self._backend.delete_notes([note_id])
+            result = self._backend.delete_notes(note_ids)
         except Exception as exc:
             self._toast(f"Delete failed: {exc}", severity="error")
             return
@@ -1044,11 +1292,17 @@ class BrowseApp(ThemedApp):
                 deleted_notes = to_int(result.get("deleted"), 0)
 
         if deleted_notes > 0:
-            self._toast(f"Deleted note {note_id}")
+            what = f"note {note_ids[0]}" if len(note_ids) == 1 else f"{deleted_notes} notes"
+            self._toast(f"Deleted {what}")
         else:
-            self._toast(f"Note {note_id} was not deleted", severity="warning")
+            self._toast("Nothing was deleted", severity="warning")
 
-        self._load_cards(self._current_query())
+        self._marked.difference_update(set(self._target_ids_for_notes(note_ids)))
+        self.call_from_thread(self._reload)
+
+    def _target_ids_for_notes(self, note_ids: list[int]) -> list[int]:
+        wanted = set(note_ids)
+        return [self._cid(c) for c in self._cards if _extract_note_id_from_card(c) in wanted]
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "search":
@@ -1124,7 +1378,9 @@ class BrowseApp(ThemedApp):
         return True
 
     def _count_label(self) -> str:
-        return f"{len(self._visible_cards)}/{len(self._cards)} cards"
+        label = f"{len(self._visible_cards)}/{len(self._cards)} cards"
+        marked = len(self._marked & {self._cid(c) for c in self._visible_cards})
+        return f"{marked} selected \u00b7 {label}" if marked else label
 
     def _render_filter_tabs(self) -> None:
         # Keep the Tabs strip in step when the filter changed from the keyboard.
@@ -1223,6 +1479,10 @@ class BrowseApp(ThemedApp):
         meta.append(tags, style=pal.accent)
         self.query_one("#preview-meta", Static).update(meta)
 
+    def _refresh_count(self) -> None:
+        """Re-render the header's count (it includes how many cards are ticked)."""
+        self._set_status(self._header_state[0], self._count_label())
+
     def _set_status(self, left: str, right: str) -> None:
         """Header state (query + count, or loading progress)."""
         if threading.current_thread() is threading.main_thread():
@@ -1234,29 +1494,54 @@ class BrowseApp(ThemedApp):
     def _on_cards_loaded(self, cards: list[dict[str, Any]], query: str) -> None:
         self._cards = cards
         self._visible_cards = [card for card in self._cards if self._matches_filter(card)]
+        # Ticks survive a reload for cards that are still there.
+        self._marked &= {self._cid(card) for card in self._cards}
         self._populate_table(reset_cursor=True)
+        self._restore_cursor()
         self._render_filter_tabs()
         self._sync_preview_cursor(force=True)
+        self._header_state = (query or "*", self._count_label())
         self._set_status(query or "*", self._count_label())
         if self.focused is None:
             with contextlib.suppress(Exception):
                 self.query_one("#table", DataTable).focus()
 
+    def _restore_cursor(self) -> None:
+        """After a mutation reload, put the cursor back on the card it was on."""
+        wanted, self._keep_card_id = self._keep_card_id, None
+        if wanted is None:
+            return
+        for index, card in enumerate(self._visible_cards):
+            if self._cid(card) == wanted:
+                with contextlib.suppress(Exception):
+                    self.query_one("#table", DataTable).move_cursor(row=index, column=0)
+                return
+
     def _populate_table(self, *, reset_cursor: bool = False) -> None:
         table = self.query_one("#table", DataTable)
+        # clear() sends the cursor back to the top; remember where it was.
+        previous_row = to_int(getattr(table, "cursor_row", -1), -1)
         table.clear(columns=True)
         self._add_columns()
         pal = self.palette
         for card in self._visible_cards:
             table.add_row(
-                *_format_browser_row(card, question_width=self._current_question_width, pal=pal)
+                *_format_browser_row(
+                    card,
+                    question_width=self._current_question_width,
+                    pal=pal,
+                    marked=self._cid(card) in self._marked,
+                )
             )
 
         if self._visible_cards:
-            current_row = to_int(getattr(table, "cursor_row", -1), -1)
-            if reset_cursor or current_row < 0 or current_row >= len(self._visible_cards):
-                with contextlib.suppress(Exception):
-                    table.move_cursor(row=0, column=0)
+            row = (
+                0
+                if reset_cursor or previous_row < 0
+                else min(previous_row, len(self._visible_cards) - 1)
+            )
+            with contextlib.suppress(Exception):
+                table.move_cursor(row=row, column=0)
         else:
             self._last_cursor_row = -999
 
