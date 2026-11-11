@@ -1,6 +1,8 @@
-# anki-cli
+<p align="center">
+  <img src="assets/banner.png" alt="anki-cli: a parade of flashcard characters marching across a terminal window" width="800">
+</p>
 
-Hybrid Anki CLI for humans and agents.
+<p align="center">Manage and study your Anki flashcards from the terminal — as a person at a keyboard, or as an AI agent reading JSON.</p>
 
 <p align="center">
   <a href="https://github.com/ubermenchh/anki-cli/actions/workflows/ci.yml"><img src="https://github.com/ubermenchh/anki-cli/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
@@ -15,67 +17,194 @@ Hybrid Anki CLI for humans and agents.
   <img src="assets/anki-cli.png" alt="anki-cli interactive REPL showing due card counts, keyboard shortcuts, and command autocomplete" width="700">
 </p>
 
-`anki-cli` supports both:
+## About
 
-- AnkiConnect backend (use a running Anki Desktop instance)
-- Direct SQLite backend (operate directly on collection files)
+`anki-cli` is a command-line client for [Anki](https://apps.ankiweb.net/). It lets you
+search, add, edit, tag, move and review cards without opening the Anki window, and gives
+you a full-screen terminal app for browsing and studying.
 
-Alpha software: see the PyPI badge above for the current release.
+- **Two backends.** Talk to a running Anki Desktop through the
+  [AnkiConnect](https://ankiweb.net/shared/info/2055492159) add-on, or read and write the
+  collection file directly when Anki is closed. `auto` picks the right one for you.
+- **Anki's search language.** `deck:`, `tag:`, `is:due`, `prop:ivl>30`, `OR`, `-`, and
+  parentheses work the way they do in Anki's browser.
+- **Built for scripts and agents.** Every command can print JSON (`--format json`) with a
+  stable envelope and documented exit codes. A [`SKILL.md`](SKILL.md) teaches AI coding
+  agents how to use it.
+- **Interactive when you want it.** A REPL with autocomplete, a card browser, and a
+  review screen with FSRS scheduling.
+
+> **Status:** alpha. Back up your collection before running write commands in direct mode.
+
+## Contents
+
+- [Requirements](#requirements)
+- [Install](#install)
+- [Set up a backend](#set-up-a-backend)
+- [First steps](#first-steps)
+- [Interactive modes](#interactive-modes)
+- [Configuration](#configuration)
+- [Search query language](#search-query-language)
+- [Command reference](#common-commands)
+- [Output and exit codes](#output-and-exit-codes)
+- [AI agent integration](#ai-agent-integration)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+
+## Requirements
+
+- Python 3.12 or 3.13
+- [uv](https://docs.astral.sh/uv/) (recommended) or [pipx](https://pipx.pypa.io/)
+- [Anki Desktop](https://apps.ankiweb.net/) with at least one profile, so a collection file exists
+- For the AnkiConnect backend: the [AnkiConnect](https://ankiweb.net/shared/info/2055492159) add-on
+
+macOS, Linux (including Flatpak and Snap installs of Anki) and Windows are supported.
 
 ## Install
 
-From PyPI (recommended):
-
 ```bash
+# Core CLI
 uv tool install anki-cli
-anki --version
-```
 
-With optional TUI extras:
-
-```bash
+# Core CLI + the interactive REPL, card browser and review screen
 uv tool install "anki-cli[tui]"
 ```
 
-## Quick Start
-
-Inspect environment and backend:
+With pipx: `pipx install "anki-cli[tui]"`. Check it worked:
 
 ```bash
-anki status
-anki version
+anki --version
+```
+
+To upgrade later: `uv tool upgrade anki-cli` (or `pipx upgrade anki-cli`).
+
+## Set up a backend
+
+`anki-cli` needs to reach your collection one of two ways. You only need one.
+
+| | AnkiConnect | Direct |
+|---|---|---|
+| How it works | HTTP calls to the AnkiConnect add-on inside Anki Desktop | Opens `collection.anki2` with SQLite |
+| Anki Desktop | Must be **running** | Must be **closed** |
+| Sync with AnkiWeb | Anki syncs as usual | Sync from Anki Desktop afterwards |
+| Supports | Everything except `card:bury`, `card:unbury`, `review:undo` and the TUI review screen | Everything |
+| Best for | Day-to-day use alongside Anki | Scripts, servers, studying in the terminal |
+
+### Option A: AnkiConnect (Anki running)
+
+1. In Anki Desktop open **Tools ▸ Add-ons ▸ Get Add-ons…**, enter code `2055492159`, and click OK.
+2. Restart Anki and leave it open.
+3. Check the connection:
+
+   ```bash
+   anki status
+   ```
+
+   The `backend` column should say `ankiconnect`. AnkiConnect listens on `http://localhost:8765` by default.
+
+### Option B: Direct (Anki closed)
+
+1. Quit Anki Desktop. The direct backend refuses to run while Anki has the collection open.
+2. Run `anki status`. It finds the collection on its own in the usual places:
+
+   | OS | Default Anki data folder |
+   |---|---|
+   | macOS | `~/Library/Application Support/Anki2/` |
+   | Linux | `~/.local/share/Anki2/` (also Flatpak and Snap locations) |
+   | Windows | `%APPDATA%\Anki2\` |
+
+3. If you have several profiles, or keep the collection somewhere else, point at it:
+
+   ```bash
+   anki config:set --key collection.anki_profile --value "Work"
+   anki config:set --key collection.path --value "/path/to/collection.anki2"
+   anki --col "/path/to/collection.anki2" status   # one-off override
+   ```
+
+With the default `auto` backend, `anki-cli` tries AnkiConnect first and falls back to the
+collection file, so after either setup most commands just work.
+
+## First steps
+
+```bash
+anki status                                  # which backend and collection are in use
+anki decks                                   # every deck with new / learning / review counts
+anki cards --query "deck:Default is:due" --limit 5
+anki note:add --deck "Default" --notetype "Basic" --Front "What is FSRS?" --Back "Anki's scheduler"
+anki notes --query "FSRS"                    # find it again
+anki review --deck "Default"                 # due counts for one deck
+```
+
+Notetype fields become options: a "Basic" note takes `--Front` and `--Back`; run
+`anki --format json notetype --notetype "Basic"` to see the fields of any notetype.
+
+Add `--format json` to any command for machine-readable output, and `--help` to any
+command for its options:
+
+```bash
+anki --format json decks
+anki card:move --help
 ```
 
 `status` always exits 0 — it reports probe results in `data.ok`/`data.error`
 rather than failing, so it works as a health check on hosts with no Anki.
 
-List core entities:
+## Interactive modes
+
+These need the `tui` extra (see [Install](#install)).
+
+| Command | What it opens |
+|---|---|
+| `anki` or `anki shell` | REPL with command autocomplete and due counts in the header |
+| `anki browse --query "tag:verb"` | Card browser for a search |
+| `anki review:start --deck "Japanese"` | Review screen (direct backend) |
+
+### TUI themes
+
+Both TUIs (`browse`, `review:start`) follow the active [Textual theme](https://textual.textualize.io/guide/design/).
+Press `ctrl+p` and pick "Change theme"; the choice is saved to `display.theme` and used next time.
+You can also set it directly:
 
 ```bash
-anki decks
-anki notetypes
-anki tags
+anki config:set --key display.theme --value nord
 ```
 
-Query cards and notes:
+The default is `anki-tokyo-night`; any built-in Textual theme name works. `--no-color` (or
+`display.color = false`) uses the terminal's own palette instead and does not change the saved theme.
+
+## Configuration
+
+Settings live in `~/.config/anki-cli/config.toml`. You do not need the file to get
+started; every key has a default.
 
 ```bash
-anki cards --query "deck:Default is:due"       # full card details (first 1000; --limit 0 for all)
-anki cards:ids --query "deck:Default is:due"   # ids only
-anki notes --query "tag:verb"                  # note ids
-anki browse --query "tag:verb"                 # interactive TUI
+anki config                                    # show the current settings
+anki config:path                               # where the file is
+anki config:set --key display.default_output --value json
 ```
 
-Inspect individual objects:
+| Key | Default | Meaning |
+|---|---|---|
+| `backend.prefer` | `auto` | `auto`, `ankiconnect` or `direct` |
+| `backend.ankiconnect_url` | `http://localhost:8765` | Where AnkiConnect listens |
+| `backend.allow_non_localhost` | `false` | Allow a remote `ankiconnect_url` (see below) |
+| `collection.path` | unset | Explicit path to `collection.anki2` |
+| `collection.anki_profile` | unset | Anki profile to use when there are several |
+| `display.default_output` | `table` | `table`, `json`, `md`, `csv` or `plain` |
+| `display.color` | `true` | Colour output |
+| `display.theme` | `anki-tokyo-night` | TUI theme |
 
-```bash
-anki card --id 1234567890
-anki note --id 1234567890
-anki deck --deck "Default"
-anki notetype --notetype "Basic"
-```
+Environment variables override the file, and command-line flags override both:
 
-## Backend Modes
+| Variable | Overrides |
+|---|---|
+| `ANKI_CLI_BACKEND` | `backend.prefer` / `--backend` |
+| `ANKI_CLI_COLLECTION` | `collection.path` / `--col` |
+| `ANKI_CLI_OUTPUT` | `display.default_output` / `--format` |
+| `ANKI_CLI_COLOR` | `display.color` / `--no-color` |
+| `ANKI_CLI_DEBUG` | Set to `1` to print a traceback after an internal error |
+
+### Backend modes
 
 Global backend selection:
 
@@ -107,7 +236,7 @@ miss never fails. `--col` takes precedence over it entirely.
 
 Backend behavior:
 
-- `auto`: detects and chooses best available backend
+- `auto`: uses AnkiConnect if it answers, otherwise the collection file
 - `ankiconnect`: forwards search queries to `findCards` and `findNotes`
 - `direct`: compiles queries to SQL and executes directly on the collection DB
 
@@ -132,7 +261,7 @@ The remote Anki Desktop must have AnkiConnect configured to accept non-localhost
 Without `allow_non_localhost = true` the remote URL is never contacted — the
 detection probe and all data operations refuse non-localhost hosts.
 
-## Search Query Language
+## Search query language
 
 Filters follow Anki's own semantics:
 
@@ -242,19 +371,6 @@ Interactive TUI review (requires TUI extras, direct backend):
 anki review:start --deck "Japanese"
 ```
 
-### TUI themes
-
-Both TUIs (`browse`, `review:start`) follow the active [Textual theme](https://textual.textualize.io/guide/design/).
-Press `ctrl+p` and pick "Change theme"; the choice is saved to `display.theme` and used next time.
-You can also set it directly:
-
-```bash
-anki config:set --key display.theme --value nord
-```
-
-The default is `anki-tokyo-night`; any built-in Textual theme name works. `--no-color` (or
-`display.color = false`) uses the terminal's own palette instead and does not change the saved theme.
-
 ## Output and Exit Codes
 
 Global output formats:
@@ -331,6 +447,20 @@ For other AI coding agents, point them at `SKILL.md` in the repo root or include
 - If Anki Desktop is running, prefer `--backend ankiconnect`.
 - `review:undo` (direct mode only) restores the card's previous state and deletes the revlog row written by the undone answer, matching Anki's own undo.
 - In direct mode, `csum` for notes with HTML in the first field now matches Anki. Rows written by older anki-cli versions keep their old csum until Tools ▸ Check Database recomputes them; duplicate detection may miss them until then.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| Exit 3, "No AnkiConnect and no collection found" | Start Anki with AnkiConnect installed, or point at the file with `--col` / `collection.path`. |
+| Exit 7, "Anki is running but AnkiConnect is unavailable" | Install AnkiConnect (code `2055492159`) and restart Anki, or quit Anki to use the direct backend. |
+| Exit 3 listing profile names | `collection.anki_profile` does not match a profile; pick one from the list. |
+| `TUI_NOT_AVAILABLE` | Reinstall with the extra: `uv tool install --force "anki-cli[tui]"`. |
+| `review:start` refuses to run | The review screen needs the direct backend: quit Anki and run it again. |
+| Remote AnkiConnect is never contacted | Set `backend.allow_non_localhost = true`. |
+
+`anki status` shows which backend was picked and why. For a bug report, include its
+output and, if you saw `INTERNAL_ERROR`, the traceback from `ANKI_CLI_DEBUG=1`.
 
 ## Development
 
